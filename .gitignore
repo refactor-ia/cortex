@@ -1,0 +1,35 @@
+# Sensitive local configuration
+.env
+.env.*
+.ai/
+.atl/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node and build output
+node_modules/
+dist/
+build/
+coverage/
+.tmp/
+
+# Logs and local databases
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Editor and operating-system state
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

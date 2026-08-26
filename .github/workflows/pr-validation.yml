@@ -1,0 +1,53 @@
+name: PR validation
+
+on:
+  pull_request:
+    types: [opened, edited, labeled, unlabeled, synchronize, reopened]
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_BRANCH: ${{ github.head_ref }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - name: Validate pull request metadata
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_BRANCH" =~ ^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$ ]]; then
+            echo "branch name does not match repository policy"
+            exit 1
+          fi
+          issue_number="$(python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          matches = re.findall(
+              r"(?im)^[ \t]*(?:closes|fixes|resolves)[ \t]+#([1-9][0-9]*)[ \t]*$",
+              os.environ.get("PR_BODY", ""),
+          )
+          if len(matches) != 1:
+              sys.exit("PR body must contain exactly one issue-closing reference")
+          print(matches[0])
+          PY
+          )"
+          issue="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/issues/${issue_number}")"
+          jq -e '.state == "open" and ([.labels[]?.name] | index("status:approved") != null)' \
+            <<<"$issue" >/dev/null || { echo "linked issue must be open and approved"; exit 1; }
+          pr="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}")"
+          mapfile -t type_labels < <(jq -r '.labels[]?.name | select(startswith("type:"))' <<<"$pr")
+          if (( ${#type_labels[@]} != 1 )); then
+            echo "pull request must have exactly one type:* label"
+            exit 1
+          fi
+          case "${type_labels[0]}" in
+            type:feature|type:bug|type:docs|type:refactor|type:chore|type:breaking-change) ;;
+            *) echo "unknown type:* label"; exit 1 ;;
+          esac

@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a concrete outcome for an approved issue.
+title: "Feature: "
+labels:
+  - type:feature
+body:
+  - type: markdown
+    attributes:
+      value: Describe the problem, intended outcome, scope, acceptance criteria, and evidence.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete user or maintainer problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What observable result should the proposed change produce?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: Name the intended boundary and what this request excludes.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the concrete conditions that must be true when this is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Provide links, examples, or observations supporting this request.
+    validations:
+      required: true

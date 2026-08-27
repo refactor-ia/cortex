@@ -19,6 +19,20 @@ import (
 func Replace(root, relativePath string, data []byte, mode fs.FileMode) error {
 	return replace(root, relativePath, data, mode, nil)
 }
+
+// ReplaceIfMatches atomically replaces an existing regular file only when its bytes
+// and permission mode match expectedData and expectedMode. It rechecks the target
+// immediately before rename to reduce, but not eliminate, TOCTOU exposure.
+// After rename, a caller-level transaction owns rollback for any reported error.
+func ReplaceIfMatches(root, relativePath string, expectedData []byte, expectedMode fs.FileMode, replacementData []byte, replacementMode fs.FileMode) error {
+	if expectedMode&^fs.FileMode(0o777) != 0 {
+		return fmt.Errorf("atomic replace: unsupported expected mode")
+	}
+	return replace(root, relativePath, replacementData, replacementMode, func(destination string) error {
+		return destinationMatches(destination, expectedData, expectedMode)
+	})
+}
+
 func replace(root, relativePath string, data []byte, mode fs.FileMode, matches func(string) error) (resultErr error) {
 	if mode&^fs.FileMode(0o777) != 0 {
 		return fmt.Errorf("atomic replace: unsupported mode")
@@ -116,6 +130,31 @@ func validateDestination(root, relativePath string) (string, error) {
 	}
 	return destination, nil
 }
+
+func destinationMatches(destination string, expectedData []byte, expectedMode fs.FileMode) error {
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("atomic replace: destination is missing")
+	}
+	if err != nil {
+		return fmt.Errorf("atomic replace: inspect destination: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("atomic replace: destination is not a regular file")
+	}
+	actual, err := os.ReadFile(destination)
+	if err != nil {
+		return fmt.Errorf("atomic replace: read destination: %w", err)
+	}
+	if !bytes.Equal(actual, expectedData) {
+		return fmt.Errorf("atomic replace: destination bytes do not match")
+	}
+	if info.Mode().Perm() != expectedMode.Perm() {
+		return fmt.Errorf("atomic replace: destination mode does not match")
+	}
+	return nil
+}
+
 func syncDirectory(path string) (resultErr error) {
 	directory, err := os.Open(path)
 	if err != nil {

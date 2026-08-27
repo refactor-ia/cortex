@@ -192,6 +192,96 @@ func TestReplace(t *testing.T) {
 		})
 	}
 }
+
+func TestReplaceIfMatches(t *testing.T) {
+	tests := []struct {
+		name            string
+		initialData     []byte
+		initialMode     fs.FileMode
+		expectedData    []byte
+		expectedMode    fs.FileMode
+		replacementData []byte
+		replacementMode fs.FileMode
+		createTarget    bool
+		wantErr         string
+	}{
+		{
+			name:            "replaces a matching existing file",
+			initialData:     []byte("original snapshot\n"),
+			initialMode:     0o640,
+			expectedData:    []byte("original snapshot\n"),
+			expectedMode:    0o640,
+			replacementData: []byte("restored snapshot\n"),
+			replacementMode: 0o600,
+			createTarget:    true,
+		},
+		{
+			name:            "preserves bytes drift",
+			initialData:     []byte("user update\n"),
+			initialMode:     0o640,
+			expectedData:    []byte("original snapshot\n"),
+			expectedMode:    0o640,
+			replacementData: []byte("restored snapshot\n"),
+			replacementMode: 0o600,
+			createTarget:    true,
+			wantErr:         "bytes do not match",
+		},
+		{
+			name:            "preserves mode drift",
+			initialData:     []byte("original snapshot\n"),
+			initialMode:     0o600,
+			expectedData:    []byte("original snapshot\n"),
+			expectedMode:    0o640,
+			replacementData: []byte("restored snapshot\n"),
+			replacementMode: 0o600,
+			createTarget:    true,
+			wantErr:         "mode does not match",
+		},
+		{
+			name:            "fails when the existing target is missing",
+			expectedData:    []byte("original snapshot\n"),
+			expectedMode:    0o640,
+			replacementData: []byte("restored snapshot\n"),
+			replacementMode: 0o600,
+			wantErr:         "destination is missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "safe", "config.txt")
+			if err := os.Mkdir(filepath.Join(root, "safe"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.createTarget {
+				if err := os.WriteFile(path, tt.initialData, tt.initialMode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, tt.initialMode); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			err := ReplaceIfMatches(root, "safe/config.txt", tt.expectedData, tt.expectedMode, tt.replacementData, tt.replacementMode)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ReplaceIfMatches() error = %v, want substring %q", err, tt.wantErr)
+				}
+				if tt.createTarget {
+					assertFile(t, path, tt.initialData, tt.initialMode)
+				}
+			} else if err != nil {
+				t.Fatalf("ReplaceIfMatches() error = %v", err)
+			} else {
+				assertFile(t, path, tt.replacementData, tt.replacementMode)
+			}
+
+			assertNoTemporaryFiles(t, root)
+		})
+	}
+}
+
 func assertFile(t *testing.T, path string, wantData []byte, wantMode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)

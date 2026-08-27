@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/refactor-ia/cortex/schemas/install-state.schema.json",
+  "title": "Cortex installed-state manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "scope", "runtime", "rootKind", "snapshotFingerprint", "artifacts"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "owner": {"type": "string", "const": "cortex"},
+    "scope": {"type": "string", "const": "user"},
+    "runtime": {"type": "string", "enum": ["pi", "opencode", "claude-code"]},
+    "rootKind": {"type": "string", "enum": ["pi-user-agent", "opencode-user-config", "claude-code-user"]},
+    "snapshotFingerprint": {"$ref": "#/$defs/hash"},
+    "artifacts": {
+      "type": "object", "minProperties": 1, "propertyNames": {"$ref": "#/$defs/logicalID"},
+      "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["relativePath", "sha256"], "properties": {"relativePath": {"type": "string", "maxLength": 80, "pattern": "^skills/cortex-(?!cortex-)[a-z0-9]+(?:-[a-z0-9]+)*/SKILL\\.md(?![\\s\\S])"}, "sha256": {"$ref": "#/$defs/hash"}}}
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"runtime": {"const": "pi"}}, "required": ["runtime"]}, "then": {"properties": {"rootKind": {"const": "pi-user-agent"}}}},
+    {"if": {"properties": {"runtime": {"const": "opencode"}}, "required": ["runtime"]}, "then": {"properties": {"rootKind": {"const": "opencode-user-config"}}}},
+    {"if": {"properties": {"runtime": {"const": "claude-code"}}, "required": ["runtime"]}, "then": {"properties": {"rootKind": {"const": "claude-code-user"}}}}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}(?![\\s\\S])"},
+    "logicalID": {"type": "string", "maxLength": 64, "pattern": "^skills/(?!cortex-)[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"}
+  }
+}

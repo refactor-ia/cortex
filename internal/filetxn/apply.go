@@ -19,17 +19,33 @@ type Write struct {
 	Mode fs.FileMode
 }
 
+// Remove describes one authorized source-root-relative file removal. ExpectedData
+// and ExpectedMode are the exact evidence that must match the snapshot and target.
+type Remove struct {
+	Path         string
+	ExpectedData []byte
+	ExpectedMode fs.FileMode
+}
+
+// Operation describes exactly one replacement or removal.
+type Operation struct {
+	Write  *Write
+	Remove *Remove
+}
+
 type applyDependencies struct {
 	capture          func(string, string, string, []string) (Snapshot, error)
 	verify           func(string, string) error
 	replace          func(string, string, []byte, fs.FileMode) error
 	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
+	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
 	removeIfMatches  func(string, string, []byte) error
 }
 
 type operation struct {
-	write Write
-	path  string
+	write  *Write
+	remove *Remove
+	path   string
 }
 
 // Apply captures one durable snapshot and applies all writes or rolls them back.
@@ -37,15 +53,31 @@ func Apply(sourceRoot, backupRoot, backupName string, writes []Write) (Snapshot,
 	return apply(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, writes)
 }
 
+// ApplyOperations captures one durable snapshot and applies ordered replacements
+// and removals or rolls completed operations back in reverse order.
+func ApplyOperations(sourceRoot, backupRoot, backupName string, operations []Operation) (Snapshot, error) {
+	return applyOperations(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, operations)
+}
+
 func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
 		capture: Capture, verify: Verify, replace: atomicfile.Replace,
-		replaceIfMatches: atomicfile.ReplaceIfMatches, removeIfMatches: atomicfile.RemoveIfMatches,
+		replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
+		removeIfMatches: atomicfile.RemoveIfMatches,
 	}
 }
 
 func apply(deps applyDependencies, sourceRoot, backupRoot, backupName string, writes []Write) (Snapshot, error) {
-	operations, err := prepareOperations(sourceRoot, writes)
+	operations := make([]Operation, len(writes))
+	for index := range writes {
+		write := writes[index]
+		operations[index] = Operation{Write: &write}
+	}
+	return applyOperations(deps, sourceRoot, backupRoot, backupName, operations)
+}
+
+func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName string, raw []Operation) (Snapshot, error) {
+	operations, err := prepareOperations(sourceRoot, raw)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -60,39 +92,98 @@ func apply(deps applyDependencies, sourceRoot, backupRoot, backupName string, wr
 	if err := deps.verify(backupRoot, backupName); err != nil {
 		return snapshot, fmt.Errorf("apply verify snapshot: %w", err)
 	}
+	if err := verifyRemovalEvidence(snapshot, operations); err != nil {
+		return snapshot, err
+	}
 
 	attempted := make([]operation, 0, len(operations))
 	for _, operation := range operations {
 		attempted = append(attempted, operation)
-		if err := deps.replace(sourceRoot, operation.path, operation.write.Data, operation.write.Mode); err != nil {
-			applyErr := fmt.Errorf("apply write %s: %w", operation.path, err)
+		var err error
+		if operation.write != nil {
+			err = deps.replace(sourceRoot, operation.path, operation.write.Data, operation.write.Mode)
+		} else {
+			var matches bool
+			matches, err = targetMatches(sourceRoot, operation.path, operation.remove.ExpectedData, operation.remove.ExpectedMode)
+			if err == nil && !matches {
+				err = errors.New("target does not match authorized evidence")
+			}
+			if err == nil {
+				err = deps.removeIfMatches(sourceRoot, operation.path, operation.remove.ExpectedData)
+			}
+		}
+		if err != nil {
+			kind := "remove"
+			if operation.write != nil {
+				kind = "write"
+			}
+			applyErr := fmt.Errorf("apply %s %s: %w", kind, operation.path, err)
 			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted))
 		}
 	}
 	return snapshot, nil
 }
 
-func prepareOperations(sourceRoot string, writes []Write) ([]operation, error) {
-	if len(writes) == 0 {
-		return nil, fmt.Errorf("apply writes are empty")
+func prepareOperations(sourceRoot string, raw []Operation) ([]operation, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("apply operations are empty")
 	}
-	operations := make([]operation, 0, len(writes))
-	seen := make(map[string]struct{}, len(writes))
-	for _, write := range writes {
-		if write.Mode&^fs.FileMode(0o777) != 0 {
-			return nil, fmt.Errorf("apply write has unsupported mode")
+	operations := make([]operation, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, rawOperation := range raw {
+		if (rawOperation.Write == nil) == (rawOperation.Remove == nil) {
+			return nil, fmt.Errorf("apply operation must specify exactly one action")
 		}
-		if _, err := safepath.Resolve(sourceRoot, write.Path); err != nil {
-			return nil, fmt.Errorf("apply write path is unsafe: %w", err)
+		var path string
+		var write *Write
+		var remove *Remove
+		if rawOperation.Write != nil {
+			if rawOperation.Write.Mode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply write has unsupported mode")
+			}
+			path = rawOperation.Write.Path
+			copy := Write{Path: path, Data: append([]byte(nil), rawOperation.Write.Data...), Mode: rawOperation.Write.Mode}
+			write = &copy
+		} else {
+			if rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply remove has unsupported expected mode")
+			}
+			path = rawOperation.Remove.Path
+			copy := Remove{Path: path, ExpectedData: append([]byte(nil), rawOperation.Remove.ExpectedData...), ExpectedMode: rawOperation.Remove.ExpectedMode}
+			remove = &copy
 		}
-		path := filepath.ToSlash(filepath.Clean(write.Path))
+		if _, err := safepath.Resolve(sourceRoot, path); err != nil {
+			return nil, fmt.Errorf("apply operation path is unsafe: %w", err)
+		}
+		path = filepath.ToSlash(filepath.Clean(path))
 		if _, exists := seen[path]; exists {
-			return nil, fmt.Errorf("apply write path is duplicated: %s", path)
+			return nil, fmt.Errorf("apply operation path is duplicated: %s", path)
 		}
 		seen[path] = struct{}{}
-		operations = append(operations, operation{write: Write{Path: path, Data: append([]byte(nil), write.Data...), Mode: write.Mode}, path: path})
+		operations = append(operations, operation{write: write, remove: remove, path: path})
 	}
 	return operations, nil
+}
+
+func verifyRemovalEvidence(snapshot Snapshot, operations []operation) error {
+	entries := make(map[string]Entry, len(snapshot.Manifest.Entries))
+	for _, entry := range snapshot.Manifest.Entries {
+		entries[entry.Path] = entry
+	}
+	for _, operation := range operations {
+		if operation.remove == nil {
+			continue
+		}
+		entry, exists := entries[operation.path]
+		if !exists || !entry.Exists || fs.FileMode(entry.Mode).Perm() != operation.remove.ExpectedMode.Perm() {
+			return fmt.Errorf("apply remove evidence does not match snapshot")
+		}
+		payload, err := snapshotPayload(snapshot.Dir, entry.Path)
+		if err != nil || !bytes.Equal(payload, operation.remove.ExpectedData) {
+			return fmt.Errorf("apply remove evidence does not match snapshot")
+		}
+	}
+	return nil
 }
 
 func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string, snapshot Snapshot, attempted []operation) error {
@@ -122,6 +213,12 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 	for index := len(attempted) - 1; index >= 0; index-- {
 		operation := attempted[index]
 		entry := entries[operation.path]
+		if operation.remove != nil {
+			if err := restoreRemoved(deps, sourceRoot, operation, entry, payloads[entry.Path]); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore %s: %w", operation.path, err))
+			}
+			continue
+		}
 		if entry.Exists {
 			original := payloads[entry.Path]
 			matches, err := targetMatches(sourceRoot, operation.path, original, fs.FileMode(entry.Mode))
@@ -144,6 +241,20 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 		return fmt.Errorf("rollback failed; caller intervention required: %w", rollbackErr)
 	}
 	return nil
+}
+
+func restoreRemoved(deps applyDependencies, sourceRoot string, operation operation, entry Entry, payload []byte) error {
+	if !entry.Exists {
+		return errors.New("snapshot entry is absent")
+	}
+	matches, err := targetMatches(sourceRoot, operation.path, payload, fs.FileMode(entry.Mode))
+	if err != nil {
+		return err
+	}
+	if matches {
+		return nil
+	}
+	return deps.restoreIfAbsent(sourceRoot, operation.path, payload, fs.FileMode(entry.Mode))
 }
 
 func snapshotPayload(snapshotDir, path string) ([]byte, error) {
@@ -175,4 +286,61 @@ func targetMatches(root, path string, data []byte, mode fs.FileMode) (bool, erro
 		return false, err
 	}
 	return bytes.Equal(actual, data) && info.Mode().Perm() == mode.Perm(), nil
+}
+
+func restoreIfAbsent(root, path string, data []byte, mode fs.FileMode) (resultErr error) {
+	target, err := safepath.Resolve(root, path)
+	if err != nil {
+		return err
+	}
+	parentInfo, err := os.Lstat(filepath.Dir(target))
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("target parent is missing or invalid")
+	}
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
+	if err != nil {
+		return errors.New("target changed after removal")
+	}
+	open := true
+	defer func() {
+		if open {
+			resultErr = errors.Join(resultErr, file.Close())
+		}
+	}()
+	if err := file.Chmod(mode.Perm()); err != nil {
+		return err
+	}
+	written, err := file.Write(data)
+	if err != nil || written != len(data) {
+		return errors.New("restore target write failed")
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	open = false
+	directory, err := os.Open(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	directoryOpen := true
+	defer func() {
+		if directoryOpen {
+			resultErr = errors.Join(resultErr, directory.Close())
+		}
+	}()
+	if err := directory.Sync(); err != nil {
+		return err
+	}
+	if err := directory.Close(); err != nil {
+		return err
+	}
+	directoryOpen = false
+	matches, err := targetMatches(root, path, data, mode)
+	if err != nil || !matches {
+		return errors.New("restore target readback failed")
+	}
+	return nil
 }

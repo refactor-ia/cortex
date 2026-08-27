@@ -187,6 +187,149 @@ func TestApplyPreservesUserDriftAndRequiresIntervention(t *testing.T) {
 	}
 }
 
+func TestApplyOperationsRemovesVerifiedFile(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "stale.txt"), []byte("owned"), 0o640)
+
+	snapshot, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("removed target remains: %v", err)
+	}
+	if !snapshot.Manifest.Entries[0].Exists || snapshot.Manifest.Entries[0].Mode != 0o640 {
+		t.Fatalf("snapshot = %#v", snapshot.Manifest.Entries)
+	}
+	if err := Verify(backups, "batch"); err != nil {
+		t.Fatalf("Verify() after removal = %v", err)
+	}
+}
+
+func TestApplyOperationsRestoresRemovedFileWithoutOverwritingDrift(t *testing.T) {
+	for _, drift := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drift %t", drift), func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(root, "stale.txt"), []byte("owned"), 0o640)
+			deps := defaultApplyDependencies()
+			deps.replace = func(root, path string, data []byte, mode fs.FileMode) error {
+				if path == "later.txt" {
+					if drift {
+						if err := atomicfile.Replace(root, "stale.txt", []byte("user drift"), 0o600); err != nil {
+							return err
+						}
+					}
+					return errors.New("injected later failure")
+				}
+				return atomicfile.Replace(root, path, data, mode)
+			}
+			_, err := applyOperations(deps, root, backups, "batch", []Operation{
+				{Remove: &Remove{Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640}},
+				{Write: &Write{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "injected later failure") {
+				t.Fatalf("ApplyOperations() error = %v", err)
+			}
+			if drift {
+				if !strings.Contains(err.Error(), "caller intervention required") {
+					t.Fatalf("ApplyOperations() error = %v", err)
+				}
+				assertFile(t, filepath.Join(root, "stale.txt"), "user drift", 0o600)
+				return
+			}
+			assertFile(t, filepath.Join(root, "stale.txt"), "owned", 0o640)
+		})
+	}
+}
+
+func TestApplyOperationsRejectsRemovalEvidenceThatDoesNotMatchSnapshot(t *testing.T) {
+	for _, removal := range []Remove{
+		{Path: "stale.txt", ExpectedData: []byte("other"), ExpectedMode: 0o640},
+		{Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o600},
+	} {
+		root, backups := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(root, "stale.txt"), []byte("owned"), 0o640)
+		_, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &removal}})
+		if err == nil || !strings.Contains(err.Error(), "evidence does not match snapshot") {
+			t.Fatalf("ApplyOperations() error = %v", err)
+		}
+		assertFile(t, filepath.Join(root, "stale.txt"), "owned", 0o640)
+		if err := Verify(backups, "batch"); err != nil {
+			t.Fatalf("Verify() after rejected removal = %v", err)
+		}
+	}
+}
+
+func TestApplyOperationsRejectsTargetDriftBeforeRemoval(t *testing.T) {
+	for _, drift := range []struct {
+		data []byte
+		mode fs.FileMode
+	}{
+		{data: []byte("user drift"), mode: 0o640},
+		{data: []byte("owned"), mode: 0o600},
+	} {
+		root, backups := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(root, "stale.txt"), []byte("owned"), 0o640)
+		deps := defaultApplyDependencies()
+		deps.capture = func(root, backupRoot, backupName string, paths []string) (Snapshot, error) {
+			snapshot, err := Capture(root, backupRoot, backupName, paths)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			return snapshot, atomicfile.Replace(root, "stale.txt", drift.data, drift.mode)
+		}
+		_, err := applyOperations(deps, root, backups, "batch", []Operation{{Remove: &Remove{
+			Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640,
+		}}})
+		if err == nil || !strings.Contains(err.Error(), "authorized evidence") {
+			t.Fatalf("ApplyOperations() error = %v", err)
+		}
+		assertFile(t, filepath.Join(root, "stale.txt"), string(drift.data), drift.mode)
+	}
+}
+
+func TestApplyOperationsPreservesCallerOrderAndRollsBackInReverse(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "stale.txt"), []byte("owned"), 0o640)
+	deps := defaultApplyDependencies()
+	var calls []string
+	deps.replace = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, "replace:"+path)
+		if err := atomicfile.Replace(root, path, data, mode); err != nil {
+			return err
+		}
+		if path == "later.txt" {
+			return errors.New("injected later failure")
+		}
+		return nil
+	}
+	deps.removeIfMatches = func(root, path string, data []byte) error {
+		calls = append(calls, "remove:"+path)
+		return atomicfile.RemoveIfMatches(root, path, data)
+	}
+	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, "restore:"+path)
+		return restoreIfAbsent(root, path, data, mode)
+	}
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{
+		{Write: &Write{Path: "first.txt", Data: []byte("first"), Mode: 0o600}},
+		{Remove: &Remove{Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640}},
+		{Write: &Write{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
+	})
+	if err == nil || strings.Join(calls, ",") != "replace:first.txt,remove:stale.txt,replace:later.txt,remove:later.txt,restore:stale.txt,remove:first.txt" {
+		t.Fatalf("ApplyOperations() error = %v, calls = %v", err, calls)
+	}
+	assertFile(t, filepath.Join(root, "stale.txt"), "owned", 0o640)
+	if _, err := os.Lstat(filepath.Join(root, "first.txt")); !os.IsNotExist(err) {
+		t.Fatalf("first target remains: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "later.txt")); !os.IsNotExist(err) {
+		t.Fatalf("later target remains: %v", err)
+	}
+}
+
 func assertFile(t *testing.T, path, want string, mode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)

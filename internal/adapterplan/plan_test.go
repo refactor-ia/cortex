@@ -215,6 +215,126 @@ func TestBuildReturnsIndependentSlices(t *testing.T) {
 		t.Errorf("fresh Build() shared mutable slices: %#v", fresh)
 	}
 }
+
+func TestValidateAcceptsBuildOutputsWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name         string
+		observations []runtimematrix.Observation
+	}{
+		{name: "mixed", observations: []runtimematrix.Observation{
+			{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+			{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
+			{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: runtimematrix.Compatible},
+		}},
+		{name: "all", observations: compatibleObservations()},
+		{name: "none", observations: []runtimematrix.Observation{
+			{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+			{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
+			{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := Build(fingerprint, tt.observations)
+			if err != nil {
+				t.Fatalf("Build() error = %v", err)
+			}
+			original := clonePlan(plan)
+			if err := Validate(plan); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if !reflect.DeepEqual(plan, original) {
+				t.Errorf("Validate() mutated plan: %#v, want %#v", plan, original)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsTamperedPlansWithoutLeaksOrMutation(t *testing.T) {
+	all := mustBuild(t, compatibleObservations())
+	none := mustBuild(t, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+	})
+	tests := []struct {
+		name string
+		plan Plan
+	}{
+		{name: "invalid fingerprint", plan: withPlan(all, func(plan *Plan) { plan.SnapshotFingerprint = "private-fingerprint" })},
+		{name: "nil results", plan: withPlan(all, func(plan *Plan) { plan.Results = nil })},
+		{name: "short results", plan: withPlan(all, func(plan *Plan) { plan.Results = plan.Results[:2] })},
+		{name: "long results", plan: withPlan(all, func(plan *Plan) { plan.Results = append(plan.Results, plan.Results[0]) })},
+		{name: "reordered results", plan: withPlan(all, func(plan *Plan) { plan.Results[0], plan.Results[1] = plan.Results[1], plan.Results[0] })},
+		{name: "duplicate result", plan: withPlan(all, func(plan *Plan) { plan.Results[1] = plan.Results[0] })},
+		{name: "unknown result", plan: withPlan(all, func(plan *Plan) { plan.Results[0].ID = "unknown-runtime" })},
+		{name: "unknown outcome", plan: withPlan(all, func(plan *Plan) { plan.Results[0].Outcome = "unknown-outcome" })},
+		{name: "unknown action", plan: withPlan(all, func(plan *Plan) { plan.Results[0].Action = "unknown-action" })},
+		{name: "incoherent outcome", plan: withPlan(all, func(plan *Plan) { plan.Results[0].Outcome = runtimematrix.OutcomeAbsent })},
+		{name: "incoherent action", plan: withPlan(all, func(plan *Plan) { plan.Results[0].Action = runtimematrix.Warn })},
+		{name: "incoherent inclusion", plan: withPlan(all, func(plan *Plan) { plan.Results[0].IncludeInTransaction = false })},
+		{name: "incoherent touch", plan: withPlan(all, func(plan *Plan) { plan.Results[0].TouchAllowed = false })},
+		{name: "nil targets", plan: withPlan(all, func(plan *Plan) { plan.TransactionTargets = nil })},
+		{name: "missing target", plan: withPlan(all, func(plan *Plan) { plan.TransactionTargets = plan.TransactionTargets[:2] })},
+		{name: "reordered targets", plan: withPlan(all, func(plan *Plan) {
+			plan.TransactionTargets[0], plan.TransactionTargets[1] = plan.TransactionTargets[1], plan.TransactionTargets[0]
+		})},
+		{name: "duplicate target", plan: withPlan(all, func(plan *Plan) { plan.TransactionTargets[1] = plan.TransactionTargets[0] })},
+		{name: "unknown target", plan: withPlan(all, func(plan *Plan) { plan.TransactionTargets[0] = "unknown-runtime" })},
+		{name: "extra target", plan: withPlan(all, func(plan *Plan) { plan.TransactionTargets = append(plan.TransactionTargets, "unknown-runtime") })},
+		{name: "nonempty all-or-nothing mismatch", plan: withPlan(all, func(plan *Plan) { plan.AllOrNothing = false })},
+		{name: "nonempty report-only mismatch", plan: withPlan(all, func(plan *Plan) { plan.ReportOnly = true })},
+		{name: "empty all-or-nothing mismatch", plan: withPlan(none, func(plan *Plan) { plan.AllOrNothing = true })},
+		{name: "empty report-only mismatch", plan: withPlan(none, func(plan *Plan) { plan.ReportOnly = false })},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := clonePlan(tt.plan)
+			err := Validate(tt.plan)
+			if err == nil {
+				t.Fatal("Validate() error = nil, want error")
+			}
+			if err.Error() != "adapter plan: invalid plan" {
+				t.Errorf("Validate() error = %q, want generic error", err)
+			}
+			for _, forbidden := range []string{"private-fingerprint", "unknown-runtime", "unknown-outcome", "unknown-action", "1.0.0", "2.0.0", "3.0.0"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Errorf("Validate() error %q leaked %q", err, forbidden)
+				}
+			}
+			if !reflect.DeepEqual(tt.plan, original) {
+				t.Errorf("Validate() mutated plan: %#v, want %#v", tt.plan, original)
+			}
+		})
+	}
+}
+
+func mustBuild(t *testing.T, observations []runtimematrix.Observation) Plan {
+	t.Helper()
+	plan, err := Build(fingerprint, observations)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	return plan
+}
+
+func withPlan(plan Plan, mutate func(*Plan)) Plan {
+	clone := clonePlan(plan)
+	mutate(&clone)
+	return clone
+}
+
+func clonePlan(plan Plan) Plan {
+	clone := plan
+	if plan.Results != nil {
+		clone.Results = append(make([]RuntimeResult, 0, len(plan.Results)), plan.Results...)
+	}
+	if plan.TransactionTargets != nil {
+		clone.TransactionTargets = append(make([]runtimematrix.RuntimeID, 0, len(plan.TransactionTargets)), plan.TransactionTargets...)
+	}
+	return clone
+}
+
 func compatibleObservations() []runtimematrix.Observation {
 	return []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},

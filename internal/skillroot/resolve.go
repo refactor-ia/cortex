@@ -22,6 +22,23 @@ type Inputs struct {
 	ClaudeConfigDir  string
 }
 
+// UninstallRoot binds one supported runtime to its canonical Cortex-owned user root.
+// Its values are immutable, and ResolveUninstallRoots returns a detached slice.
+type UninstallRoot struct {
+	runtimeID runtimematrix.RuntimeID
+	rootKind  skilldest.RootKind
+	rootPath  string
+}
+
+// RuntimeID returns the bound supported runtime.
+func (root UninstallRoot) RuntimeID() runtimematrix.RuntimeID { return root.runtimeID }
+
+// RootKind returns the approved symbolic user root.
+func (root UninstallRoot) RootKind() skilldest.RootKind { return root.rootKind }
+
+// RootPath returns the canonical absolute user root without materializing it.
+func (root UninstallRoot) RootPath() string { return root.rootPath }
+
 // Plan is an immutable resolved skill destination plan.
 type Plan struct {
 	runtimeID, snapshotFingerprint string
@@ -84,6 +101,38 @@ func ResolveSystem(symbolic skilldest.Plan) (Plan, error) {
 		return Plan{}, invalid()
 	}
 	return Resolve(symbolic, Inputs{Home: home, PiCodingAgentDir: os.Getenv("PI_CODING_AGENT_DIR"), ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR")})
+}
+
+// ResolveUninstallRoots resolves all supported runtime roots without a desired plan or I/O.
+// It returns detached descriptors in canonical Pi, OpenCode, Claude Code order.
+func ResolveUninstallRoots(inputs Inputs) ([]UninstallRoot, error) {
+	if !validPath(inputs.Home) {
+		return nil, invalid()
+	}
+	runtimes := []runtimematrix.RuntimeID{
+		runtimematrix.RuntimePi,
+		runtimematrix.RuntimeOpenCode,
+		runtimematrix.RuntimeClaudeCode,
+	}
+	roots := make([]UninstallRoot, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		rootPath, ok := resolveRoot(runtime, inputs)
+		rootKind := expectedRoot(runtime)
+		if !ok || rootKind == "" || !validPath(rootPath) {
+			return nil, invalid()
+		}
+		roots = append(roots, UninstallRoot{runtimeID: runtime, rootKind: rootKind, rootPath: rootPath})
+	}
+	return roots, nil
+}
+
+// ResolveSystemUninstallRoots reads only the system home and documented Pi and Claude overrides.
+func ResolveSystemUninstallRoots() ([]UninstallRoot, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, invalid()
+	}
+	return ResolveUninstallRoots(Inputs{Home: home, PiCodingAgentDir: os.Getenv("PI_CODING_AGENT_DIR"), ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR")})
 }
 
 func resolveRoot(runtime runtimematrix.RuntimeID, in Inputs) (string, bool) {

@@ -3,6 +3,7 @@ package skillroot_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,95 @@ func TestResolveIsDeterministicAndDetached(t *testing.T) {
 	content[0] ^= 1
 	if first.Targets()[0].LogicalID() != "skills/a" || bytes.Equal(content, first.Targets()[0].Content()) {
 		t.Fatal("resolved plan exposed mutable state")
+	}
+}
+
+func TestResolveUninstallRoots(t *testing.T) {
+	home, piRoot, claudeRoot := t.TempDir(), t.TempDir(), t.TempDir()
+	roots, err := skillroot.ResolveUninstallRoots(skillroot.Inputs{
+		Home:             home,
+		PiCodingAgentDir: piRoot,
+		ClaudeConfigDir:  claudeRoot,
+	})
+	if err != nil {
+		t.Fatalf("ResolveUninstallRoots() error = %v", err)
+	}
+	want := []struct {
+		runtime runtimematrix.RuntimeID
+		kind    skilldest.RootKind
+		path    string
+	}{
+		{runtimematrix.RuntimePi, skilldest.RootKindPiUserAgent, piRoot},
+		{runtimematrix.RuntimeOpenCode, skilldest.RootKindOpenCodeUserConfig, filepath.Join(home, ".config", "opencode")},
+		{runtimematrix.RuntimeClaudeCode, skilldest.RootKindClaudeCodeUser, claudeRoot},
+	}
+	if len(roots) != len(want) {
+		t.Fatalf("ResolveUninstallRoots() returned %d roots, want %d", len(roots), len(want))
+	}
+	seenRuntimes, seenKinds := map[runtimematrix.RuntimeID]bool{}, map[skilldest.RootKind]bool{}
+	for index, expected := range want {
+		root := roots[index]
+		if root.RuntimeID() != expected.runtime || root.RootKind() != expected.kind || root.RootPath() != expected.path {
+			t.Fatalf("root %d = (%q, %q, %q), want (%q, %q, %q)", index, root.RuntimeID(), root.RootKind(), root.RootPath(), expected.runtime, expected.kind, expected.path)
+		}
+		if seenRuntimes[root.RuntimeID()] || seenKinds[root.RootKind()] {
+			t.Fatalf("duplicate root descriptor %#v", root)
+		}
+		seenRuntimes[root.RuntimeID()] = true
+		seenKinds[root.RootKind()] = true
+	}
+
+	for _, override := range []struct{ input, path string }{
+		{piRoot, piRoot},
+		{"~", home},
+		{"~" + string(filepath.Separator) + "custom", filepath.Join(home, "custom")},
+	} {
+		got, err := skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home, PiCodingAgentDir: override.input, ClaudeConfigDir: claudeRoot})
+		if err != nil || got[0].RootPath() != override.path || got[1].RootPath() != filepath.Join(home, ".config", "opencode") || got[2].RootPath() != claudeRoot {
+			t.Fatalf("override %q = (%#v, %v)", override.input, got, err)
+		}
+	}
+
+	roots[0] = roots[1]
+	fresh, err := skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home, PiCodingAgentDir: piRoot, ClaudeConfigDir: claudeRoot})
+	if err != nil || fresh[0].RuntimeID() != runtimematrix.RuntimePi || fresh[0].RootPath() != piRoot {
+		t.Fatalf("roots exposed mutable state: (%#v, %v)", fresh, err)
+	}
+}
+
+func TestResolveUninstallRootsDefaultsAndUnsafeInputs(t *testing.T) {
+	home := t.TempDir()
+	roots, err := skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home})
+	if err != nil {
+		t.Fatalf("ResolveUninstallRoots() error = %v", err)
+	}
+	if roots[0].RootPath() != filepath.Join(home, ".pi", "agent") || roots[1].RootPath() != filepath.Join(home, ".config", "opencode") || roots[2].RootPath() != filepath.Join(home, ".claude") {
+		t.Fatalf("default roots = %#v", roots)
+	}
+	for _, root := range roots {
+		if _, err := os.Stat(root.RootPath()); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("nonexistent root %q changed state: %v", root.RootPath(), err)
+		}
+	}
+
+	invalidInputs := []skillroot.Inputs{
+		{},
+		{Home: "relative"},
+		{Home: home + string(filepath.Separator) + ".."},
+		{Home: string(filepath.Separator)},
+		{Home: home, PiCodingAgentDir: "relative"},
+		{Home: home, PiCodingAgentDir: "~user"},
+		{Home: home, PiCodingAgentDir: "~" + string(filepath.Separator) + "."},
+		{Home: home, PiCodingAgentDir: home + string(filepath.Separator) + ".."},
+		{Home: home, ClaudeConfigDir: "relative"},
+		{Home: home, ClaudeConfigDir: "~/claude"},
+		{Home: home, ClaudeConfigDir: home + string(filepath.Separator) + ".."},
+	}
+	for _, inputs := range invalidInputs {
+		got, err := skillroot.ResolveUninstallRoots(inputs)
+		if err == nil || got != nil || err.Error() != "skill root: invalid plan" {
+			t.Fatalf("ResolveUninstallRoots(%#v) = (%#v, %v)", inputs, got, err)
+		}
 	}
 }
 

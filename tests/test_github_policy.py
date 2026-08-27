@@ -208,16 +208,18 @@ class GitHubPolicyTests(unittest.TestCase):
                 rf'(?m)^\s*if \[\[ ! "\$PR_BRANCH" =~ {re.escape(BRANCH_PATTERN)} \]\]; then$'
             ),
         )
-        pattern_match = re.search(
-            r're\.findall\(\s*(r"(?:[^"\\]|\\.)*")\s*,', script
-        )
+        pattern_match = re.search(r're\.findall\(\s*(r"(?:[^"\\]|\\.)*")\s*,', script)
         if pattern_match is None:
             self.fail("workflow must find issue references with a regular expression")
         issue_reference_pattern = re.compile(ast.literal_eval(pattern_match.group(1)))
         for keyword in ("Refs", "Closes", "Fixes", "Resolves"):
             with self.subTest(keyword=keyword):
-                self.assertEqual(issue_reference_pattern.findall(f"{keyword} #42"), ["42"])
-                self.assertEqual(issue_reference_pattern.findall(f"{keyword.upper()} #42"), ["42"])
+                self.assertEqual(
+                    issue_reference_pattern.findall(f"{keyword} #42"), ["42"]
+                )
+                self.assertEqual(
+                    issue_reference_pattern.findall(f"{keyword.upper()} #42"), ["42"]
+                )
         for invalid_body in (
             "Reference #42",
             "Refs #0",

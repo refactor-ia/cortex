@@ -2,6 +2,8 @@ package installobserve
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/fs"
@@ -40,9 +42,11 @@ func DefaultOptions() Options {
 // FilesystemObservation is neutral input for Classify. It grants no authority
 // to touch a filesystem path.
 type FilesystemObservation struct {
-	prior *PriorState
-	slots []SlotObservation
-	exact map[string]ExactFile
+	prior   *PriorState
+	slots   []SlotObservation
+	exact   map[string]ExactFile
+	binding [sha256.Size]byte
+	bound   bool
 }
 
 // ExactFile is transaction-only evidence for one present canonical logical file.
@@ -84,10 +88,18 @@ func (observation FilesystemObservation) Exact(logicalID string) (ExactFile, boo
 	return file.clone(), true
 }
 
+// MatchesCandidate reports whether this successful observation is bound to the
+// exact validated candidate. The private binding never exposes path or digest data.
+func (observation FilesystemObservation) MatchesCandidate(candidate installplan.Plan) bool {
+	binding, valid := candidateBinding(candidate)
+	return observation.bound && valid && observation.binding == binding
+}
+
 // Observe reads only the canonical state file and slots named by candidate or
 // prior state. It does not discover paths, mutate the filesystem, or infer ownership.
 func Observe(candidate installplan.Plan, options Options) (FilesystemObservation, error) {
-	if !validOptions(options) || !validFilesystemCandidate(candidate, options.MaxEntries) {
+	binding, valid := candidateBinding(candidate)
+	if !validOptions(options) || !valid || len(candidate.InstalledState().Artifacts()) > options.MaxEntries {
 		return FilesystemObservation{}, filesystemInvalid()
 	}
 
@@ -139,7 +151,7 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 		}
 		slots = append(slots, SlotObservation{LogicalID: id, Present: exists, SHA256: digest})
 	}
-	return FilesystemObservation{prior: prior, slots: slots, exact: exact}, nil
+	return FilesystemObservation{prior: prior, slots: slots, exact: exact, binding: binding, bound: true}, nil
 }
 
 func validOptions(options Options) bool {
@@ -158,12 +170,88 @@ func validFilesystemCandidate(candidate installplan.Plan, maxEntries int) bool {
 	}
 	for index, artifact := range manifest.Artifacts() {
 		file := files[index]
-		if file.Role() != "skill" || file.LogicalID() != artifact.LogicalID() || file.RelativePath() != artifact.RelativePath() || file.SHA256() != artifact.SHA256() || file.AbsolutePath() != filepath.Join(candidate.RootPath(), filepath.FromSlash(artifact.RelativePath())) || hash(file.Content()) != file.SHA256() {
+		if file.Role() != "skill" || file.LogicalID() != artifact.LogicalID() || file.RelativePath() != artifact.RelativePath() || file.SHA256() != artifact.SHA256() || file.DesiredMode() != installplan.CanonicalFileMode || file.AbsolutePath() != filepath.Join(candidate.RootPath(), filepath.FromSlash(artifact.RelativePath())) || hash(file.Content()) != file.SHA256() {
 			return false
 		}
 	}
 	stateFile := files[len(files)-1]
-	return stateFile.Role() == "state" && stateFile.LogicalID() == "state/install-state" && stateFile.RelativePath() == ".cortex/install-state.json" && stateFile.AbsolutePath() == filepath.Join(candidate.RootPath(), ".cortex", "install-state.json") && stateFile.SHA256() == hash(state) && bytes.Equal(stateFile.Content(), state)
+	return stateFile.Role() == "state" && stateFile.LogicalID() == "state/install-state" && stateFile.RelativePath() == ".cortex/install-state.json" && stateFile.DesiredMode() == installplan.CanonicalFileMode && stateFile.AbsolutePath() == filepath.Join(candidate.RootPath(), ".cortex", "install-state.json") && stateFile.SHA256() == hash(state) && bytes.Equal(stateFile.Content(), state)
+}
+
+func candidateBinding(candidate installplan.Plan) ([sha256.Size]byte, bool) {
+	var zero [sha256.Size]byte
+	manifest := candidate.InstalledState()
+	if !validFilesystemCandidate(candidate, len(manifest.Artifacts())) {
+		return zero, false
+	}
+
+	binding := sha256.New()
+	bindingField(binding, []byte("cortex/installobserve/candidate/v1"))
+	bindingString(binding, string(candidate.RuntimeID()))
+	bindingString(binding, string(candidate.RootKind()))
+	bindingString(binding, candidate.RootPath())
+	bindingString(binding, candidate.SnapshotFingerprint())
+	bindingField(binding, candidate.StateJSON())
+	files := candidate.Files()
+	bindingUint(binding, uint64(len(files)))
+	for _, file := range files {
+		bindingString(binding, file.Role())
+		bindingString(binding, file.LogicalID())
+		bindingString(binding, file.RelativePath())
+		bindingString(binding, file.AbsolutePath())
+		bindingString(binding, file.SHA256())
+		bindingUint(binding, uint64(file.DesiredMode()))
+		bindingField(binding, file.Content())
+	}
+
+	bundle, present := candidate.Bundle()
+	if !present {
+		bindingField(binding, []byte{0})
+	} else {
+		bindingField(binding, []byte{1})
+		bundleManifest := bundle.Manifest()
+		bindingUint(binding, uint64(bundleManifest.SchemaVersion()))
+		bindingString(binding, bundleManifest.Owner())
+		bindingString(binding, bundleManifest.SnapshotFingerprint())
+		bindingString(binding, string(bundleManifest.RuntimeID()))
+		bindingString(binding, string(bundleManifest.ProjectionResult()))
+		bindingString(binding, bundleManifest.TranslationDisclosure())
+		manifestArtifacts := bundleManifest.Artifacts()
+		bindingUint(binding, uint64(len(manifestArtifacts)))
+		for _, artifact := range manifestArtifacts {
+			bindingString(binding, artifact.LogicalID())
+			bindingString(binding, artifact.SHA256())
+		}
+		bundleArtifacts := bundle.Artifacts()
+		bindingUint(binding, uint64(len(bundleArtifacts)))
+		for _, artifact := range bundleArtifacts {
+			bindingString(binding, artifact.LogicalID())
+			bindingString(binding, artifact.SHA256())
+			bindingField(binding, artifact.Content())
+		}
+	}
+	var result [sha256.Size]byte
+	copy(result[:], binding.Sum(nil))
+	return result, true
+}
+
+type bindingHasher interface {
+	Write([]byte) (int, error)
+}
+
+func bindingString(binding bindingHasher, value string) { bindingField(binding, []byte(value)) }
+
+func bindingUint(binding bindingHasher, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	bindingField(binding, encoded[:])
+}
+
+func bindingField(binding bindingHasher, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = binding.Write(length[:])
+	_, _ = binding.Write(value)
 }
 
 func readRegular(root, relative string, maximum int64) ([]byte, fs.FileMode, bool, error) {

@@ -30,11 +30,11 @@ jobs:
           import sys
 
           matches = re.findall(
-              r"(?im)^[ \t]*(?:closes|fixes|resolves)[ \t]+#([1-9][0-9]*)[ \t]*$",
+              r"(?im)^[ \t]*(?:refs|closes|fixes|resolves)[ \t]+#([1-9][0-9]*)[ \t]*$",
               os.environ.get("PR_BODY", ""),
           )
           if len(matches) != 1:
-              sys.exit("PR body must contain exactly one issue-closing reference")
+              sys.exit("PR body must contain exactly one issue reference")
           print(matches[0])
           PY
           )"

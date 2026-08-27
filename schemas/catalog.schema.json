@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/refactor-ia/cortex/schemas/catalog.schema.json",
+  "title": "Cortex catalog manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "families"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "families": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reasoning", "model-intelligence", "execution", "quality-assurance", "web",
+        "mobile", "pcsoft", "services", "personal", "memory-integration", "documentation"
+      ],
+      "properties": {
+        "reasoning": {"$ref": "#/$defs/familyManifestPath"},
+        "model-intelligence": {"$ref": "#/$defs/familyManifestPath"},
+        "execution": {"$ref": "#/$defs/familyManifestPath"},
+        "quality-assurance": {"$ref": "#/$defs/familyManifestPath"},
+        "web": {"$ref": "#/$defs/familyManifestPath"},
+        "mobile": {"$ref": "#/$defs/familyManifestPath"},
+        "pcsoft": {"$ref": "#/$defs/familyManifestPath"},
+        "services": {"$ref": "#/$defs/familyManifestPath"},
+        "personal": {"$ref": "#/$defs/familyManifestPath"},
+        "memory-integration": {"$ref": "#/$defs/familyManifestPath"},
+        "documentation": {"$ref": "#/$defs/familyManifestPath"}
+      }
+    }
+  },
+  "$defs": {
+    "familyManifestPath": {
+      "type": "string",
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\]+(?:/[^/\\\\]+)*\\.json(?![\\s\\S])"
+    }
+  }
+}

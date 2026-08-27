@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
+	"github.com/refactor-ia/cortex/internal/artifact"
 	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
@@ -76,6 +77,33 @@ func TestBuildPreservesProjectionOrderAndBoundaries(t *testing.T) {
 	plan, err := installplan.Build(resolve(t, runtimematrix.RuntimeOpenCode, home, []capability{{long, "reasoning"}}))
 	if err != nil || plan.Files()[0].RelativePath() != "skills/cortex-"+long+"/SKILL.md" || plan.InstalledState().Artifacts()[0].RelativePath() != "skills/cortex-"+long+"/SKILL.md" {
 		t.Fatalf("57-character ID = (%#v, %v)", plan, err)
+	}
+}
+
+func TestBuildWithBundleBindsOnlyMatchingArtifacts(t *testing.T) {
+	home := t.TempDir()
+	resolved, bundle := resolveWithBundle(t, runtimematrix.RuntimePi, home, []capability{{"alpha", "reasoning"}})
+	plan, err := installplan.BuildWithBundle(resolved, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned, found := plan.Bundle()
+	if !found || !bytes.Equal(returned.Artifacts()[0].Content(), bundle.Artifacts()[0].Content()) {
+		t.Fatal("BuildWithBundle() did not retain the trusted matching bundle")
+	}
+	legacy, err := installplan.Build(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := legacy.Bundle(); found {
+		t.Fatal("Build() unexpectedly retained a bundle")
+	}
+	_, mismatched := resolveWithBundle(t, runtimematrix.RuntimePi, home, []capability{{"beta", "reasoning"}})
+	if _, err := installplan.BuildWithBundle(resolved, mismatched); err == nil || err.Error() != "install plan: invalid candidate" {
+		t.Fatalf("BuildWithBundle() mismatch error = %v", err)
+	}
+	if _, err := installplan.BuildWithBundle(resolved, artifact.Bundle{}); err == nil || err.Error() != "install plan: invalid candidate" {
+		t.Fatalf("BuildWithBundle() empty error = %v", err)
 	}
 }
 
@@ -158,6 +186,11 @@ func digest(content []byte) string {
 }
 
 func resolve(t *testing.T, runtime runtimematrix.RuntimeID, home string, capabilities []capability) skillroot.Plan {
+	plan, _ := resolveWithBundle(t, runtime, home, capabilities)
+	return plan
+}
+
+func resolveWithBundle(t *testing.T, runtime runtimematrix.RuntimeID, home string, capabilities []capability) (skillroot.Plan, artifact.Bundle) {
 	t.Helper()
 	root, families := t.TempDir(), map[string]string{}
 	for _, family := range catalog.ApprovedFamilyIDs() {
@@ -208,6 +241,10 @@ func resolve(t *testing.T, runtime runtimematrix.RuntimeID, home string, capabil
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundle, ok := binding.Bundle()
+	if !ok {
+		t.Fatal("missing bundle")
+	}
 	symbolic, err := skilldest.Build(binding)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +253,7 @@ func resolve(t *testing.T, runtime runtimematrix.RuntimeID, home string, capabil
 	if err != nil {
 		t.Fatal(err)
 	}
-	return plan
+	return plan, bundle
 }
 
 func writeJSON(t *testing.T, root, path string, value any) {

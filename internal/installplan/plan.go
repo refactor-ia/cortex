@@ -2,12 +2,14 @@
 package installplan
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"strings"
 
+	"github.com/refactor-ia/cortex/internal/artifact"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skilldest"
@@ -24,6 +26,8 @@ type Plan struct {
 	installedState                installstate.Manifest
 	stateJSON                     []byte
 	files                         []File
+	bundle                        artifact.Bundle
+	hasBundle                     bool
 }
 
 func (plan Plan) RuntimeID() runtimematrix.RuntimeID    { return plan.runtimeID }
@@ -32,6 +36,10 @@ func (plan Plan) SnapshotFingerprint() string           { return plan.snapshotFi
 func (plan Plan) RootPath() string                      { return plan.rootPath }
 func (plan Plan) InstalledState() installstate.Manifest { return plan.installedState }
 func (plan Plan) StateJSON() []byte                     { return append([]byte{}, plan.stateJSON...) }
+
+// Bundle returns the trusted desired artifact binding when this plan was built
+// with BuildWithBundle. The returned immutable value grants no touch authority.
+func (plan Plan) Bundle() (artifact.Bundle, bool) { return plan.bundle, plan.hasBundle }
 
 // Files returns a detached, non-nil copy. State-last is ordering intent only:
 // this candidate is not committed, installed, or owned, and TouchAllowed is absent.
@@ -85,8 +93,38 @@ func Build(resolved skillroot.Plan) (Plan, error) {
 		return Plan{}, invalid()
 	}
 	files = append(files, File{"state", "state/install-state", stateRelativePath, stateAbsolute, digest(stateJSON), stateJSON})
-	return Plan{resolved.RuntimeID(), resolved.RootKind(), resolved.SnapshotFingerprint(), root, state, append([]byte{}, stateJSON...), files}, nil
+	return Plan{runtimeID: resolved.RuntimeID(), rootKind: resolved.RootKind(), snapshotFingerprint: resolved.SnapshotFingerprint(), rootPath: root, installedState: state, stateJSON: append([]byte{}, stateJSON...), files: files}, nil
 }
+
+// BuildWithBundle retains a trusted artifact binding only when it exactly matches
+// the resolved candidate. It does not grant ownership or mutation authority.
+func BuildWithBundle(resolved skillroot.Plan, bundle artifact.Bundle) (Plan, error) {
+	plan, err := Build(resolved)
+	if err != nil || !matchesBundle(plan, bundle) {
+		return Plan{}, invalid()
+	}
+	plan.bundle, plan.hasBundle = bundle, true
+	return plan, nil
+}
+
+func matchesBundle(plan Plan, bundle artifact.Bundle) bool {
+	manifest, artifacts := bundle.Manifest(), bundle.Artifacts()
+	if manifest.RuntimeID() != plan.RuntimeID() || manifest.SnapshotFingerprint() != plan.SnapshotFingerprint() || len(artifacts) == 0 || len(artifacts) != len(plan.files)-1 {
+		return false
+	}
+	declared := manifest.Artifacts()
+	if len(declared) != len(artifacts) {
+		return false
+	}
+	for index, artifact := range artifacts {
+		file := plan.files[index]
+		if file.role != "skill" || artifact.LogicalID() != file.logicalID || artifact.SHA256() != file.sha256 || !bytes.Equal(artifact.Content(), file.content) || declared[index].LogicalID() != artifact.LogicalID() || declared[index].SHA256() != artifact.SHA256() {
+			return false
+		}
+	}
+	return true
+}
+
 func sameState(state installstate.Manifest, resolved skillroot.Plan, files []File) bool {
 	if state.RuntimeID() != resolved.RuntimeID() || state.RootKind() != resolved.RootKind() || state.SnapshotFingerprint() != resolved.SnapshotFingerprint() {
 		return false

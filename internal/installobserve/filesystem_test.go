@@ -1,6 +1,7 @@
 package installobserve_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -32,6 +33,37 @@ func TestObserveReadsOnlyCanonicalStateAndSlots(t *testing.T) {
 	}
 }
 
+func TestObserveRetainsExactEvidenceByLogicalID(t *testing.T) {
+	candidate, _ := makeCandidate(t, "one", "alpha")
+	writeCandidateFiles(t, candidate)
+	files := candidate.Files()
+	if err := os.Chmod(files[0].AbsolutePath(), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, found := observed.Exact("skills/alpha")
+	if !found || skill.Mode().Perm() != 0o640 || !bytes.Equal(skill.Bytes(), files[0].Content()) || hashBytes(skill.Bytes()) != observed.Slots()[0].SHA256 {
+		t.Fatal("skill exact evidence did not match bytes, mode, and hash")
+	}
+	state, found := observed.Exact("state/install-state")
+	if !found || !bytes.Equal(state.Bytes(), candidate.StateJSON()) || hashBytes(state.Bytes()) != observed.PriorState().StateSHA256 {
+		t.Fatal("state exact evidence did not match bytes and hash")
+	}
+	mutated := skill.Bytes()
+	mutated[0] ^= 1
+	again, found := observed.Exact("skills/alpha")
+	if !found || bytes.Equal(mutated, again.Bytes()) {
+		t.Fatal("exact evidence exposed mutable bytes")
+	}
+	if _, found := observed.Exact("arbitrary/path"); found {
+		t.Fatal("arbitrary logical ID returned exact evidence")
+	}
+}
+
 func TestObserveTreatsMissingCanonicalStateAsNeutral(t *testing.T) {
 	candidate, _ := makeCandidate(t, "one", "alpha")
 	file := candidate.Files()[0]
@@ -44,10 +76,13 @@ func TestObserveTreatsMissingCanonicalStateAsNeutral(t *testing.T) {
 
 	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
 	if err != nil || observed.PriorState() != nil {
-		t.Fatalf("Observe() = (%#v, %v)", observed, err)
+		t.Fatalf("Observe() did not return a neutral missing-state observation: %v", err)
 	}
 	if slots := observed.Slots(); len(slots) != 1 || !slots[0].Present || slots[0].LogicalID != "skills/alpha" {
 		t.Fatalf("Slots() = %#v", slots)
+	}
+	if _, found := observed.Exact("state/install-state"); found {
+		t.Fatal("absent state retained exact evidence")
 	}
 }
 
@@ -81,13 +116,13 @@ func TestObserveRejectsUnsafeAndBoundedFiles(t *testing.T) {
 			options: installobserve.DefaultOptions(),
 		},
 		{
-			name: "state byte limit",
-			setup: func(t *testing.T, candidate installplan.Plan) { writeCandidateFiles(t, candidate) },
+			name:    "state byte limit",
+			setup:   func(t *testing.T, candidate installplan.Plan) { writeCandidateFiles(t, candidate) },
 			options: installobserve.Options{MaxStateBytes: 1, MaxEntries: 10, MaxFileBytes: 1024},
 		},
 		{
-			name: "file byte limit",
-			setup: func(t *testing.T, candidate installplan.Plan) { writeCandidateFiles(t, candidate) },
+			name:    "file byte limit",
+			setup:   func(t *testing.T, candidate installplan.Plan) { writeCandidateFiles(t, candidate) },
 			options: installobserve.Options{MaxStateBytes: 1024, MaxEntries: 10, MaxFileBytes: 1},
 		},
 	} {

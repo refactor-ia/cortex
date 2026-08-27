@@ -3,6 +3,7 @@
 .env.*
 .ai/
 .atl/
+.codegraph/
 
 # Python
 .venv/

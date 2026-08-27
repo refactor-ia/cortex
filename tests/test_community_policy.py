@@ -40,6 +40,8 @@ EXPECTED_FILES = {
         "internal/installplan/plan_test.go",
         "internal/installobserve/classify.go",
         "internal/installobserve/classify_test.go",
+        "internal/installobserve/filesystem.go",
+        "internal/installobserve/filesystem_test.go",
         "internal/atomicfile/remove.go",
         "internal/atomicfile/remove_test.go",
         "internal/atomicfile/replace.go",
@@ -137,8 +139,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 86)
-                self.assertEqual(len(actual_files), 86)
+                self.assertEqual(len(EXPECTED_FILES), 88)
+                self.assertEqual(len(actual_files), 88)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

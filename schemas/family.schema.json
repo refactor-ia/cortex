@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/refactor-ia/cortex/schemas/family.schema.json",
+  "title": "Cortex family manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "router", "capabilities", "agents"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "id": {
+      "type": "string",
+      "enum": [
+        "reasoning", "model-intelligence", "execution", "quality-assurance", "web",
+        "mobile", "pcsoft", "services", "personal", "memory-integration", "documentation"
+      ]
+    },
+    "router": {"$ref": "#/$defs/routerPath"},
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/capabilityPath"}
+    },
+    "agents": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "pcsoft-expert", "test-runner", "security-audit", "frontend-quality",
+          "flutter-quality", "kb-feeder"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "routerPath": {
+      "type": "string",
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\]+(?:/[^/\\\\]+)*\\.md(?![\\s\\S])"
+    },
+    "capabilityPath": {
+      "type": "string",
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\]+(?:/[^/\\\\]+)*\\.json(?![\\s\\S])"
+    }
+  }
+}

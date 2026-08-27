@@ -2,7 +2,7 @@
 
 ## Linked Issue
 
-Closes #N
+Refs #N
 
 ## PR Type
 

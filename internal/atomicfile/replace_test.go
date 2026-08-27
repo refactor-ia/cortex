@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -282,6 +283,85 @@ func TestReplaceIfMatches(t *testing.T) {
 	}
 }
 
+func TestCreateIfAbsent(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T, path string)
+		wantErr  string
+		wantData []byte
+		wantMode fs.FileMode
+	}{
+		{name: "creates an absent regular file", wantData: []byte("created\n"), wantMode: 0o600},
+		{name: "preserves a concurrent appearance", setup: func(t *testing.T, path string) { writeFile(t, path, []byte("user file")) }, wantErr: "destination already exists", wantData: []byte("user file"), wantMode: 0o644},
+		{name: "rejects a symlink conflict", setup: func(t *testing.T, path string) {
+			target := filepath.Join(filepath.Dir(path), "target")
+			writeFile(t, target, []byte("user file"))
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}, wantErr: "symlink component"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "safe", "config.txt")
+			if err := os.Mkdir(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.setup != nil {
+				tt.setup(t, path)
+			}
+			err := CreateIfAbsent(root, "safe/config.txt", []byte("created\n"), 0o600)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("CreateIfAbsent() error = %v, want %q", err, tt.wantErr)
+				}
+				if tt.wantData != nil {
+					assertFile(t, path, tt.wantData, tt.wantMode)
+				}
+			} else if err != nil {
+				t.Fatalf("CreateIfAbsent() error = %v", err)
+			} else {
+				assertFile(t, path, tt.wantData, tt.wantMode)
+			}
+			assertNoTemporaryFiles(t, root)
+		})
+	}
+}
+
+func TestCreateIfAbsentPreservesConcurrentAppearance(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "safe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start, errs := make(chan struct{}), make(chan error, 2)
+	for _, data := range [][]byte{[]byte("first"), []byte("second")} {
+		go func(data []byte) {
+			ready.Done()
+			<-start
+			errs <- CreateIfAbsent(root, "safe/config.txt", data, 0o600)
+		}(data)
+	}
+	ready.Wait()
+	close(start)
+	successes := 0
+	for range 2 {
+		if <-errs == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful creates = %d, want 1", successes)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "safe/config.txt"))
+	if err != nil || (string(data) != "first" && string(data) != "second") {
+		t.Fatalf("created file = %q, error %v", data, err)
+	}
+	assertNoTemporaryFiles(t, root)
+}
+
 func assertFile(t *testing.T, path string, wantData []byte, wantMode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -310,7 +390,7 @@ func assertNoTemporaryFiles(t *testing.T, root string) {
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(entry.Name(), ".cortex-replace-") {
+		if strings.HasPrefix(entry.Name(), ".cortex-replace-") || strings.HasPrefix(entry.Name(), ".cortex-create-") {
 			t.Fatalf("temporary file remains: %s", path)
 		}
 		return nil

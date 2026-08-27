@@ -70,6 +70,7 @@ func (evidence RemovalEvidence) clone() RemovalEvidence {
 
 // UninstallObservation is detached, bounded evidence from canonical prior state.
 type UninstallObservation struct {
+	rootPath string
 	records  []UninstallRecord
 	exact    map[string]ExactFile
 	removals map[string]RemovalEvidence
@@ -84,6 +85,11 @@ func (observation UninstallObservation) Records() []UninstallRecord {
 
 // Ready reports whether no prior owned file drifted. It grants no touch authority.
 func (observation UninstallObservation) Ready() bool { return observation.ready }
+
+// MatchesRoot reports whether this observation is bound to the given trusted root.
+func (observation UninstallObservation) MatchesRoot(root string) bool {
+	return root != "" && root == observation.rootPath
+}
 
 // RemovalCandidates returns detached records whose removal is supported by exact
 // prior evidence. A conflict globally suppresses every candidate.
@@ -136,7 +142,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 		return UninstallObservation{}, uninstallInvalid()
 	}
 	if !present {
-		return UninstallObservation{records: []UninstallRecord{}, exact: map[string]ExactFile{}, removals: map[string]RemovalEvidence{}, ready: true}, nil
+		return UninstallObservation{rootPath: root.rootPath, records: []UninstallRecord{}, exact: map[string]ExactFile{}, removals: map[string]RemovalEvidence{}, ready: true}, nil
 	}
 	manifest, err := decodeCanonicalUninstallState(state, root, options.MaxEntries)
 	if err != nil {
@@ -171,7 +177,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	exact["state/install-state"] = ExactFile{bytes: append([]byte{}, state...), mode: stateMode}
 	removals["state/install-state"] = RemovalEvidence{destination: ".cortex/install-state.json", exact: exact["state/install-state"]}
 	records = append(records, UninstallRecord{LogicalID: "state/install-state", Status: UninstallRemove, SHA256: stateHash})
-	return UninstallObservation{records: records, exact: exact, removals: removals, ready: !conflict}, nil
+	return UninstallObservation{rootPath: root.rootPath, records: records, exact: exact, removals: removals, ready: !conflict}, nil
 }
 
 func validUninstallRoot(root UninstallRoot) bool {

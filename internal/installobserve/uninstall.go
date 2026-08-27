@@ -47,11 +47,33 @@ type UninstallRecord struct {
 	SHA256    string
 }
 
+// RemovalEvidence is detached transaction-only evidence for one authorized uninstall.
+// It exposes only a canonical relative destination and cloned observed file data.
+type RemovalEvidence struct {
+	destination string
+	exact       ExactFile
+}
+
+// Destination returns the canonical relative destination recorded in prior state.
+func (evidence RemovalEvidence) Destination() string { return evidence.destination }
+
+// Bytes returns a detached copy of the observed file bytes.
+func (evidence RemovalEvidence) Bytes() []byte { return evidence.exact.Bytes() }
+
+// Mode returns the observed file permission mode.
+func (evidence RemovalEvidence) Mode() fs.FileMode { return evidence.exact.Mode() }
+
+func (evidence RemovalEvidence) clone() RemovalEvidence {
+	evidence.exact = evidence.exact.clone()
+	return evidence
+}
+
 // UninstallObservation is detached, bounded evidence from canonical prior state.
 type UninstallObservation struct {
-	records []UninstallRecord
-	exact   map[string]ExactFile
-	ready   bool
+	records  []UninstallRecord
+	exact    map[string]ExactFile
+	removals map[string]RemovalEvidence
+	ready    bool
 }
 
 // Records returns detached logical records in canonical prior-state order, with the
@@ -88,6 +110,20 @@ func (observation UninstallObservation) Exact(logicalID string) (ExactFile, bool
 	return file.clone(), true
 }
 
+// RemovalEvidence returns detached transaction-only evidence for an authorized
+// removal candidate identified by logical ID. Unknown, absent, drifted, and globally
+// suppressed candidates have no removal evidence.
+func (observation UninstallObservation) RemovalEvidence(logicalID string) (RemovalEvidence, bool) {
+	if !observation.ready {
+		return RemovalEvidence{}, false
+	}
+	evidence, found := observation.removals[logicalID]
+	if !found {
+		return RemovalEvidence{}, false
+	}
+	return evidence.clone(), true
+}
+
 // ObserveUninstall reads the canonical state file and only the relative paths
 // explicitly recorded within that canonical state. It does not list, glob,
 // recurse, discover unrelated files, or use a desired installation plan.
@@ -100,7 +136,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 		return UninstallObservation{}, uninstallInvalid()
 	}
 	if !present {
-		return UninstallObservation{records: []UninstallRecord{}, exact: map[string]ExactFile{}, ready: true}, nil
+		return UninstallObservation{records: []UninstallRecord{}, exact: map[string]ExactFile{}, removals: map[string]RemovalEvidence{}, ready: true}, nil
 	}
 	manifest, err := decodeCanonicalUninstallState(state, root, options.MaxEntries)
 	if err != nil {
@@ -110,6 +146,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	artifacts := manifest.Artifacts()
 	records := make([]UninstallRecord, 0, len(artifacts)+1)
 	exact := make(map[string]ExactFile, len(artifacts)+1)
+	removals := make(map[string]RemovalEvidence, len(artifacts)+1)
 	conflict := false
 	for _, artifact := range artifacts {
 		data, mode, exists, err := readRegular(root.rootPath, artifact.RelativePath(), options.MaxFileBytes)
@@ -122,6 +159,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 			exact[record.LogicalID] = ExactFile{bytes: append([]byte{}, data...), mode: mode}
 			if record.SHA256 == artifact.SHA256() {
 				record.Status = UninstallRemove
+				removals[record.LogicalID] = RemovalEvidence{destination: artifact.RelativePath(), exact: exact[record.LogicalID]}
 			} else {
 				record.Status = UninstallConflict
 				conflict = true
@@ -131,8 +169,9 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	}
 	stateHash := hash(state)
 	exact["state/install-state"] = ExactFile{bytes: append([]byte{}, state...), mode: stateMode}
+	removals["state/install-state"] = RemovalEvidence{destination: ".cortex/install-state.json", exact: exact["state/install-state"]}
 	records = append(records, UninstallRecord{LogicalID: "state/install-state", Status: UninstallRemove, SHA256: stateHash})
-	return UninstallObservation{records: records, exact: exact, ready: !conflict}, nil
+	return UninstallObservation{records: records, exact: exact, removals: removals, ready: !conflict}, nil
 }
 
 func validUninstallRoot(root UninstallRoot) bool {

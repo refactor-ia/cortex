@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -108,6 +109,107 @@ func TestObserveUninstallClassifiesCanonicalPriorState(t *testing.T) {
 				if !found || !bytes.Equal(state.Bytes(), candidate.StateJSON()) || state.Mode().Perm() != 0o600 {
 					t.Fatal("missing exact final state evidence")
 				}
+			}
+		})
+	}
+}
+
+func TestObserveUninstallRemovalEvidenceIsCandidateBoundAndDetached(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   func(t *testing.T, candidate installplan.Plan)
+		allowed []string
+		denied  []string
+		modes   map[string]os.FileMode
+	}{
+		{
+			name: "exact skill and final state candidates retain canonical destinations",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				writeCandidateFiles(t, candidate)
+				if err := os.Chmod(candidate.Files()[0].AbsolutePath(), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			},
+			allowed: []string{"skills/alpha", "state/install-state"},
+			denied:  []string{"unknown/logical-id"},
+			modes:   map[string]os.FileMode{"skills/alpha": 0o640},
+		},
+		{
+			name: "missing skill is not removal evidence",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				state := candidate.Files()[len(candidate.Files())-1]
+				if err := os.MkdirAll(filepath.Dir(state.AbsolutePath()), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(state.AbsolutePath(), state.Content(), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			allowed: []string{"state/install-state"},
+			denied:  []string{"skills/alpha", "unknown/logical-id"},
+		},
+		{
+			name: "drift suppresses every removal candidate",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				writeCandidateFiles(t, candidate)
+				if err := os.WriteFile(candidate.Files()[0].AbsolutePath(), []byte("drift"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			denied: []string{"skills/alpha", "state/install-state", "unknown/logical-id"},
+		},
+		{
+			name: "absent state has no removal evidence",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			denied: []string{"skills/alpha", "state/install-state", "unknown/logical-id"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, _ := makeCandidate(t, "one", "alpha")
+			tc.setup(t, candidate)
+			observation, err := installobserve.ObserveUninstall(uninstallRoot(t, candidate), installobserve.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]installplan.File{}
+			for _, file := range candidate.Files() {
+				files[file.LogicalID()] = file
+			}
+			for _, logicalID := range tc.allowed {
+				evidence, found := observation.RemovalEvidence(logicalID)
+				if !found {
+					t.Fatalf("RemovalEvidence(%q) did not return authorized evidence", logicalID)
+				}
+				file := files[logicalID]
+				if destination := evidence.Destination(); destination != file.RelativePath() || filepath.IsAbs(destination) || path.IsAbs(destination) || path.Clean(destination) != destination {
+					t.Fatalf("Destination() = %q, want canonical relative %q", destination, file.RelativePath())
+				}
+				expectedMode := os.FileMode(0o600)
+				if mode, found := tc.modes[logicalID]; found {
+					expectedMode = mode
+				}
+				if !bytes.Equal(evidence.Bytes(), file.Content()) || evidence.Mode().Perm() != expectedMode {
+					t.Fatalf("RemovalEvidence(%q) did not retain exact bytes and mode", logicalID)
+				}
+				mutated := evidence.Bytes()
+				mutated[0] ^= 1
+				again, found := observation.RemovalEvidence(logicalID)
+				if !found || bytes.Equal(mutated, again.Bytes()) {
+					t.Fatalf("RemovalEvidence(%q) exposed mutable bytes", logicalID)
+				}
+			}
+			for _, logicalID := range tc.denied {
+				if _, found := observation.RemovalEvidence(logicalID); found {
+					t.Fatalf("RemovalEvidence(%q) returned unauthorized evidence", logicalID)
+				}
+			}
+			candidates := observation.RemovalCandidates()
+			if len(candidates) > 0 && candidates[len(candidates)-1].LogicalID != "state/install-state" {
+				t.Fatalf("state file was not the final authorized candidate: %#v", candidates)
 			}
 		})
 	}

@@ -19,6 +19,24 @@ type Write struct {
 	Mode fs.FileMode
 }
 
+// Create describes one source-root-relative file creation that must not overwrite
+// an existing target.
+type Create struct {
+	Path string
+	Data []byte
+	Mode fs.FileMode
+}
+
+// Replace describes one source-root-relative replacement. ExpectedData and
+// ExpectedMode are the exact evidence that must match the snapshot and target.
+type Replace struct {
+	Path         string
+	ExpectedData []byte
+	ExpectedMode fs.FileMode
+	Data         []byte
+	Mode         fs.FileMode
+}
+
 // Remove describes one authorized source-root-relative file removal. ExpectedData
 // and ExpectedMode are the exact evidence that must match the snapshot and target.
 type Remove struct {
@@ -27,25 +45,30 @@ type Remove struct {
 	ExpectedMode fs.FileMode
 }
 
-// Operation describes exactly one replacement or removal.
+// Operation describes exactly one write, create, replace, or removal.
 type Operation struct {
-	Write  *Write
-	Remove *Remove
+	Write   *Write
+	Create  *Create
+	Replace *Replace
+	Remove  *Remove
 }
 
 type applyDependencies struct {
 	capture          func(string, string, string, []string) (Snapshot, error)
 	verify           func(string, string) error
 	replace          func(string, string, []byte, fs.FileMode) error
+	createIfAbsent   func(string, string, []byte, fs.FileMode) error
 	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
 	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
 	removeIfMatches  func(string, string, []byte) error
 }
 
 type operation struct {
-	write  *Write
-	remove *Remove
-	path   string
+	write   *Write
+	create  *Create
+	replace *Replace
+	remove  *Remove
+	path    string
 }
 
 // Apply captures one durable snapshot and applies all writes or rolls them back.
@@ -53,8 +76,8 @@ func Apply(sourceRoot, backupRoot, backupName string, writes []Write) (Snapshot,
 	return apply(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, writes)
 }
 
-// ApplyOperations captures one durable snapshot and applies ordered replacements
-// and removals or rolls completed operations back in reverse order.
+// ApplyOperations captures one durable snapshot and applies ordered writes,
+// creates, replacements, and removals or rolls completed operations back in reverse order.
 func ApplyOperations(sourceRoot, backupRoot, backupName string, operations []Operation) (Snapshot, error) {
 	return applyOperations(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, operations)
 }
@@ -62,7 +85,7 @@ func ApplyOperations(sourceRoot, backupRoot, backupName string, operations []Ope
 func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
 		capture: Capture, verify: Verify, replace: atomicfile.Replace,
-		replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
+		createIfAbsent: atomicfile.CreateIfAbsent, replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
 		removeIfMatches: atomicfile.RemoveIfMatches,
 	}
 }
@@ -92,7 +115,7 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 	if err := deps.verify(backupRoot, backupName); err != nil {
 		return snapshot, fmt.Errorf("apply verify snapshot: %w", err)
 	}
-	if err := verifyRemovalEvidence(snapshot, operations); err != nil {
+	if err := verifyOperationEvidence(snapshot, operations); err != nil {
 		return snapshot, err
 	}
 
@@ -100,9 +123,25 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 	for _, operation := range operations {
 		attempted = append(attempted, operation)
 		var err error
-		if operation.write != nil {
+		kind := "write"
+		switch {
+		case operation.write != nil:
 			err = deps.replace(sourceRoot, operation.path, operation.write.Data, operation.write.Mode)
-		} else {
+		case operation.create != nil:
+			kind = "create"
+			err = deps.createIfAbsent(sourceRoot, operation.path, operation.create.Data, operation.create.Mode)
+		case operation.replace != nil:
+			kind = "replace"
+			var matches bool
+			matches, err = targetMatches(sourceRoot, operation.path, operation.replace.ExpectedData, operation.replace.ExpectedMode)
+			if err == nil && !matches {
+				err = errors.New("target does not match authorized evidence")
+			}
+			if err == nil {
+				err = deps.replaceIfMatches(sourceRoot, operation.path, operation.replace.ExpectedData, operation.replace.ExpectedMode, operation.replace.Data, operation.replace.Mode)
+			}
+		default:
+			kind = "remove"
 			var matches bool
 			matches, err = targetMatches(sourceRoot, operation.path, operation.remove.ExpectedData, operation.remove.ExpectedMode)
 			if err == nil && !matches {
@@ -113,10 +152,6 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 			}
 		}
 		if err != nil {
-			kind := "remove"
-			if operation.write != nil {
-				kind = "write"
-			}
 			applyErr := fmt.Errorf("apply %s %s: %w", kind, operation.path, err)
 			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted))
 		}
@@ -131,26 +166,46 @@ func prepareOperations(sourceRoot string, raw []Operation) ([]operation, error) 
 	operations := make([]operation, 0, len(raw))
 	seen := make(map[string]struct{}, len(raw))
 	for _, rawOperation := range raw {
-		if (rawOperation.Write == nil) == (rawOperation.Remove == nil) {
+		actions := 0
+		for _, present := range []bool{rawOperation.Write != nil, rawOperation.Create != nil, rawOperation.Replace != nil, rawOperation.Remove != nil} {
+			if present {
+				actions++
+			}
+		}
+		if actions != 1 {
 			return nil, fmt.Errorf("apply operation must specify exactly one action")
 		}
 		var path string
-		var write *Write
-		var remove *Remove
-		if rawOperation.Write != nil {
+		operation := operation{}
+		switch {
+		case rawOperation.Write != nil:
 			if rawOperation.Write.Mode&^fs.FileMode(0o777) != 0 {
 				return nil, fmt.Errorf("apply write has unsupported mode")
 			}
 			path = rawOperation.Write.Path
 			copy := Write{Path: path, Data: append([]byte(nil), rawOperation.Write.Data...), Mode: rawOperation.Write.Mode}
-			write = &copy
-		} else {
+			operation.write = &copy
+		case rawOperation.Create != nil:
+			if rawOperation.Create.Mode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply create has unsupported mode")
+			}
+			path = rawOperation.Create.Path
+			copy := Create{Path: path, Data: append([]byte(nil), rawOperation.Create.Data...), Mode: rawOperation.Create.Mode}
+			operation.create = &copy
+		case rawOperation.Replace != nil:
+			if rawOperation.Replace.ExpectedData == nil || rawOperation.Replace.ExpectedMode&^fs.FileMode(0o777) != 0 || rawOperation.Replace.Mode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply replace has missing or unsupported evidence")
+			}
+			path = rawOperation.Replace.Path
+			copy := Replace{Path: path, ExpectedData: append([]byte(nil), rawOperation.Replace.ExpectedData...), ExpectedMode: rawOperation.Replace.ExpectedMode, Data: append([]byte(nil), rawOperation.Replace.Data...), Mode: rawOperation.Replace.Mode}
+			operation.replace = &copy
+		case rawOperation.Remove != nil:
 			if rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
 				return nil, fmt.Errorf("apply remove has unsupported expected mode")
 			}
 			path = rawOperation.Remove.Path
 			copy := Remove{Path: path, ExpectedData: append([]byte(nil), rawOperation.Remove.ExpectedData...), ExpectedMode: rawOperation.Remove.ExpectedMode}
-			remove = &copy
+			operation.remove = &copy
 		}
 		if _, err := safepath.Resolve(sourceRoot, path); err != nil {
 			return nil, fmt.Errorf("apply operation path is unsafe: %w", err)
@@ -160,27 +215,44 @@ func prepareOperations(sourceRoot string, raw []Operation) ([]operation, error) 
 			return nil, fmt.Errorf("apply operation path is duplicated: %s", path)
 		}
 		seen[path] = struct{}{}
-		operations = append(operations, operation{write: write, remove: remove, path: path})
+		operation.path = path
+		operations = append(operations, operation)
 	}
 	return operations, nil
 }
 
-func verifyRemovalEvidence(snapshot Snapshot, operations []operation) error {
+func verifyOperationEvidence(snapshot Snapshot, operations []operation) error {
 	entries := make(map[string]Entry, len(snapshot.Manifest.Entries))
 	for _, entry := range snapshot.Manifest.Entries {
 		entries[entry.Path] = entry
 	}
 	for _, operation := range operations {
-		if operation.remove == nil {
+		entry, exists := entries[operation.path]
+		if !exists {
+			return fmt.Errorf("apply operation snapshot entry is missing")
+		}
+		if operation.create != nil {
+			if entry.Exists {
+				return fmt.Errorf("apply create evidence does not match snapshot")
+			}
 			continue
 		}
-		entry, exists := entries[operation.path]
-		if !exists || !entry.Exists || fs.FileMode(entry.Mode).Perm() != operation.remove.ExpectedMode.Perm() {
-			return fmt.Errorf("apply remove evidence does not match snapshot")
+		var expected []byte
+		var expectedMode fs.FileMode
+		kind := "remove"
+		if operation.replace != nil {
+			expected, expectedMode, kind = operation.replace.ExpectedData, operation.replace.ExpectedMode, "replace"
+		} else if operation.remove != nil {
+			expected, expectedMode = operation.remove.ExpectedData, operation.remove.ExpectedMode
+		} else {
+			continue
+		}
+		if !entry.Exists || fs.FileMode(entry.Mode).Perm() != expectedMode.Perm() {
+			return fmt.Errorf("apply %s evidence does not match snapshot", kind)
 		}
 		payload, err := snapshotPayload(snapshot.Dir, entry.Path)
-		if err != nil || !bytes.Equal(payload, operation.remove.ExpectedData) {
-			return fmt.Errorf("apply remove evidence does not match snapshot")
+		if err != nil || !bytes.Equal(payload, expected) {
+			return fmt.Errorf("apply %s evidence does not match snapshot", kind)
 		}
 	}
 	return nil
@@ -219,14 +291,27 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 			}
 			continue
 		}
+		if operation.create != nil {
+			if err := removeCreated(deps, sourceRoot, operation); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove %s: %w", operation.path, err))
+			}
+			continue
+		}
 		if entry.Exists {
 			original := payloads[entry.Path]
+			var desiredData []byte
+			var desiredMode fs.FileMode
+			if operation.replace != nil {
+				desiredData, desiredMode = operation.replace.Data, operation.replace.Mode
+			} else {
+				desiredData, desiredMode = operation.write.Data, operation.write.Mode
+			}
 			matches, err := targetMatches(sourceRoot, operation.path, original, fs.FileMode(entry.Mode))
 			if err == nil && matches {
 				continue
 			}
 			if err == nil {
-				err = deps.replaceIfMatches(sourceRoot, operation.path, operation.write.Data, operation.write.Mode, original, fs.FileMode(entry.Mode))
+				err = deps.replaceIfMatches(sourceRoot, operation.path, desiredData, desiredMode, original, fs.FileMode(entry.Mode))
 			}
 			if err != nil {
 				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore %s: %w", operation.path, err))
@@ -241,6 +326,24 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 		return fmt.Errorf("rollback failed; caller intervention required: %w", rollbackErr)
 	}
 	return nil
+}
+
+func removeCreated(deps applyDependencies, sourceRoot string, operation operation) error {
+	matches, err := targetMatches(sourceRoot, operation.path, operation.create.Data, operation.create.Mode)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		target, err := safepath.Resolve(sourceRoot, operation.path)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(target); os.IsNotExist(err) {
+			return nil
+		}
+		return errors.New("target changed after create")
+	}
+	return deps.removeIfMatches(sourceRoot, operation.path, operation.create.Data)
 }
 
 func restoreRemoved(deps applyDependencies, sourceRoot string, operation operation, entry Entry, payload []byte) error {

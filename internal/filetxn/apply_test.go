@@ -330,6 +330,201 @@ func TestApplyOperationsPreservesCallerOrderAndRollsBackInReverse(t *testing.T) 
 	}
 }
 
+func TestPrepareOperationsRejectsInvalidConditionalEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ops  []Operation
+	}{
+		{"missing replace bytes", []Operation{{Replace: &Replace{Path: "a.txt", ExpectedMode: 0o600, Mode: 0o600}}}},
+		{"unsupported create mode", []Operation{{Create: &Create{Path: "a.txt", Mode: fs.ModeSetuid | 0o600}}}},
+		{"duplicate paths", []Operation{
+			{Create: &Create{Path: "a.txt", Mode: 0o600}},
+			{Replace: &Replace{Path: "a.txt", ExpectedData: []byte{}, ExpectedMode: 0o600, Mode: 0o600}},
+		}},
+		{"contradictory actions", []Operation{{
+			Create:  &Create{Path: "a.txt", Mode: 0o600},
+			Replace: &Replace{Path: "a.txt", ExpectedData: []byte{}, ExpectedMode: 0o600, Mode: 0o600},
+		}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := prepareOperations(t.TempDir(), tt.ops); err == nil {
+				t.Fatal("prepareOperations() error = nil")
+			}
+		})
+	}
+}
+
+func TestApplyOperationsConditionalCreateAndReplace(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		operations []Operation
+		setup      func(t *testing.T, root string)
+		verify     func(t *testing.T, root string)
+	}{
+		{
+			name:       "create",
+			operations: []Operation{{Create: &Create{Path: "created.txt", Data: []byte("created"), Mode: 0o600}}},
+			verify: func(t *testing.T, root string) {
+				assertFile(t, filepath.Join(root, "created.txt"), "created", 0o600)
+			},
+		},
+		{
+			name: "replace",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "existing.txt"), []byte("original"), 0o640)
+			},
+			operations: []Operation{{Replace: &Replace{
+				Path: "existing.txt", ExpectedData: []byte("original"), ExpectedMode: 0o640,
+				Data: []byte("replacement"), Mode: 0o600,
+			}}},
+			verify: func(t *testing.T, root string) {
+				assertFile(t, filepath.Join(root, "existing.txt"), "replacement", 0o600)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			if tt.setup != nil {
+				tt.setup(t, root)
+			}
+			if _, err := ApplyOperations(root, backups, "batch", tt.operations); err != nil {
+				t.Fatal(err)
+			}
+			tt.verify(t, root)
+		})
+	}
+}
+
+func TestApplyOperationsConditionalCreateRejectsExistingTarget(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("existing"), 0o640)
+	_, err := ApplyOperations(root, backups, "batch", []Operation{{Create: &Create{
+		Path: "existing.txt", Data: []byte("created"), Mode: 0o600,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "create evidence") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "existing", 0o640)
+}
+
+func TestApplyOperationsConditionalReplaceRejectsPreApplyDrift(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("original"), 0o640)
+	deps := defaultApplyDependencies()
+	deps.capture = func(root, backupRoot, backupName string, paths []string) (Snapshot, error) {
+		snapshot, err := Capture(root, backupRoot, backupName, paths)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		return snapshot, atomicfile.Replace(root, "existing.txt", []byte("drift"), 0o640)
+	}
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{{Replace: &Replace{
+		Path: "existing.txt", ExpectedData: []byte("original"), ExpectedMode: 0o640,
+		Data: []byte("replacement"), Mode: 0o600,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "authorized evidence") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "drift", 0o640)
+}
+
+func TestApplyOperationsConditionalCreateRollbackPreservesDrift(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	deps := defaultApplyDependencies()
+	deps.replace = func(root, path string, data []byte, mode fs.FileMode) error {
+		if err := atomicfile.Replace(root, path, data, mode); err != nil {
+			return err
+		}
+		if err := atomicfile.Replace(root, "created.txt", []byte("user drift"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("injected write failure")
+	}
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{
+		{Create: &Create{Path: "created.txt", Data: []byte("created"), Mode: 0o600}},
+		{Write: &Write{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "caller intervention required") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	assertFile(t, filepath.Join(root, "created.txt"), "user drift", 0o644)
+	if _, err := os.Lstat(filepath.Join(root, "later.txt")); !os.IsNotExist(err) {
+		t.Fatalf("later target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsConditionalReplaceRollbackPreservesDrift(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("original"), 0o640)
+	deps := defaultApplyDependencies()
+	deps.createIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
+		if err := atomicfile.CreateIfAbsent(root, path, data, mode); err != nil {
+			return err
+		}
+		if err := atomicfile.Replace(root, "existing.txt", []byte("user drift"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("injected create failure")
+	}
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{
+		{Replace: &Replace{Path: "existing.txt", ExpectedData: []byte("original"), ExpectedMode: 0o640, Data: []byte("replacement"), Mode: 0o600}},
+		{Create: &Create{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "caller intervention required") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "user drift", 0o600)
+	if _, err := os.Lstat(filepath.Join(root, "later.txt")); !os.IsNotExist(err) {
+		t.Fatalf("later target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsConditionalMixedRollbackIsReverse(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("original"), 0o640)
+	writeFile(t, filepath.Join(root, "stale.txt"), []byte("stale"), 0o640)
+	deps := defaultApplyDependencies()
+	var calls []string
+	deps.createIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, "create:"+path)
+		if err := atomicfile.CreateIfAbsent(root, path, data, mode); err != nil {
+			return err
+		}
+		if path == "later.txt" {
+			return errors.New("injected create failure")
+		}
+		return nil
+	}
+	deps.replaceIfMatches = func(root, path string, expected []byte, expectedMode fs.FileMode, data []byte, mode fs.FileMode) error {
+		calls = append(calls, "replace:"+path)
+		return atomicfile.ReplaceIfMatches(root, path, expected, expectedMode, data, mode)
+	}
+	deps.removeIfMatches = func(root, path string, data []byte) error {
+		calls = append(calls, "remove:"+path)
+		return atomicfile.RemoveIfMatches(root, path, data)
+	}
+	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, "restore:"+path)
+		return restoreIfAbsent(root, path, data, mode)
+	}
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{
+		{Create: &Create{Path: "created.txt", Data: []byte("created"), Mode: 0o600}},
+		{Replace: &Replace{Path: "existing.txt", ExpectedData: []byte("original"), ExpectedMode: 0o640, Data: []byte("replacement"), Mode: 0o600}},
+		{Remove: &Remove{Path: "stale.txt", ExpectedData: []byte("stale"), ExpectedMode: 0o640}},
+		{Create: &Create{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
+	})
+	if err == nil || strings.Join(calls, ",") != "create:created.txt,replace:existing.txt,remove:stale.txt,create:later.txt,remove:later.txt,restore:stale.txt,replace:existing.txt,remove:created.txt" {
+		t.Fatalf("ApplyOperations() error = %v, calls = %v", err, calls)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "original", 0o640)
+	assertFile(t, filepath.Join(root, "stale.txt"), "stale", 0o640)
+	for _, path := range []string{"created.txt", "later.txt"} {
+		if _, err := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Fatalf("created target remains: %s: %v", path, err)
+		}
+	}
+}
+
 func assertFile(t *testing.T, path, want string, mode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/refactor-ia/cortex/schemas/artifact.schema.json",
+  "title": "Cortex generated artifact manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "snapshotFingerprint", "runtime", "projectionResult", "artifacts"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "owner": {"type": "string", "const": "cortex"},
+    "snapshotFingerprint": {"$ref": "#/$defs/fingerprint"},
+    "runtime": {"type": "string", "enum": ["pi", "opencode", "claude-code"]},
+    "projectionResult": {"type": "string", "enum": ["exact", "translated"]},
+    "translationDisclosure": {"$ref": "#/$defs/disclosure"},
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/logicalArtifactID"},
+      "additionalProperties": {"$ref": "#/$defs/fingerprint"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"projectionResult": {"const": "exact"}}, "required": ["projectionResult"]},
+      "then": {"not": {"required": ["translationDisclosure"]}}
+    },
+    {
+      "if": {"properties": {"projectionResult": {"const": "translated"}}, "required": ["projectionResult"]},
+      "then": {"required": ["translationDisclosure"]}
+    }
+  ],
+  "$defs": {
+    "fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}(?![\\s\\S])"},
+    "logicalArtifactID": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*(?![\\s\\S])"},
+    "disclosure": {"type": "string", "pattern": "^[^\\u0009-\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF](?:[^\\r\\n\\u2028\\u2029]*[^\\u0009-\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF])?(?![\\s\\S])"}
+  }
+}

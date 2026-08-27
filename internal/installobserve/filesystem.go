@@ -2,10 +2,9 @@ package installobserve
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +17,7 @@ import (
 
 const (
 	DefaultMaxStateBytes int64 = 1 << 20
-	DefaultMaxEntries         = 1024
+	DefaultMaxEntries          = 1024
 	DefaultMaxFileBytes  int64 = 8 << 20
 )
 
@@ -43,7 +42,23 @@ func DefaultOptions() Options {
 type FilesystemObservation struct {
 	prior *PriorState
 	slots []SlotObservation
+	exact map[string]ExactFile
 }
+
+// ExactFile is transaction-only evidence for one present canonical logical file.
+// Its bytes are never serialized or persisted, and it grants no touch authority.
+type ExactFile struct {
+	bytes []byte
+	mode  fs.FileMode
+}
+
+// Bytes returns a detached copy of the observed bytes.
+func (file ExactFile) Bytes() []byte { return append([]byte{}, file.bytes...) }
+
+// Mode returns the observed permission mode.
+func (file ExactFile) Mode() fs.FileMode { return file.mode }
+
+func (file ExactFile) clone() ExactFile { file.bytes = file.Bytes(); return file }
 
 // PriorState returns a detached prior state, or nil when no state file exists.
 func (observation FilesystemObservation) PriorState() *PriorState {
@@ -59,6 +74,16 @@ func (observation FilesystemObservation) Slots() []SlotObservation {
 	return append(make([]SlotObservation, 0, len(observation.slots)), observation.slots...)
 }
 
+// Exact returns detached transaction-only evidence for a canonical logical ID.
+// Arbitrary filesystem paths and absent files have no exact evidence.
+func (observation FilesystemObservation) Exact(logicalID string) (ExactFile, bool) {
+	file, found := observation.exact[logicalID]
+	if !found {
+		return ExactFile{}, false
+	}
+	return file.clone(), true
+}
+
 // Observe reads only the canonical state file and slots named by candidate or
 // prior state. It does not discover paths, mutate the filesystem, or infer ownership.
 func Observe(candidate installplan.Plan, options Options) (FilesystemObservation, error) {
@@ -72,10 +97,11 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 		paths[artifact.LogicalID()] = artifact.RelativePath()
 	}
 
-	state, present, err := readRegular(candidate.RootPath(), ".cortex/install-state.json", options.MaxStateBytes)
+	state, stateMode, present, err := readRegular(candidate.RootPath(), ".cortex/install-state.json", options.MaxStateBytes)
 	if err != nil {
 		return FilesystemObservation{}, filesystemInvalid()
 	}
+	exact := make(map[string]ExactFile, len(current.Artifacts())+1)
 	var prior *PriorState
 	if present {
 		manifest, err := installstate.Decode(state)
@@ -89,6 +115,7 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 			paths[artifact.LogicalID()] = artifact.RelativePath()
 		}
 		prior = &PriorState{Manifest: manifest, StateSHA256: hash(state)}
+		exact["state/install-state"] = ExactFile{bytes: append([]byte{}, state...), mode: stateMode}
 	}
 	if len(paths) > options.MaxEntries {
 		return FilesystemObservation{}, filesystemInvalid()
@@ -101,13 +128,18 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 	sort.Strings(ids)
 	slots := make([]SlotObservation, 0, len(ids))
 	for _, id := range ids {
-		digest, exists, err := hashRegular(candidate.RootPath(), paths[id], options.MaxFileBytes)
+		data, mode, exists, err := readRegular(candidate.RootPath(), paths[id], options.MaxFileBytes)
 		if err != nil {
 			return FilesystemObservation{}, filesystemInvalid()
 		}
+		digest := ""
+		if exists {
+			digest = hash(data)
+			exact[id] = ExactFile{bytes: append([]byte{}, data...), mode: mode}
+		}
 		slots = append(slots, SlotObservation{LogicalID: id, Present: exists, SHA256: digest})
 	}
-	return FilesystemObservation{prior: prior, slots: slots}, nil
+	return FilesystemObservation{prior: prior, slots: slots, exact: exact}, nil
 }
 
 func validOptions(options Options) bool {
@@ -134,39 +166,25 @@ func validFilesystemCandidate(candidate installplan.Plan, maxEntries int) bool {
 	return stateFile.Role() == "state" && stateFile.LogicalID() == "state/install-state" && stateFile.RelativePath() == ".cortex/install-state.json" && stateFile.AbsolutePath() == filepath.Join(candidate.RootPath(), ".cortex", "install-state.json") && stateFile.SHA256() == hash(state) && bytes.Equal(stateFile.Content(), state)
 }
 
-func readRegular(root, relative string, maximum int64) ([]byte, bool, error) {
+func readRegular(root, relative string, maximum int64) ([]byte, fs.FileMode, bool, error) {
 	path, exists, err := existingRegular(root, relative)
 	if err != nil || !exists {
-		return nil, exists, err
+		return nil, 0, exists, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, 0, false, errors.New("read regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil || int64(len(data)) > maximum {
-		return nil, false, errors.New("read regular file")
+		return nil, 0, false, errors.New("read regular file")
 	}
-	return data, true, nil
-}
-
-func hashRegular(root, relative string, maximum int64) (string, bool, error) {
-	path, exists, err := existingRegular(root, relative)
-	if err != nil || !exists {
-		return "", exists, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", false, err
-	}
-	defer file.Close()
-	digest := sha256.New()
-	count, err := io.Copy(digest, io.LimitReader(file, maximum+1))
-	if err != nil || count > maximum {
-		return "", false, errors.New("hash regular file")
-	}
-	return hex.EncodeToString(digest.Sum(nil)), true, nil
+	return data, info.Mode().Perm(), true, nil
 }
 
 func existingRegular(root, relative string) (string, bool, error) {

@@ -1,6 +1,7 @@
 package installobserve_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -58,6 +59,23 @@ func TestClassifyOwnershipLifecycle(t *testing.T) {
 				t.Fatalf("ownership.Build() = (%#v, %v)", plan, err)
 			}
 		})
+	}
+}
+
+func TestPlanRetainsTrustedBundleWithoutExposingMutableState(t *testing.T) {
+	candidate, expected := makeCandidate(t, "one", "alpha")
+	bundle, found := candidate.Bundle()
+	if !found || !reflect.DeepEqual(bundle.Manifest(), expected.Manifest()) {
+		t.Fatalf("Bundle() = (%#v, %t)", bundle, found)
+	}
+	content := bundle.Artifacts()[0].Content()
+	content[0] ^= 1
+	again, found := candidate.Bundle()
+	if !found || bytes.Equal(content, again.Artifacts()[0].Content()) {
+		t.Fatal("plan exposed mutable trusted bundle content")
+	}
+	if _, err := ownership.Build(again, nil); err != nil {
+		t.Fatalf("ownership.Build() = %v", err)
 	}
 }
 
@@ -148,7 +166,7 @@ func makeCandidate(t *testing.T, version string, ids ...string) (installplan.Pla
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := installplan.Build(resolved)
+	plan, err := installplan.BuildWithBundle(resolved, bundle)
 	if err != nil {
 		t.Fatal(err)
 	}

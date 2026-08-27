@@ -26,6 +26,7 @@ EXPECTED_FILES = {
         "docs/README.md",
         "docs/architecture/overview.md",
         "go.mod",
+        "cmd/cortex/main.go",
         "internal/artifact/bundle.go",
         "internal/artifact/bundle_test.go",
         "internal/artifact/manifest.go",
@@ -70,6 +71,8 @@ EXPECTED_FILES = {
         "internal/catalog/snapshot.go",
         "internal/catalog/snapshot_test.go",
         "internal/catalog/load_test.go",
+        "internal/cli/doctor.go",
+        "internal/cli/doctor_test.go",
         "internal/skillrender/render.go",
         "internal/skillrender/render_test.go",
         "internal/skillprojection/project.go",
@@ -149,8 +152,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 98)
-                self.assertEqual(len(actual_files), 98)
+                self.assertEqual(len(EXPECTED_FILES), 101)
+                self.assertEqual(len(actual_files), 101)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

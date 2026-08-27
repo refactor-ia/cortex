@@ -130,7 +130,7 @@ func TestRunDoctor(t *testing.T) {
 }
 
 func TestRunRejectsInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"doctor", "extra"}, {"install"}, {"uninstall"}, {"update"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"doctor", "extra"}, {"install"}, {"update"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if got := Run(context.Background(), args, &stdout, &stderr, readyRunner()); got != 64 {

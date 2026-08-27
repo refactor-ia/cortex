@@ -3,28 +3,67 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
+	"github.com/refactor-ia/cortex/internal/skillroot"
+	"github.com/refactor-ia/cortex/internal/uninstalltxn"
 )
 
 const (
-	exitOK      = 0
-	exitUnknown = 2
-	exitUsage   = 64
-	exitFailure = 70
+	exitOK          = 0
+	exitUnknown     = 2
+	exitConflict    = 3
+	exitTransaction = 4
+	exitUsage       = 64
+	exitFailure     = 70
 )
+
+type uninstallDependencies struct {
+	resolveRoots func() ([]skillroot.UninstallRoot, error)
+	rootExists   func(string) (bool, error)
+	observe      func(installobserve.UninstallRoot, installobserve.Options) (installobserve.UninstallObservation, error)
+	apply        func(string, installobserve.UninstallObservation, string, string) (uninstalltxn.Result, error)
+	backupName   func() string
+}
+
+type uninstallPreflight struct {
+	root        skillroot.UninstallRoot
+	observation installobserve.UninstallObservation
+	status      string
+}
 
 // Run executes one Cortex command with the supplied runtime probe seam.
 // A nil runner selects the constrained production system probe.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	if len(args) != 1 || args[0] != "doctor" {
+	return runWithUninstallDependencies(ctx, args, stdout, stderr, runner, defaultUninstallDependencies())
+}
+
+func runWithUninstallDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, uninstall uninstallDependencies) int {
+	if len(args) != 1 {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
+	switch args[0] {
+	case "doctor":
+		return runDoctor(ctx, stdout, stderr, runner)
+	case "uninstall":
+		return runUninstall(stdout, stderr, uninstall)
+	default:
+		writeError(stderr, "invalid_command")
+		return exitUsage
+	}
+}
 
+func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
 	reports, err := probe(ctx, runner)
 	if err != nil {
 		writeError(stderr, "probe_failed")
@@ -64,6 +103,120 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, runner ru
 		return exitUnknown
 	}
 	return exitOK
+}
+
+func defaultUninstallDependencies() uninstallDependencies {
+	return uninstallDependencies{
+		resolveRoots: skillroot.ResolveSystemUninstallRoots,
+		rootExists:   uninstallRootExists,
+		observe:      installobserve.ObserveUninstall,
+		apply:        uninstalltxn.Apply,
+		backupName:   nextUninstallBackupName,
+	}
+}
+
+func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
+	roots, err := deps.resolveRoots()
+	if err != nil || len(roots) != 3 || roots[0].RuntimeID() != runtimematrix.RuntimePi ||
+		roots[1].RuntimeID() != runtimematrix.RuntimeOpenCode || roots[2].RuntimeID() != runtimematrix.RuntimeClaudeCode {
+		writeError(stderr, "uninstall_root_resolution_failed")
+		return exitFailure
+	}
+	preflight := make([]uninstallPreflight, 0, len(roots))
+	for _, root := range roots {
+		exists, err := deps.rootExists(root.RootPath())
+		if err != nil {
+			writeError(stderr, "uninstall_observation_failed")
+			return exitFailure
+		}
+		if !exists {
+			preflight = append(preflight, uninstallPreflight{root: root, status: "not_installed"})
+			continue
+		}
+		trusted, err := installobserve.NewUninstallRoot(root.RuntimeID(), root.RootKind(), root.RootPath())
+		if err != nil {
+			writeError(stderr, "uninstall_observation_failed")
+			return exitFailure
+		}
+		observation, err := deps.observe(trusted, installobserve.DefaultOptions())
+		if err != nil {
+			writeError(stderr, "uninstall_observation_failed")
+			return exitFailure
+		}
+		status := "ready"
+		if len(observation.Records()) == 0 {
+			status = "not_installed"
+		} else if !observation.Ready() {
+			status = "conflict"
+		}
+		preflight = append(preflight, uninstallPreflight{root: root, observation: observation, status: status})
+	}
+	for _, item := range preflight {
+		if item.status == "conflict" {
+			for index := range preflight {
+				if preflight[index].status == "ready" {
+					preflight[index].status = "blocked"
+				}
+			}
+			return writeUninstallResult(stdout, stderr, preflight, exitConflict)
+		}
+	}
+	for index := range preflight {
+		if preflight[index].status != "ready" {
+			continue
+		}
+		backupRoot := filepath.Join(preflight[index].root.RootPath(), ".cortex")
+		if _, err := deps.apply(preflight[index].root.RootPath(), preflight[index].observation, backupRoot, deps.backupName()); err != nil {
+			preflight[index].status = "failed"
+			for later := index + 1; later < len(preflight); later++ {
+				if preflight[later].status == "ready" {
+					preflight[later].status = "blocked"
+				}
+			}
+			return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
+		}
+		preflight[index].status = "completed"
+	}
+	return writeUninstallResult(stdout, stderr, preflight, exitOK)
+}
+
+func nextUninstallBackupName() string {
+	return "uninstall-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func uninstallRootExists(root string) (bool, error) {
+	_, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func writeUninstallResult(stdout, stderr io.Writer, results []uninstallPreflight, code int) int {
+	var output strings.Builder
+	for _, result := range results {
+		remove, absent, conflict := uninstallCounts(result.observation)
+		_, _ = fmt.Fprintf(&output, "runtime=%s uninstall=%s remove=%d absent=%d conflict=%d\n", result.root.RuntimeID(), result.status, remove, absent, conflict)
+	}
+	if _, err := io.WriteString(stdout, output.String()); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	return code
+}
+
+func uninstallCounts(observation installobserve.UninstallObservation) (remove, absent, conflict int) {
+	for _, record := range observation.Records() {
+		switch record.Status {
+		case installobserve.UninstallRemove:
+			remove++
+		case installobserve.UninstallAbsent:
+			absent++
+		case installobserve.UninstallConflict:
+			conflict++
+		}
+	}
+	return
 }
 
 func probe(ctx context.Context, runner runtimeprobe.Runner) ([]runtimeprobe.Report, error) {

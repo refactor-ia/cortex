@@ -1,0 +1,53 @@
+schema_version: 1
+feature: runtime-adapter-contract
+purpose: Declarative rules for Cortex runtime-adapter operations.
+
+ownership:
+  owner: Cortex
+  preserve_user_owned_configuration: true
+  preserve_unrelated_configuration: true
+  managed_material: Cortex-owned material only
+
+runtime_outcomes:
+  present_compatible:
+    action: include_in_transaction
+    scope: every present compatible runtime
+    all_or_nothing: true
+  absent:
+    action: warn_and_continue
+    install: false
+  known_incompatible:
+    action: skip_and_report
+    scope: affected_adapter_only
+    touch_adapter: false
+  unknown_version:
+    action: warn_and_report_uncertainty
+  no_compatible:
+    action: report_only
+    install: false
+    block_ordinary_work: false
+    touch_unrelated_configuration: false
+
+transaction_safety:
+  backup:
+    verifiable: true
+  write:
+    transactional: true
+  verification:
+    success_condition: exact_read_back
+    before_success: true
+  rollback:
+    direction: reverse_transaction
+  uninstall:
+    scope: cortex_owned_material_only
+
+projection_results:
+  exact: The runtime represents the Cortex-owned selection without translation.
+  translated: The runtime uses a disclosed equivalent representation.
+  unrepresentable: Cortex leaves the runtime untouched rather than misrepresenting it.
+
+boundaries:
+  contract_only: true
+  does_not_install_runtimes: true
+  does_not_block_ordinary_work: true
+  does_not_modify_user_owned_configuration: true

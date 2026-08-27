@@ -1,10 +1,9 @@
-package installplan_test
+package installplan
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/artifact"
 	"github.com/refactor-ia/cortex/internal/catalog"
-	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
@@ -38,13 +36,21 @@ func TestBuildRuntimeCandidates(t *testing.T) {
 	} {
 		t.Run(string(test.runtime), func(t *testing.T) {
 			resolved := resolve(t, test.runtime, home, []capability{{"alpha", "reasoning"}})
-			plan, err := installplan.Build(resolved)
+			plan, err := Build(resolved)
 			if err != nil || plan.RuntimeID() != test.runtime || plan.RootKind() != resolved.RootKind() || plan.SnapshotFingerprint() != resolved.SnapshotFingerprint() || plan.RootPath() != test.root {
 				t.Fatalf("Build() = (%#v, %v)", plan, err)
 			}
 			files := plan.Files()
 			if len(files) != 2 || files[0].Role() != "skill" || files[0].LogicalID() != "skills/alpha" || files[0].RelativePath() != "skills/cortex-alpha/SKILL.md" || files[0].AbsolutePath() != filepath.Join(test.root, "skills", "cortex-alpha", "SKILL.md") || files[1].Role() != "state" || files[1].LogicalID() != "state/install-state" || files[1].RelativePath() != ".cortex/install-state.json" || files[1].AbsolutePath() != filepath.Join(test.root, ".cortex", "install-state.json") {
 				t.Fatalf("Files() = %#v", files)
+			}
+			for index, file := range files {
+				if file.DesiredMode() != CanonicalFileMode || file.DesiredMode() != fs.FileMode(0o600) {
+					t.Fatalf("candidate %d desired mode = %#o", index, file.DesiredMode())
+				}
+			}
+			if files[len(files)-1].Role() != "state" {
+				t.Fatalf("state candidate moved: %#v", files)
 			}
 			assertState(t, plan, files[:1])
 		})
@@ -56,7 +62,7 @@ func TestBuildPreservesProjectionOrderAndBoundaries(t *testing.T) {
 	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeClaudeCode} {
 		t.Run(string(runtime), func(t *testing.T) {
 			resolved := resolve(t, runtime, home, []capability{{"zeta", "reasoning"}, {"alpha", "services"}})
-			plan, err := installplan.Build(resolved)
+			plan, err := Build(resolved)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +80,7 @@ func TestBuildPreservesProjectionOrderAndBoundaries(t *testing.T) {
 	}
 
 	long := strings.Repeat("a", 57)
-	plan, err := installplan.Build(resolve(t, runtimematrix.RuntimeOpenCode, home, []capability{{long, "reasoning"}}))
+	plan, err := Build(resolve(t, runtimematrix.RuntimeOpenCode, home, []capability{{long, "reasoning"}}))
 	if err != nil || plan.Files()[0].RelativePath() != "skills/cortex-"+long+"/SKILL.md" || plan.InstalledState().Artifacts()[0].RelativePath() != "skills/cortex-"+long+"/SKILL.md" {
 		t.Fatalf("57-character ID = (%#v, %v)", plan, err)
 	}
@@ -83,7 +89,7 @@ func TestBuildPreservesProjectionOrderAndBoundaries(t *testing.T) {
 func TestBuildWithBundleBindsOnlyMatchingArtifacts(t *testing.T) {
 	home := t.TempDir()
 	resolved, bundle := resolveWithBundle(t, runtimematrix.RuntimePi, home, []capability{{"alpha", "reasoning"}})
-	plan, err := installplan.BuildWithBundle(resolved, bundle)
+	plan, err := BuildWithBundle(resolved, bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +97,7 @@ func TestBuildWithBundleBindsOnlyMatchingArtifacts(t *testing.T) {
 	if !found || !bytes.Equal(returned.Artifacts()[0].Content(), bundle.Artifacts()[0].Content()) {
 		t.Fatal("BuildWithBundle() did not retain the trusted matching bundle")
 	}
-	legacy, err := installplan.Build(resolved)
+	legacy, err := Build(resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,10 +105,10 @@ func TestBuildWithBundleBindsOnlyMatchingArtifacts(t *testing.T) {
 		t.Fatal("Build() unexpectedly retained a bundle")
 	}
 	_, mismatched := resolveWithBundle(t, runtimematrix.RuntimePi, home, []capability{{"beta", "reasoning"}})
-	if _, err := installplan.BuildWithBundle(resolved, mismatched); err == nil || err.Error() != "install plan: invalid candidate" {
+	if _, err := BuildWithBundle(resolved, mismatched); err == nil || err.Error() != "install plan: invalid candidate" {
 		t.Fatalf("BuildWithBundle() mismatch error = %v", err)
 	}
-	if _, err := installplan.BuildWithBundle(resolved, artifact.Bundle{}); err == nil || err.Error() != "install plan: invalid candidate" {
+	if _, err := BuildWithBundle(resolved, artifact.Bundle{}); err == nil || err.Error() != "install plan: invalid candidate" {
 		t.Fatalf("BuildWithBundle() empty error = %v", err)
 	}
 }
@@ -110,16 +116,16 @@ func TestBuildWithBundleBindsOnlyMatchingArtifacts(t *testing.T) {
 func TestBuildStateDeterminismPrivacyAndIsolation(t *testing.T) {
 	home := t.TempDir()
 	resolved := resolve(t, runtimematrix.RuntimePi, home, []capability{{"alpha", "reasoning"}})
-	first, err := installplan.Build(resolved)
-	second, secondErr := installplan.Build(resolved)
+	first, err := Build(resolved)
+	second, secondErr := Build(resolved)
 	if err != nil || secondErr != nil || !bytes.Equal(first.StateJSON(), second.StateJSON()) || !sameFiles(first.Files(), second.Files()) {
 		t.Fatalf("Build() was not deterministic: %v, %v", err, secondErr)
 	}
 	files, state := first.Files(), first.StateJSON()
-	files[0] = installplan.File{}
+	files[0] = File{}
 	files[1].Content()[0] ^= 1
 	state[0] ^= 1
-	if first.Files()[0].LogicalID() != "skills/alpha" || first.Files()[1].Content()[0] != first.StateJSON()[0] || bytes.Equal(state, first.StateJSON()) {
+	if first.Files()[0].LogicalID() != "skills/alpha" || first.Files()[0].DesiredMode() != CanonicalFileMode || first.Files()[1].Content()[0] != first.StateJSON()[0] || bytes.Equal(state, first.StateJSON()) {
 		t.Fatal("Build exposed mutable candidate state")
 	}
 	for _, private := range []string{home, first.RootPath(), string(resolved.Targets()[0].Content())} {
@@ -131,13 +137,13 @@ func TestBuildStateDeterminismPrivacyAndIsolation(t *testing.T) {
 }
 
 func TestBuildRejectsZeroPlanWithoutLeakage(t *testing.T) {
-	plan, err := installplan.Build(skillroot.Plan{})
+	plan, err := Build(skillroot.Plan{})
 	if err == nil || err.Error() != "install plan: invalid candidate" || plan.RuntimeID() != "" || plan.RootKind() != "" || plan.SnapshotFingerprint() != "" || plan.RootPath() != "" || plan.Files() == nil || len(plan.Files()) != 0 || plan.StateJSON() == nil || len(plan.StateJSON()) != 0 || strings.Contains(err.Error(), "private-marker") {
 		t.Fatalf("Build() = (%#v, %v)", plan, err)
 	}
 }
 
-func assertState(t *testing.T, plan installplan.Plan, skills []installplan.File) {
+func assertState(t *testing.T, plan Plan, skills []File) {
 	t.Helper()
 	manifest := plan.InstalledState()
 	decoded, err := installstate.Decode(plan.StateJSON())
@@ -168,21 +174,39 @@ func mustEncode(t *testing.T, manifest installstate.Manifest) []byte {
 	return data
 }
 
-func sameFiles(left, right []installplan.File) bool {
+func TestBuildWithBundleRejectsTamperedCandidateMode(t *testing.T) {
+	resolved, bundle := resolveWithBundle(t, runtimematrix.RuntimePi, t.TempDir(), []capability{{"alpha", "reasoning"}})
+	plan, err := BuildWithBundle(resolved, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.files[0].desiredMode = 0o700
+	if matchesBundle(plan, bundle) {
+		t.Fatal("matchesBundle() accepted a tampered executable candidate")
+	}
+}
+
+func TestValidDesiredModeRejectsInvalidFileModes(t *testing.T) {
+	for _, mode := range []fs.FileMode{0, 0o644, 0o700, CanonicalFileMode | fs.ModeSetuid, CanonicalFileMode | fs.ModeDevice} {
+		if validDesiredMode(mode) {
+			t.Fatalf("validDesiredMode(%#o) = true", mode)
+		}
+	}
+	if !validDesiredMode(CanonicalFileMode) {
+		t.Fatal("validDesiredMode() rejected the canonical mode")
+	}
+}
+
+func sameFiles(left, right []File) bool {
 	if len(left) != len(right) {
 		return false
 	}
 	for index := range left {
-		if left[index].Role() != right[index].Role() || left[index].LogicalID() != right[index].LogicalID() || left[index].RelativePath() != right[index].RelativePath() || left[index].AbsolutePath() != right[index].AbsolutePath() || left[index].SHA256() != right[index].SHA256() || !bytes.Equal(left[index].Content(), right[index].Content()) {
+		if left[index].Role() != right[index].Role() || left[index].LogicalID() != right[index].LogicalID() || left[index].RelativePath() != right[index].RelativePath() || left[index].AbsolutePath() != right[index].AbsolutePath() || left[index].SHA256() != right[index].SHA256() || left[index].DesiredMode() != right[index].DesiredMode() || !bytes.Equal(left[index].Content(), right[index].Content()) {
 			return false
 		}
 	}
 	return true
-}
-
-func digest(content []byte) string {
-	sum := sha256.Sum256(content)
-	return hex.EncodeToString(sum[:])
 }
 
 func resolve(t *testing.T, runtime runtimematrix.RuntimeID, home string, capabilities []capability) skillroot.Plan {

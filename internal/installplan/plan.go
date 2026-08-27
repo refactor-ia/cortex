@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,10 @@ import (
 )
 
 const stateRelativePath = ".cortex/install-state.json"
+
+// CanonicalFileMode is the restrictive user-owned mode for every installed
+// regular file. It is compatible with Pi, OpenCode, and Claude Code.
+const CanonicalFileMode fs.FileMode = 0o600
 
 // Plan is an immutable, non-materialized runtime installation candidate.
 type Plan struct {
@@ -54,6 +59,7 @@ func (plan Plan) Files() []File {
 // File is one candidate file with only in-memory absolute-path information.
 type File struct {
 	role, logicalID, relativePath, absolutePath, sha256 string
+	desiredMode                                         fs.FileMode
 	content                                             []byte
 }
 
@@ -62,8 +68,11 @@ func (file File) LogicalID() string    { return file.logicalID }
 func (file File) RelativePath() string { return file.relativePath }
 func (file File) AbsolutePath() string { return file.absolutePath }
 func (file File) SHA256() string       { return file.sha256 }
-func (file File) Content() []byte      { return append([]byte{}, file.content...) }
-func (file File) clone() File          { file.content = file.Content(); return file }
+
+// DesiredMode returns the authoritative regular-file mode for this candidate.
+func (file File) DesiredMode() fs.FileMode { return file.desiredMode }
+func (file File) Content() []byte          { return append([]byte{}, file.content...) }
+func (file File) clone() File              { file.content = file.Content(); return file }
 
 // Build plans skills followed by state without accessing filesystem or runtime state.
 func Build(resolved skillroot.Plan) (Plan, error) {
@@ -79,7 +88,7 @@ func Build(resolved skillroot.Plan) (Plan, error) {
 		if !ok || !validSkill(id) || relative != skillRelative(id) || !validHash(target.SHA256()) || len(target.Content()) == 0 || digest(target.Content()) != target.SHA256() || (index > 0 && targets[index-1].LogicalID() >= id) {
 			return Plan{}, invalid()
 		}
-		files[index] = File{"skill", id, relative, target.AbsolutePath(), target.SHA256(), target.Content()}
+		files[index] = File{"skill", id, relative, target.AbsolutePath(), target.SHA256(), CanonicalFileMode, target.Content()}
 		inputs[index] = installstate.ArtifactInput{LogicalID: id, RelativePath: relative, SHA256: target.SHA256()}
 	}
 	state, err := installstate.New(resolved.RuntimeID(), resolved.RootKind(), resolved.SnapshotFingerprint(), inputs)
@@ -92,7 +101,7 @@ func Build(resolved skillroot.Plan) (Plan, error) {
 	if err != nil || !contained || stateRelative != stateRelativePath {
 		return Plan{}, invalid()
 	}
-	files = append(files, File{"state", "state/install-state", stateRelativePath, stateAbsolute, digest(stateJSON), stateJSON})
+	files = append(files, File{"state", "state/install-state", stateRelativePath, stateAbsolute, digest(stateJSON), CanonicalFileMode, stateJSON})
 	return Plan{runtimeID: resolved.RuntimeID(), rootKind: resolved.RootKind(), snapshotFingerprint: resolved.SnapshotFingerprint(), rootPath: root, installedState: state, stateJSON: append([]byte{}, stateJSON...), files: files}, nil
 }
 
@@ -108,6 +117,11 @@ func BuildWithBundle(resolved skillroot.Plan, bundle artifact.Bundle) (Plan, err
 }
 
 func matchesBundle(plan Plan, bundle artifact.Bundle) bool {
+	for _, file := range plan.files {
+		if !validDesiredMode(file.desiredMode) {
+			return false
+		}
+	}
 	manifest, artifacts := bundle.Manifest(), bundle.Artifacts()
 	if manifest.RuntimeID() != plan.RuntimeID() || manifest.SnapshotFingerprint() != plan.SnapshotFingerprint() || len(artifacts) == 0 || len(artifacts) != len(plan.files)-1 {
 		return false
@@ -179,6 +193,9 @@ func containedRelative(root, absolute string) (string, bool) {
 }
 func validPath(path string) bool {
 	return path != "" && !strings.ContainsRune(path, 0) && filepath.IsAbs(path) && filepath.Clean(path) == path && filepath.Dir(path) != path && (filepath.Separator != '/' || !strings.Contains(path, "\\")) && (filepath.Separator == '/' || !strings.Contains(path, "/"))
+}
+func validDesiredMode(mode fs.FileMode) bool {
+	return mode == CanonicalFileMode
 }
 func validHash(value string) bool {
 	if len(value) != 64 {

@@ -55,6 +55,8 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 	switch args[0] {
 	case "doctor":
 		return runDoctor(ctx, stdout, stderr, runner)
+	case "install", "update":
+		return runUncertifiedOperation(ctx, stdout, stderr, runner, args[0])
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:
@@ -64,24 +66,51 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 }
 
 func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	reports, err := probe(ctx, runner)
+	matrix, err := probeMatrix(ctx, runner)
 	if err != nil {
 		writeError(stderr, "probe_failed")
 		return exitFailure
+	}
+	if _, err := io.WriteString(stdout, runtimeReport(matrix)); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	for _, decision := range matrix.Decisions {
+		if decision.Outcome != runtimematrix.OutcomeAbsent {
+			return exitUnknown
+		}
+	}
+	return exitOK
+}
+
+func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {
+	matrix, err := probeMatrix(ctx, runner)
+	if err != nil {
+		writeError(stderr, "probe_failed")
+		return exitFailure
+	}
+	output := "operation=" + operation + " status=not_applied reason=compatibility_uncertified touch=denied\n" + runtimeReport(matrix)
+	if _, err := io.WriteString(stdout, output); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	return exitUnknown
+}
+
+func probeMatrix(ctx context.Context, runner runtimeprobe.Runner) (runtimematrix.Matrix, error) {
+	reports, err := probe(ctx, runner)
+	if err != nil {
+		return runtimematrix.Matrix{}, err
 	}
 	observations, err := runtimeprobe.Observations(reports)
 	if err != nil {
-		writeError(stderr, "probe_failed")
-		return exitFailure
+		return runtimematrix.Matrix{}, err
 	}
-	matrix, err := runtimematrix.Decide(observations)
-	if err != nil {
-		writeError(stderr, "probe_failed")
-		return exitFailure
-	}
+	return runtimematrix.Decide(observations)
+}
 
+func runtimeReport(matrix runtimematrix.Matrix) string {
 	var output strings.Builder
-	unknown := false
 	for _, decision := range matrix.Decisions {
 		output.WriteString("runtime=")
 		output.WriteString(string(decision.ID))
@@ -89,20 +118,12 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 			output.WriteString(" presence=absent")
 		} else {
 			output.WriteString(" presence=present compatibility=unknown")
-			unknown = true
 		}
 		output.WriteString(" action=")
 		output.WriteString(string(decision.Action))
 		output.WriteString(" touch=denied\n")
 	}
-	if _, err := io.WriteString(stdout, output.String()); err != nil {
-		writeError(stderr, "output_failed")
-		return exitFailure
-	}
-	if unknown {
-		return exitUnknown
-	}
-	return exitOK
+	return output.String()
 }
 
 func defaultUninstallDependencies() uninstallDependencies {

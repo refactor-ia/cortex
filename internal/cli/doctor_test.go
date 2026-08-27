@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -129,8 +131,127 @@ func TestRunDoctor(t *testing.T) {
 	}
 }
 
+func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
+	tests := []struct {
+		name       string
+		operations []string
+		runner     func() *fakeRunner
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name:       "all runtimes absent",
+			operations: []string{"install", "update"},
+			runner: func() *fakeRunner {
+				return &fakeRunner{lookup: map[string]error{
+					"pi": exec.ErrNotFound, "opencode": exec.ErrNotFound, "claude": exec.ErrNotFound,
+				}}
+			},
+			wantCode: exitUnknown,
+			wantStdout: "operation=install status=not_applied reason=compatibility_uncertified touch=denied\n" +
+				"runtime=pi presence=absent action=warn touch=denied\n" +
+				"runtime=opencode presence=absent action=warn touch=denied\n" +
+				"runtime=claude-code presence=absent action=warn touch=denied\n",
+		},
+		{
+			name:       "mixed runtimes",
+			operations: []string{"install", "update"},
+			runner: func() *fakeRunner {
+				return &fakeRunner{
+					lookup: map[string]error{"opencode": exec.ErrNotFound},
+					runs: map[string]fakeRun{
+						"/private/pi":     {execution: runtimeprobe.Execution{Stdout: []byte("1.2.3\n")}},
+						"/private/claude": {execution: runtimeprobe.Execution{Stderr: []byte("credential=private")}},
+					},
+				}
+			},
+			wantCode: exitUnknown,
+			wantStdout: "operation=install status=not_applied reason=compatibility_uncertified touch=denied\n" +
+				"runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=opencode presence=absent action=warn touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+		},
+		{
+			name:       "probe failure",
+			operations: []string{"install", "update"},
+			runner: func() *fakeRunner {
+				return &fakeRunner{lookup: map[string]error{"pi": errors.New("private lookup failure")}}
+			},
+			wantCode:   exitFailure,
+			wantStderr: "error=probe_failed\n",
+		},
+	}
+
+	for _, tt := range tests {
+		for _, operation := range tt.operations {
+			t.Run(tt.name+"/"+operation, func(t *testing.T) {
+				var stdout, stderr bytes.Buffer
+				if got := runWithUninstallDependencies(context.Background(), []string{operation}, &stdout, &stderr, tt.runner(), uninstallDependencies{}); got != tt.wantCode {
+					t.Fatalf("Run() exit code = %d, want %d", got, tt.wantCode)
+				}
+				wantStdout := strings.Replace(tt.wantStdout, "operation=install", "operation="+operation, 1)
+				if got := stdout.String(); got != wantStdout {
+					t.Fatalf("stdout = %q, want %q", got, wantStdout)
+				}
+				if got := stderr.String(); got != tt.wantStderr {
+					t.Fatalf("stderr = %q, want %q", got, tt.wantStderr)
+				}
+				for _, forbidden := range []string{"1.2.3", "credential=private", "/private/"} {
+					if strings.Contains(stdout.String(), forbidden) || strings.Contains(stderr.String(), forbidden) {
+						t.Fatalf("output leaks %q", forbidden)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunUncertifiedOperationsAreParityAndDoNotReachUninstallSeams(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, operation := range []string{"install", "update"} {
+		var stdout, stderr bytes.Buffer
+		if got := runWithUninstallDependencies(context.Background(), []string{operation}, &stdout, &stderr, readyRunner(), uninstallDependencies{}); got != exitUnknown {
+			t.Fatalf("%s exit code = %d, want %d", operation, got, exitUnknown)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("%s stderr = %q", operation, stderr.String())
+		}
+		if got, want := strings.TrimPrefix(stdout.String(), "operation="+operation+" "), "status=not_applied reason=compatibility_uncertified touch=denied\n"+
+			"runtime=pi presence=present compatibility=unknown action=warn touch=denied\n"+
+			"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n"+
+			"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"; got != want {
+			t.Fatalf("%s report = %q, want %q", operation, got, want)
+		}
+		got, err := os.ReadFile(sentinel)
+		if err != nil || string(got) != "unchanged" {
+			t.Fatalf("%s changed filesystem sentinel = %q, %v", operation, got, err)
+		}
+	}
+}
+
+func TestRunInstallAndUpdateRejectFlags(t *testing.T) {
+	for _, operation := range []string{"install", "update"} {
+		for _, flag := range []string{"--catalog", "--root", "--home", "--runtime", "--force", "--compatibility", "--path"} {
+			t.Run(operation+"/"+flag, func(t *testing.T) {
+				var stdout, stderr bytes.Buffer
+				if got := Run(context.Background(), []string{operation, flag, "/private/input"}, &stdout, &stderr, readyRunner()); got != exitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", got, exitUsage)
+				}
+				if stdout.Len() != 0 || stderr.String() != "error=invalid_command\n" {
+					t.Fatalf("output = stdout %q stderr %q", stdout.String(), stderr.String())
+				}
+			})
+		}
+	}
+}
+
 func TestRunRejectsInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"doctor", "extra"}, {"install"}, {"update"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"doctor", "extra"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if got := Run(context.Background(), args, &stdout, &stderr, readyRunner()); got != 64 {

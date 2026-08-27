@@ -66,11 +66,7 @@ func TestObserveRetainsExactEvidenceByLogicalID(t *testing.T) {
 
 func TestObserveTreatsMissingCanonicalStateAsNeutral(t *testing.T) {
 	candidate, _ := makeCandidate(t, "one", "alpha")
-	file := candidate.Files()[0]
-	if err := os.MkdirAll(filepath.Dir(file.AbsolutePath()), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(file.AbsolutePath(), file.Content(), 0o600); err != nil {
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,11 +74,65 @@ func TestObserveTreatsMissingCanonicalStateAsNeutral(t *testing.T) {
 	if err != nil || observed.PriorState() != nil {
 		t.Fatalf("Observe() did not return a neutral missing-state observation: %v", err)
 	}
-	if slots := observed.Slots(); len(slots) != 1 || !slots[0].Present || slots[0].LogicalID != "skills/alpha" {
+	if !observed.MatchesCandidate(candidate) {
+		t.Fatal("first-install observation did not match its candidate")
+	}
+	if slots := observed.Slots(); len(slots) != 1 || slots[0].Present || slots[0].LogicalID != "skills/alpha" {
 		t.Fatalf("Slots() = %#v", slots)
+	}
+	for _, candidateFile := range candidate.Files() {
+		if _, err := os.Stat(candidateFile.AbsolutePath()); !os.IsNotExist(err) {
+			t.Fatalf("Observe() wrote %q: %v", candidateFile.AbsolutePath(), err)
+		}
 	}
 	if _, found := observed.Exact("state/install-state"); found {
 		t.Fatal("absent state retained exact evidence")
+	}
+}
+
+func TestFilesystemObservationMatchesOnlyItsExactCandidate(t *testing.T) {
+	candidate, _ := makeCandidate(t, "one", "alpha")
+	writeCandidateFiles(t, candidate)
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		candidate installplan.Plan
+	}{
+		{name: "zero candidate"},
+		{name: "different root", candidate: func() installplan.Plan { plan, _ := makeCandidate(t, "one", "alpha"); return plan }()},
+		{name: "different snapshot content and hash", candidate: func() installplan.Plan { plan, _ := makeCandidate(t, "two", "alpha"); return plan }()},
+		{name: "different file set", candidate: func() installplan.Plan { plan, _ := makeCandidate(t, "one", "alpha", "beta"); return plan }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if observed.MatchesCandidate(tc.candidate) {
+				t.Fatal("MatchesCandidate() accepted a different candidate")
+			}
+		})
+	}
+	if !observed.MatchesCandidate(candidate) {
+		t.Fatal("MatchesCandidate() rejected the observed candidate")
+	}
+
+	failed, err := installobserve.Observe(installplan.Plan{}, installobserve.DefaultOptions())
+	if err == nil || failed.MatchesCandidate(candidate) {
+		t.Fatal("failed observation retained a usable candidate binding")
+	}
+}
+
+func TestFilesystemObservationExposesNoBindingOrPath(t *testing.T) {
+	typeOfObservation := reflect.TypeOf(installobserve.FilesystemObservation{})
+	for index := 0; index < typeOfObservation.NumField(); index++ {
+		if typeOfObservation.Field(index).IsExported() {
+			t.Fatalf("FilesystemObservation exposes field %q", typeOfObservation.Field(index).Name)
+		}
+	}
+	for _, name := range []string{"Binding", "BindingDigest", "RootPath", "Candidate", "SetBinding"} {
+		if _, found := typeOfObservation.MethodByName(name); found {
+			t.Fatalf("FilesystemObservation exposes %s", name)
+		}
 	}
 }
 

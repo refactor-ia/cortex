@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -224,5 +225,57 @@ func TestDecodeCapabilityManifestRejectsInvalidInput(t *testing.T) {
 				t.Fatal("DecodeCapabilityManifest() error = nil")
 			}
 		})
+	}
+}
+
+func TestCapabilitySchemaStructure(t *testing.T) {
+	data, err := os.ReadFile("../../schemas/capability.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Required             []string                   `json:"required"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		AllOf                json.RawMessage            `json:"allOf"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.AdditionalProperties == nil || *schema.AdditionalProperties || strings.Join(schema.Required, ",") != "schemaVersion,id,description,family,source,activation,provenance,license,redistributionAllowed" {
+		t.Fatal("schema required fields or additionalProperties differ from the manifest contract")
+	}
+	for property, value := range map[string]string{"schemaVersion": `"const": 1`, "id": `"maxLength": 57`, "description": `"maxLength": 1024`, "source": `.md(?![\\s\\S])`, "activation": `"automatic"`, "provenance": `"third-party"`, "redistributionAllowed": `"const": true`} {
+		if !strings.Contains(string(schema.Properties[property]), value) {
+			t.Errorf("%s contract missing %q", property, value)
+		}
+	}
+	if !strings.Contains(string(schema.Properties["id"]), `(?![\\s\\S])`) {
+		t.Error("id true-end grammar differs from the manifest contract")
+	}
+	const canonicalEvidenceURLPattern = `^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]+)?(?:[/?#](?:[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF%]|%[0-9A-Fa-f]{2})*)?(?![\s\S])`
+	const canonicalLicensePattern = `^[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF](?:[^\r\n\u2028\u2029]*[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF])?(?![\s\S])`
+	for _, property := range []string{"provenanceUrl", "redistributionUrl", "license", "description"} {
+		var definition struct {
+			Pattern string `json:"pattern"`
+		}
+		if err := json.Unmarshal(schema.Properties[property], &definition); err != nil {
+			t.Fatalf("decode %s schema: %v", property, err)
+		}
+		want := canonicalEvidenceURLPattern
+		if property == "license" || property == "description" {
+			want = canonicalLicensePattern
+		}
+		if definition.Pattern != want {
+			t.Errorf("%s pattern = %q, want %q", property, definition.Pattern, want)
+		}
+	}
+	for _, family := range ApprovedFamilyIDs() {
+		if !strings.Contains(string(schema.Properties["family"]), `"`+family+`"`) {
+			t.Errorf("family enum missing %q", family)
+		}
+	}
+	if !strings.Contains(string(schema.Properties["activation"]), `"dormant"`) || !strings.Contains(string(schema.Properties["provenance"]), `"cortex-owned"`) || !strings.Contains(string(schema.AllOf), `"cortex-owned"`) || !strings.Contains(string(schema.AllOf), `"third-party"`) || !strings.Contains(string(schema.AllOf), `"provenanceUrl"`) || !strings.Contains(string(schema.AllOf), `"redistributionUrl"`) || !strings.Contains(string(schema.AllOf), `"not"`) {
+		t.Error("schema enum or conditional contract missing")
 	}
 }

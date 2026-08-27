@@ -25,6 +25,62 @@ type Plan struct {
 	ReportOnly          bool
 }
 
+// Validate confirms that a plan retains the canonical adapter contract shape.
+func Validate(plan Plan) error {
+	if !validFingerprint(plan.SnapshotFingerprint) || plan.Results == nil || len(plan.Results) != 3 {
+		return errors.New("adapter plan: invalid plan")
+	}
+
+	orderedIDs := []runtimematrix.RuntimeID{
+		runtimematrix.RuntimePi,
+		runtimematrix.RuntimeOpenCode,
+		runtimematrix.RuntimeClaudeCode,
+	}
+	targets := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
+	for index, id := range orderedIDs {
+		result := plan.Results[index]
+		if result.ID != id || !validResult(result) {
+			return errors.New("adapter plan: invalid plan")
+		}
+		if result.IncludeInTransaction {
+			targets = append(targets, id)
+		}
+	}
+
+	if plan.TransactionTargets == nil || len(plan.TransactionTargets) != len(targets) {
+		return errors.New("adapter plan: invalid plan")
+	}
+	for index, id := range targets {
+		if plan.TransactionTargets[index] != id {
+			return errors.New("adapter plan: invalid plan")
+		}
+	}
+
+	if len(targets) > 0 && (!plan.AllOrNothing || plan.ReportOnly) {
+		return errors.New("adapter plan: invalid plan")
+	}
+	if len(targets) == 0 && (plan.AllOrNothing || !plan.ReportOnly) {
+		return errors.New("adapter plan: invalid plan")
+	}
+	return nil
+}
+
+func validResult(result RuntimeResult) bool {
+	switch result.Outcome {
+	case runtimematrix.OutcomePresentCompatible:
+		return result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
+	case runtimematrix.OutcomeAbsent:
+		return result.Action == runtimematrix.Warn && !result.IncludeInTransaction && !result.TouchAllowed
+	case runtimematrix.OutcomeKnownIncompatible:
+		return result.Action == runtimematrix.Skip && !result.IncludeInTransaction && !result.TouchAllowed
+	case runtimematrix.OutcomeUnknownVersion:
+		return result.Action == runtimematrix.Warn && !result.IncludeInTransaction && !result.TouchAllowed
+	default:
+		return false
+	}
+}
+
+// Build validates a catalog snapshot fingerprint and derives a pure adapter plan.
 func Build(snapshotFingerprint string, observations []runtimematrix.Observation) (Plan, error) {
 	if !validFingerprint(snapshotFingerprint) {
 		return Plan{}, errors.New("adapter plan: invalid snapshot fingerprint")

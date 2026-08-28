@@ -18,6 +18,8 @@ func TestCreateWritesPreparedJournal(t *testing.T) {
 	result, err := Create(home, manifest, []BlobInput{blobs[1], blobs[0]})
 	require(t, err)
 	check(t, result.TransactionID() == manifest.TransactionID() && result.State() == Prepared && result.EntryCount() == 3 && result.BlobCount() == 2, "unexpected result: %#v", result)
+	created, ok := result.Manifest()
+	check(t, ok && sameRecoverableEvidence(created, manifest), "result did not retain recoverable evidence")
 	txn := transactionPath(home, manifest)
 	wantFiles := []string{"blobs/claude-code/settings.json", "blobs/pi/config.json", "manifest.json"}
 	check(t, reflect.DeepEqual(journalFiles(t, txn), wantFiles), "files differ")
@@ -58,6 +60,20 @@ func TestCreateValidationDoesNotTouchHome(t *testing.T) {
 	check(t, err != nil, "accepted non-prepared manifest")
 	_, err = os.Lstat(filepath.Join(home, ".cortex"))
 	check(t, errors.Is(err, os.ErrNotExist), "validation mutated home")
+}
+
+func TestCreateRejectsV1BeforeTouchingHome(t *testing.T) {
+	home, manifest, blobs := createFixture(t)
+	legacy, err := New(manifest.TransactionID(), manifest.CandidateFingerprint(), []EntryInput{
+		{Runtime: RuntimePi, Root: RootPi, RelativePath: "config.json", Existence: Present, Mode: 0600, SHA256: sha256Hex(blobs[0].Bytes), Length: int64(len(blobs[0].Bytes))},
+		{Runtime: RuntimeOpenCode, Root: RootOpenCode, RelativePath: "config.json", Existence: Absent},
+		{Runtime: RuntimeClaude, Root: RootClaude, RelativePath: "settings.json", Existence: Present, Mode: 0644, SHA256: sha256Hex(blobs[1].Bytes), Length: int64(len(blobs[1].Bytes))},
+	})
+	require(t, err)
+	_, err = Create(home, legacy, blobs)
+	check(t, errors.Is(err, ErrCreateUnrecoverable) && !strings.Contains(err.Error(), home), "error=%v", err)
+	_, err = os.Lstat(filepath.Join(home, ".cortex"))
+	check(t, errors.Is(err, os.ErrNotExist), "v1 rejection mutated home")
 }
 
 func TestCreateConcurrentSameIDPreservesWinner(t *testing.T) {
@@ -138,9 +154,31 @@ func TestCreateResultDoesNotExposeStorageOrMutableBytes(t *testing.T) {
 	for index := 0; index < reflect.TypeOf(result).NumField(); index++ {
 		check(t, !reflect.TypeOf(result).Field(index).IsExported(), "result exposes mutable storage")
 	}
+	created, ok := result.Manifest()
+	check(t, ok && !strings.Contains(string(mustJSON(t, created)), "/private/"), "result leaked root path")
+	roots, entries := created.RootBindings(), created.Entries()
+	roots[0], entries[0].RelativePath = RootBinding{}, "changed"
+	after := entries[0].AfterEvidence()
+	after.Existence = Present
+	again, ok := result.Manifest()
+	check(t, ok && sameRecoverableEvidence(again, manifest), "result leaked mutable evidence")
 	blobs[0].Bytes[0] = 'X'
 	data, readErr := os.ReadFile(filepath.Join(transactionPath(home, manifest), "blobs/pi/config.json"))
 	check(t, readErr == nil && !bytes.Equal(data, blobs[0].Bytes), "caller bytes were retained")
+}
+
+func TestCreateTransitionAndReconcilePreserveRecoverableEvidence(t *testing.T) {
+	home, manifest, blobs := createFixture(t)
+	_, err := Create(home, manifest, blobs)
+	require(t, err)
+	terminal, err := Transition(home, manifest.TransactionID(), Recovered)
+	require(t, err)
+	terminalManifest, ok := terminal.Manifest()
+	check(t, ok && sameRecoverableEvidence(terminalManifest, mustTransition(t, manifest, Recovered)), "transition lost recoverable evidence")
+	reconciled, err := Reconcile(home, manifest.TransactionID())
+	require(t, err)
+	reconciledManifest, ok := reconciled.Manifest()
+	check(t, ok && sameRecoverableEvidence(reconciledManifest, terminalManifest), "reconcile lost recoverable evidence")
 }
 
 func require(t *testing.T, err error) {
@@ -157,10 +195,25 @@ func createSentinel(t *testing.T, home string) string {
 func createFixture(t *testing.T) (string, Manifest, []BlobInput) {
 	t.Helper()
 	pi, claude := []byte("pi"), []byte("claude")
-	inputs := []EntryInput{{Runtime: RuntimePi, Root: RootPi, RelativePath: "config.json", Existence: Present, Mode: 0600, SHA256: sha256Hex(pi), Length: int64(len(pi))}, {Runtime: RuntimeOpenCode, Root: RootOpenCode, RelativePath: "config.json", Existence: Absent}, {Runtime: RuntimeClaude, Root: RootClaude, RelativePath: "settings.json", Existence: Present, Mode: 0644, SHA256: sha256Hex(claude), Length: int64(len(claude))}}
-	manifest, err := New(hash, hash, inputs)
+	inputs := []RecoverableEntryInput{
+		{Before: EntryInput{Runtime: RuntimePi, Root: RootPi, RelativePath: "config.json", Existence: Present, Mode: 0600, SHA256: sha256Hex(pi), Length: int64(len(pi))}, After: Evidence{Existence: Absent}},
+		{Before: EntryInput{Runtime: RuntimeOpenCode, Root: RootOpenCode, RelativePath: "config.json", Existence: Absent}, After: Evidence{Existence: Present, Mode: 0600, SHA256: sha256Hex([]byte("opencode-after")), Length: int64(len("opencode-after"))}},
+		{Before: EntryInput{Runtime: RuntimeClaude, Root: RootClaude, RelativePath: "settings.json", Existence: Present, Mode: 0644, SHA256: sha256Hex(claude), Length: int64(len(claude))}, After: Evidence{Existence: Present, Mode: 0600, SHA256: sha256Hex([]byte("claude-after")), Length: int64(len("claude-after"))}},
+	}
+	manifest, err := NewRecoverable(hash, hash, recoverableRoots(t), inputs)
 	require(t, err)
 	return t.TempDir(), manifest, []BlobInput{{Runtime: RuntimePi, RelativePath: "config.json", Bytes: pi, Mode: 0600}, {Runtime: RuntimeClaude, RelativePath: "settings.json", Bytes: claude, Mode: 0644}}
+}
+
+func sameRecoverableEvidence(left, right Manifest) bool {
+	return left.Recoverable() == right.Recoverable() && left.Version() == right.Version() && reflect.DeepEqual(left.RootBindings(), right.RootBindings()) && reflect.DeepEqual(left.Entries(), right.Entries())
+}
+
+func mustTransition(t *testing.T, manifest Manifest, state State) Manifest {
+	t.Helper()
+	transitioned, err := manifest.Transition(state)
+	require(t, err)
+	return transitioned
 }
 func transactionPath(home string, manifest Manifest) string {
 	return filepath.Join(home, ".cortex", "transactions", manifest.TransactionID())

@@ -6,11 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
-	"time"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/catalog"
+	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/projection"
@@ -63,35 +64,47 @@ func TestApplyGroupRejectsConflictBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestApplyGroupRollsBackLateFinalStateAndRejectsInvalidGroups(t *testing.T) {
+func TestApplyGroupRejectsInjectedTransactionFailureAndInvalidGroups(t *testing.T) {
 	home := t.TempDir()
 	plans := groupCandidates(t, home, "one")
-	state := plans[2].Files()[len(plans[2].Files())-1].AbsolutePath()
-	ready := make(chan error, 1)
-	go func() {
-		deadline := time.Now().Add(time.Second)
-		watched := plans[1].Files()[len(plans[1].Files())-1].AbsolutePath()
-		for time.Now().Before(deadline) {
-			if _, err := os.Lstat(watched); err == nil {
-				ready <- os.Mkdir(state, 0o700)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-		ready <- errors.New("final state was not reached")
-	}()
-	_, err := applyGroupRequest(t, plans...)
-	if raceErr := <-ready; raceErr != nil {
-		t.Fatal(raceErr)
+	requests := groupRequests(t, plans...)
+	expectedDirectories := []filetxn.Directory{
+		{Path: ".claude/.cortex", Mode: 0o700},
+		{Path: ".claude/skills", Mode: 0o700},
+		{Path: ".claude/skills/cortex-alpha", Mode: 0o700},
+		{Path: ".claude/skills/cortex-beta", Mode: 0o700},
+		{Path: ".config/opencode/.cortex", Mode: 0o700},
+		{Path: ".config/opencode/skills", Mode: 0o700},
+		{Path: ".pi/agent/.cortex", Mode: 0o700},
+		{Path: ".pi/agent/skills", Mode: 0o700},
+		{Path: ".config/opencode/skills/cortex-alpha", Mode: 0o700},
+		{Path: ".config/opencode/skills/cortex-beta", Mode: 0o700},
+		{Path: ".pi/agent/skills/cortex-alpha", Mode: 0o700},
+		{Path: ".pi/agent/skills/cortex-beta", Mode: 0o700},
 	}
+	expectedOperations := groupOperations(t, home, plans)
+	calls := 0
+	_, err := applyGroupWith(requests, t.TempDir(), "snapshot", func(root, _, _ string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+		calls++
+		if root != home {
+			t.Errorf("transaction root = %q, want %q", root, home)
+		}
+		if !reflect.DeepEqual(directories, expectedDirectories) {
+			t.Errorf("directories = %#v, want %#v", directories, expectedDirectories)
+		}
+		if !reflect.DeepEqual(operations, expectedOperations) {
+			t.Errorf("operations = %#v, want %#v", operations, expectedOperations)
+		}
+		return filetxn.Snapshot{}, errors.New("injected transaction failure")
+	})
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("ApplyGroup() error = %v", err)
 	}
+	if calls != 1 {
+		t.Fatalf("grouped apply calls = %d, want 1", calls)
+	}
 	for _, plan := range plans {
-		for index, file := range plan.Files() {
-			if plan.RuntimeID() == runtimematrix.RuntimeClaudeCode && index == len(plan.Files())-1 {
-				continue
-			}
+		for _, file := range plan.Files() {
 			assertFile(t, file, false)
 		}
 	}
@@ -182,7 +195,7 @@ func TestApplyRejectsStaleObservation(t *testing.T) {
 	}
 }
 
-func TestApplyStateLastAndLateFailureRollback(t *testing.T) {
+func TestApplyStateLast(t *testing.T) {
 	home := t.TempDir()
 	ids := make([]string, 20)
 	for i := range ids {
@@ -200,30 +213,6 @@ func TestApplyStateLastAndLateFailureRollback(t *testing.T) {
 	}
 	if operations[len(operations)-1].Create == nil || operations[len(operations)-1].Create.Path != ".cortex/install-state.json" {
 		t.Fatal("state was not the final operation")
-	}
-
-	state := plan.Files()[len(plan.Files())-1].AbsolutePath()
-	ready := make(chan error, 1)
-	go func(skill string) {
-		deadline := time.Now().Add(time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Lstat(skill); err == nil {
-				ready <- os.Mkdir(state, 0o700)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-		ready <- errors.New("skill creation was not observed")
-	}(plan.Files()[0].AbsolutePath())
-	_, err = Apply(plan, observation, t.TempDir(), "snapshot")
-	if raceErr := <-ready; raceErr != nil {
-		t.Fatal(raceErr)
-	}
-	if err == nil {
-		t.Fatal("Apply() succeeded despite late state conflict")
-	}
-	for _, file := range plan.Files()[:len(plan.Files())-1] {
-		assertFile(t, file, false)
 	}
 }
 
@@ -290,6 +279,24 @@ func groupRequests(t *testing.T, plans ...installplan.Plan) []GroupRequest {
 		requests[index] = GroupRequest{Plan: plan, Observation: observation}
 	}
 	return requests
+}
+func groupOperations(t *testing.T, root string, plans []installplan.Plan) []filetxn.Operation {
+	t.Helper()
+	operations := make([]filetxn.Operation, 0, len(plans)*len(plans[0].Files()))
+	for _, plan := range plans {
+		prefix, err := filepath.Rel(root, plan.RootPath())
+		must(t, err)
+		for _, file := range plan.Files()[:len(plan.Files())-1] {
+			operations = append(operations, filetxn.Operation{Create: &filetxn.Create{Path: filepath.ToSlash(filepath.Join(prefix, file.RelativePath())), Data: file.Content(), Mode: file.DesiredMode()}})
+		}
+	}
+	for _, plan := range plans {
+		file := plan.Files()[len(plan.Files())-1]
+		prefix, err := filepath.Rel(root, plan.RootPath())
+		must(t, err)
+		operations = append(operations, filetxn.Operation{Create: &filetxn.Create{Path: filepath.ToSlash(filepath.Join(prefix, file.RelativePath())), Data: file.Content(), Mode: file.DesiredMode()}})
+	}
+	return operations
 }
 func applyGroup(t *testing.T, plans ...installplan.Plan) GroupResult {
 	result, err := applyGroupRequest(t, plans...)

@@ -17,7 +17,12 @@ func TestOpenReadsDetachedJournal(t *testing.T) {
 	check(t, handle.TransactionID() == manifest.TransactionID(), "transaction ID=%q", handle.TransactionID())
 	check(t, handle.State() == Prepared && handle.EntryCount() == 3 && handle.BlobCount() == 2, "unexpected handle")
 	stored, ok := handle.Manifest()
-	check(t, ok && reflect.DeepEqual(stored.Entries(), manifest.Entries()), "manifest was not detached")
+	check(t, ok && sameRecoverableEvidence(stored, manifest), "manifest lost create, replace, or remove evidence")
+	check(t, !strings.Contains(string(mustJSON(t, stored)), "/private/"), "manifest leaked root path")
+	roots, entries := stored.RootBindings(), stored.Entries()
+	roots[0], entries[0].RelativePath = RootBinding{}, "changed"
+	reopened, ok := handle.Manifest()
+	check(t, ok && sameRecoverableEvidence(reopened, manifest), "manifest was not detached")
 	data, ok := handle.Blob(RuntimePi, "config.json")
 	check(t, ok && bytes.Equal(data, blobs[0].Bytes), "blob=%q", data)
 	data[0] = 'X'
@@ -25,6 +30,26 @@ func TestOpenReadsDetachedJournal(t *testing.T) {
 	check(t, ok && bytes.Equal(again, blobs[0].Bytes), "blob was not detached")
 	_, ok = handle.Blob(RuntimeOpenCode, "config.json")
 	check(t, !ok, "absent entry has a blob")
+}
+
+func TestOpenAuditsV1JournalWithoutRecoverabilityEvidence(t *testing.T) {
+	home, manifest, blobs := legacyOpenFixture(t)
+	writeV1AuditJournalForOpenTest(t, home, manifest, blobs)
+	handle, err := Open(home, manifest.TransactionID())
+	require(t, err)
+	stored, ok := handle.Manifest()
+	check(t, ok && !stored.Recoverable() && stored.Version() == SchemaVersion && len(stored.RootBindings()) == 0, "v1 became recoverable")
+	for _, entry := range stored.Entries() {
+		check(t, entry.AfterEvidence() == (Evidence{}), "v1 synthesized after evidence")
+	}
+	terminal, err := Transition(home, manifest.TransactionID(), Committed)
+	require(t, err)
+	stored, ok = terminal.Manifest()
+	check(t, ok && !stored.Recoverable() && reflect.DeepEqual(stored.Entries(), manifest.Entries()), "v1 transition changed audit metadata")
+	reconciled, err := Reconcile(home, manifest.TransactionID())
+	require(t, err)
+	stored, ok = reconciled.Manifest()
+	check(t, ok && !stored.Recoverable() && len(stored.RootBindings()) == 0 && reflect.DeepEqual(stored.Entries(), manifest.Entries()), "v1 reconcile changed audit metadata")
 }
 
 func TestOpenRejectsAggregateOversizeWithoutMutation(t *testing.T) {
@@ -159,6 +184,54 @@ func openFixture(t *testing.T) (string, Manifest, []BlobInput) {
 	t.Helper()
 	home, manifest, blobs := createFixture(t)
 	_, err := Create(home, manifest, blobs)
+	require(t, err)
+	return home, manifest, blobs
+}
+
+// writeV1AuditJournalForOpenTest materializes a canonical legacy journal only for Open audit coverage.
+func writeV1AuditJournalForOpenTest(t *testing.T, home string, manifest Manifest, blobs []BlobInput) {
+	t.Helper()
+	check(t, !manifest.Recoverable() && manifest.Version() == SchemaVersion, "manifest is not v1")
+	data := mustJSON(t, manifest)
+	parsed, err := Parse(data)
+	require(t, err)
+	check(t, !parsed.Recoverable() && reflect.DeepEqual(parsed.Entries(), manifest.Entries()), "manifest is not canonical v1")
+
+	base, attempt, err := ensureJournalBase(home)
+	require(t, err)
+	transaction, err := attempt.reserve(base, parsed.TransactionID())
+	require(t, err)
+	cleanupNeeded := true
+	defer func() {
+		if cleanupNeeded {
+			if err := attempt.cleanup(); err != nil {
+				t.Errorf("cleanup audit journal: %v", err)
+			}
+		}
+	}()
+	for _, blob := range blobs {
+		name, err := attempt.createFile(transaction, blobName(blob.Runtime, blob.RelativePath))
+		require(t, err)
+		require(t, durableWrite(&attempt, name, blob.Bytes))
+	}
+	name, err := attempt.createFile(transaction, manifestFile)
+	require(t, err)
+	require(t, durableWrite(&attempt, name, data))
+	require(t, verifyJournalTree(transaction, parsed))
+	require(t, syncDirectory(transaction))
+	require(t, syncDirectory(base))
+	cleanupNeeded = false
+}
+
+func legacyOpenFixture(t *testing.T) (string, Manifest, []BlobInput) {
+	t.Helper()
+	home, recoverable, blobs := createFixture(t)
+	entries := recoverable.Entries()
+	inputs := make([]EntryInput, len(entries))
+	for index, entry := range entries {
+		inputs[index] = EntryInput{Runtime: entry.Runtime, Root: entry.Root, RelativePath: entry.RelativePath, Existence: entry.Existence, Mode: entry.Mode, SHA256: entry.SHA256, Length: entry.Length}
+	}
+	manifest, err := New(recoverable.TransactionID(), recoverable.CandidateFingerprint(), inputs)
 	require(t, err)
 	return home, manifest, blobs
 }

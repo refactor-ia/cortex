@@ -22,6 +22,7 @@ type BlobInput struct {
 
 // CreateResult describes a prepared durable journal without storage authority.
 type CreateResult struct {
+	manifest              []byte
 	transactionID         string
 	state                 State
 	entryCount, blobCount int
@@ -32,13 +33,20 @@ func (result CreateResult) State() State          { return result.state }
 func (result CreateResult) EntryCount() int       { return result.entryCount }
 func (result CreateResult) BlobCount() int        { return result.blobCount }
 
+// Manifest returns a detached parsed manifest when this result is initialized.
+func (result CreateResult) Manifest() (Manifest, bool) {
+	manifest, err := Parse(result.manifest)
+	return manifest, err == nil
+}
+
 var (
-	ErrCreateCleanup    = errors.New("backup journal: cleanup failed")
-	errCreateFilesystem = errors.New("backup journal: create filesystem failure")
-	createSeam          = func(string, string) error { return nil }
+	ErrCreateCleanup       = errors.New("backup journal: cleanup failed")
+	ErrCreateUnrecoverable = errors.New("backup journal: unrecoverable manifest")
+	errCreateFilesystem    = errors.New("backup journal: create filesystem failure")
+	createSeam             = func(string, string) error { return nil }
 )
 
-// Create writes one prepared manifest and its exact before-image blob set.
+// Create writes one prepared recoverable manifest and its exact before-image blob set.
 func Create(home string, manifest Manifest, inputs []BlobInput) (CreateResult, error) {
 	prepared, data, blobs, err := validateCreate(manifest, inputs)
 	if err != nil {
@@ -91,7 +99,7 @@ func Create(home string, manifest Manifest, inputs []BlobInput) (CreateResult, e
 	if err = syncDirectory(base); err != nil {
 		return fail(err)
 	}
-	return CreateResult{prepared.TransactionID(), Prepared, len(prepared.entries), len(blobs)}, nil
+	return CreateResult{manifest: append([]byte(nil), data...), transactionID: prepared.TransactionID(), state: Prepared, entryCount: len(prepared.entries), blobCount: len(blobs)}, nil
 }
 
 func joinCreateFailure(primary, cleanup error) error {
@@ -113,6 +121,9 @@ func validateCreate(manifest Manifest, inputs []BlobInput) (Manifest, []byte, []
 	prepared, err := Parse(data)
 	if err != nil || prepared.State() != Prepared {
 		return Manifest{}, nil, nil, errors.New("backup journal: invalid prepared manifest")
+	}
+	if !prepared.Recoverable() {
+		return Manifest{}, nil, nil, ErrCreateUnrecoverable
 	}
 	provided := make(map[string]BlobInput, len(inputs))
 	for _, input := range inputs {

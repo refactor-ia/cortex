@@ -2,12 +2,138 @@ package atomicfile
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
+
+const removeExactMaxEvidenceBytes = 32 << 20
+
+type exactRemovalOperations struct {
+	lstat         func(string) (fs.FileInfo, error)
+	open          func(string) (*os.File, error)
+	remove        func(string) error
+	syncDirectory func(string) error
+}
+
+// RemoveIfExact durably removes a contained regular file only when its bytes and
+// permission mode exactly match recovery evidence. Missing, mismatched, and
+// drifting destinations fail closed. It uses Lstat, open/read/Fstat, and a final
+// Lstat to reduce TOCTOU exposure; portable primitives leave a residual path-swap
+// race between that final check and removal.
+func RemoveIfExact(root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode) error {
+	return removeIfExact(root, relativePath, expectedBytes, expectedMode, exactRemovalOperations{
+		lstat:         os.Lstat,
+		open:          os.Open,
+		remove:        os.Remove,
+		syncDirectory: syncDirectory,
+	})
+}
+
+func removeIfExact(root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode, operations exactRemovalOperations) error {
+	if err := validateExactRemoval(root, relativePath, expectedBytes, expectedMode); err != nil {
+		return err
+	}
+	destination, err := safepath.Resolve(root, relativePath)
+	if err != nil {
+		return errors.New("atomic remove exact: destination is unsafe")
+	}
+	if err := exactRemovalMatches(destination, expectedBytes, expectedMode, operations); err != nil {
+		return err
+	}
+	if err := operations.remove(destination); err != nil {
+		return errors.New("atomic remove exact: remove destination failed")
+	}
+	if err := operations.syncDirectory(filepath.Dir(destination)); err != nil {
+		return errors.New("atomic remove exact: parent directory sync failed")
+	}
+	info, err := operations.lstat(destination)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil || info != nil {
+		return errors.New("atomic remove exact: absence verification failed")
+	}
+	return errors.New("atomic remove exact: absence verification failed")
+}
+
+func validateExactRemoval(root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode) error {
+	if root == "" {
+		return errors.New("atomic remove exact: invalid root")
+	}
+	if relativePath == "" || filepath.IsAbs(relativePath) || strings.Contains(relativePath, `\`) {
+		return errors.New("atomic remove exact: invalid relative path")
+	}
+	clean := filepath.Clean(relativePath)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return errors.New("atomic remove exact: invalid relative path")
+	}
+	for _, component := range strings.Split(relativePath, string(filepath.Separator)) {
+		if component == "." || component == ".." {
+			return errors.New("atomic remove exact: invalid relative path")
+		}
+	}
+	if len(expectedBytes) == 0 || len(expectedBytes) > removeExactMaxEvidenceBytes {
+		return errors.New("atomic remove exact: invalid expected bytes")
+	}
+	if expectedMode&^fs.FileMode(0o777) != 0 {
+		return errors.New("atomic remove exact: invalid expected mode")
+	}
+	return nil
+}
+
+func exactRemovalMatches(destination string, expectedBytes []byte, expectedMode fs.FileMode, operations exactRemovalOperations) error {
+	initial, err := operations.lstat(destination)
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.New("atomic remove exact: destination is missing")
+	}
+	if err != nil {
+		return errors.New("atomic remove exact: inspect destination failed")
+	}
+	if initial.Mode()&fs.ModeSymlink != 0 || !initial.Mode().IsRegular() {
+		return errors.New("atomic remove exact: destination is not a regular file")
+	}
+	if initial.Mode() != expectedMode {
+		return errors.New("atomic remove exact: destination mode does not match")
+	}
+
+	file, err := operations.open(destination)
+	if err != nil {
+		return errors.New("atomic remove exact: open destination failed")
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return errors.New("atomic remove exact: inspect opened destination failed")
+	}
+	if opened.Mode()&fs.ModeSymlink != 0 || !opened.Mode().IsRegular() || opened.Mode() != expectedMode || !os.SameFile(initial, opened) {
+		_ = file.Close()
+		return errors.New("atomic remove exact: destination drifted")
+	}
+	actual, readErr := io.ReadAll(io.LimitReader(file, int64(len(expectedBytes))+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return errors.New("atomic remove exact: read destination failed")
+	}
+	if !bytes.Equal(actual, expectedBytes) {
+		return errors.New("atomic remove exact: destination bytes do not match")
+	}
+
+	final, err := operations.lstat(destination)
+	if err != nil {
+		return errors.New("atomic remove exact: destination drifted")
+	}
+	if final.Mode()&fs.ModeSymlink != 0 || !final.Mode().IsRegular() || final.Mode() != expectedMode || !os.SameFile(initial, final) || !os.SameFile(opened, final) {
+		return errors.New("atomic remove exact: destination drifted")
+	}
+	return nil
+}
 
 // RemoveIfMatches removes a regular file beneath root only when its bytes exactly
 // match expected. A missing leaf succeeds without mutation. It revalidates the

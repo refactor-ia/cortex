@@ -71,7 +71,14 @@ func (result GroupResult) RuntimeIDs() []runtimematrix.RuntimeID {
 	return append([]runtimematrix.RuntimeID(nil), result.runtimeIDs...)
 }
 func (result GroupResult) Counts() Counts { return result.counts }
+
+type applyWithDirectories func(string, string, string, []filetxn.Directory, []filetxn.Operation) (filetxn.Snapshot, error)
+
 func ApplyGroup(requests []GroupRequest, backupRoot, backupName string) (GroupResult, error) {
+	return applyGroupWith(requests, backupRoot, backupName, filetxn.ApplyOperationsWithDirectories)
+}
+
+func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, apply applyWithDirectories) (GroupResult, error) {
 	if !validGroupRequests(requests) {
 		return GroupResult{}, ErrInvalid
 	}
@@ -130,7 +137,7 @@ func ApplyGroup(requests []GroupRequest, backupRoot, backupName string) (GroupRe
 		leftDepth, rightDepth := depth(directoryList[left].Path), depth(directoryList[right].Path)
 		return leftDepth < rightDepth || leftDepth == rightDepth && directoryList[left].Path < directoryList[right].Path
 	})
-	if _, err := filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directoryList, operations); err != nil {
+	if _, err := apply(root, backupRoot, backupName, directoryList, operations); err != nil {
 		return GroupResult{}, ErrFailed
 	}
 	return result, nil

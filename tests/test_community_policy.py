@@ -35,6 +35,8 @@ EXPECTED_FILES = {
         "internal/backupjournal/manifest_test.go",
         "internal/backupjournal/fs.go",
         "internal/backupjournal/fs_test.go",
+        "internal/backupjournal/create.go",
+        "internal/backupjournal/create_test.go",
         "internal/filetxn/apply.go",
         "internal/filetxn/apply_test.go",
         "internal/filetxn/directories.go",
@@ -168,8 +170,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 117)
-                self.assertEqual(len(actual_files), 117)
+                self.assertEqual(len(EXPECTED_FILES), 119)
+                self.assertEqual(len(actual_files), 119)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

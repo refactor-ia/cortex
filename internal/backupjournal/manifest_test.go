@@ -123,6 +123,9 @@ func TestNewAllowsSamePathAcrossRuntimes(t *testing.T) {
 
 func TestJSONIsStrictCanonicalAndDetached(t *testing.T) {
 	journal := journal(t)
+	if journal.Recoverable() || journal.Version() != SchemaVersion || len(journal.RootBindings()) != 0 || journal.Entries()[0].AfterEvidence().Existence != "" {
+		t.Fatal("v1 journal exposed recoverable metadata")
+	}
 	encoded, err := json.Marshal(journal)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +165,69 @@ func TestParseRejectsMalformedStoredEntry(t *testing.T) {
 		if _, err := Parse(bad); err == nil {
 			t.Fatalf("accepted blob %q", replacement)
 		}
+	}
+}
+
+func recoverableRoots(t *testing.T) []RootBinding {
+	t.Helper()
+	roots := make([]RootBinding, 0, 3)
+	for _, root := range []struct {
+		runtime Runtime
+		kind    RootKind
+		path    string
+	}{{RuntimePi, RootPi, "/private/pi"}, {RuntimeOpenCode, RootOpenCode, "/private/opencode"}, {RuntimeClaude, RootClaude, "/private/claude"}} {
+		binding, err := NewRootBinding(root.runtime, root.kind, root.path)
+		if err != nil || !binding.MatchesRoot(root.path) || binding.MatchesRoot(root.path+"-other") {
+			t.Fatalf("root binding err=%v", err)
+		}
+		roots = append(roots, binding)
+	}
+	same, _ := NewRootBinding(RuntimePi, RootPi, "/private/pi")
+	different, _ := NewRootBinding(RuntimePi, RootPi, "/private/pi-other")
+	if roots[0].Digest() != same.Digest() || roots[0].Digest() == different.Digest() {
+		t.Fatal("root digest was not root-specific and stable")
+	}
+	return roots
+}
+
+func recoverableEntries() []RecoverableEntryInput {
+	return []RecoverableEntryInput{
+		{Before: EntryInput{Runtime: RuntimePi, Root: RootPi, RelativePath: "config.json", Existence: Absent}, After: Evidence{Existence: Present, Mode: 0600, SHA256: hash, Length: 1}},
+		{Before: EntryInput{Runtime: RuntimeOpenCode, Root: RootOpenCode, RelativePath: "config.json", Existence: Present, Mode: 0644, SHA256: hash, Length: 1}, After: Evidence{Existence: Absent}},
+		{Before: EntryInput{Runtime: RuntimeClaude, Root: RootClaude, RelativePath: "config.json", Existence: Present, Mode: 0600, SHA256: hash, Length: 1}, After: Evidence{Existence: Present, Mode: 0644, SHA256: strings.Repeat("f", 64), Length: 2}},
+	}
+}
+
+func TestRecoverableJournalBindsRootsAndAfterEvidence(t *testing.T) {
+	journal, err := NewRecoverable(hash, hash, recoverableRoots(t), recoverableEntries())
+	if err != nil || !journal.Recoverable() || journal.Version() != 2 {
+		t.Fatalf("recoverable journal err=%v", err)
+	}
+	encoded := mustJSON(t, journal)
+	if strings.Contains(string(encoded), "/private/") {
+		t.Fatal("manifest disclosed a root path")
+	}
+	parsed, err := Parse(encoded)
+	if err != nil || !parsed.Recoverable() || len(parsed.RootBindings()) != 3 || parsed.Entries()[0].AfterEvidence().Existence != Present {
+		t.Fatalf("recoverable parse err=%v", err)
+	}
+}
+
+func TestRecoverableRejectsNoopAndUnorderedEvidence(t *testing.T) {
+	entries := recoverableEntries()
+	entries[0].After = Evidence{}
+	if _, err := NewRecoverable(hash, hash, recoverableRoots(t), entries); err == nil {
+		t.Fatal("accepted absent-to-absent no-op")
+	}
+	entries = recoverableEntries()
+	entries[0], entries[1] = entries[1], entries[0]
+	if _, err := NewRecoverable(hash, hash, recoverableRoots(t), entries); err == nil {
+		t.Fatal("accepted noncanonical entry ordering")
+	}
+	roots := recoverableRoots(t)
+	roots[0], roots[1] = roots[1], roots[0]
+	if _, err := NewRecoverable(hash, hash, roots, recoverableEntries()); err == nil {
+		t.Fatal("accepted noncanonical root ordering")
 	}
 }
 

@@ -172,12 +172,16 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 	path := filepath.Join(root, "safe", "config.txt")
 	original := []byte("cortex-created")
 	replacement := []byte("sentinel replacement")
+	replacementPath := filepath.Join(root, "replacement.txt")
 	writeFile(t, path, original)
+	writeFile(t, replacementPath, replacement)
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(replacementPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	lstatCalls := 0
-	removed := false
 	operations := exactRemovalOperations{
 		lstat: func(name string) (fs.FileInfo, error) {
 			lstatCalls++
@@ -185,8 +189,7 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
-				writeFile(t, path, replacement)
-				if err := os.Chmod(path, 0o600); err != nil {
+				if err := os.Rename(replacementPath, path); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -194,7 +197,7 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 		},
 		open: os.Open,
 		remove: func(string) error {
-			removed = true
+			t.Fatal("removeIfExact() attempted removal after identity drift")
 			return nil
 		},
 		syncDirectory: syncDirectory,
@@ -203,9 +206,6 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 	err := removeIfExact(root, "safe/config.txt", original, 0o600, operations)
 	if err == nil || !strings.Contains(err.Error(), "destination drifted") {
 		t.Fatalf("removeIfExact() error = %v, want identity drift", err)
-	}
-	if removed {
-		t.Fatal("removeIfExact() attempted removal after identity drift")
 	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || !bytes.Equal(data, replacement) {

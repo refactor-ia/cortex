@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/ownership"
+	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
 
 var (
@@ -36,7 +38,7 @@ func (result Result) Actions() []Action { return append([]Action(nil), result.ac
 // Apply materializes the supplied bundle-bound candidate only when its bounded
 // observation matches. It writes skills before the installation state file.
 func Apply(candidate installplan.Plan, observation installobserve.FilesystemObservation, backupRoot, backupName string) (Result, error) {
-	if !validRoot(candidate.RootPath()) {
+	if !validRoot(candidate.RootPath()) || !observation.MatchesCandidate(candidate) {
 		return Result{}, ErrInvalid
 	}
 	current, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
@@ -51,6 +53,191 @@ func Apply(candidate installplan.Plan, observation installobserve.FilesystemObse
 		return Result{}, ErrFailed
 	}
 	return result, nil
+}
+
+type GroupRequest struct {
+	Plan        installplan.Plan
+	Observation installobserve.FilesystemObservation
+}
+type Counts struct {
+	Create, Replace, Remove, Unchanged, Preserve int
+}
+type GroupResult struct {
+	runtimeIDs []runtimematrix.RuntimeID
+	counts     Counts
+}
+
+func (result GroupResult) RuntimeIDs() []runtimematrix.RuntimeID {
+	return append([]runtimematrix.RuntimeID(nil), result.runtimeIDs...)
+}
+func (result GroupResult) Counts() Counts { return result.counts }
+func ApplyGroup(requests []GroupRequest, backupRoot, backupName string) (GroupResult, error) {
+	if !validGroupRequests(requests) {
+		return GroupResult{}, ErrInvalid
+	}
+	root, ok := transactionRoot(requests)
+	if !ok {
+		return GroupResult{}, ErrInvalid
+	}
+
+	result := GroupResult{runtimeIDs: make([]runtimematrix.RuntimeID, 0, len(requests))}
+	skills, states := make([]filetxn.Operation, 0), make([]filetxn.Operation, 0)
+	directories := make(map[string]filetxn.Directory)
+	for _, request := range requests {
+		current, err := installobserve.Observe(request.Plan, installobserve.DefaultOptions())
+		if err != nil || !reflect.DeepEqual(request.Observation, current) {
+			return GroupResult{}, ErrInvalid
+		}
+		operations, single, err := prepare(request.Plan, current)
+		if err != nil {
+			if errors.Is(err, ErrConflict) {
+				return GroupResult{}, ErrConflict
+			}
+			return GroupResult{}, ErrInvalid
+		}
+		result.runtimeIDs = append(result.runtimeIDs, request.Plan.RuntimeID())
+		result.counts = addCounts(result.counts, single)
+		prefix, err := filepath.Rel(root, request.Plan.RootPath())
+		if err != nil || prefix == "." {
+			return GroupResult{}, ErrInvalid
+		}
+		prefix = filepath.ToSlash(prefix)
+		for _, operation := range operations {
+			operation, state, ok := rebaseOperation(operation, prefix)
+			if !ok {
+				return GroupResult{}, ErrInvalid
+			}
+			if state {
+				states = append(states, operation)
+			} else {
+				skills = append(skills, operation)
+			}
+		}
+		for _, directory := range directoriesFor(request.Plan, operations) {
+			directory.Path = path.Join(prefix, directory.Path)
+			directories[directory.Path] = directory
+		}
+	}
+	operations := append(skills, states...)
+	if len(operations) == 0 {
+		return result, nil
+	}
+	directoryList := make([]filetxn.Directory, 0, len(directories))
+	for _, directory := range directories {
+		directoryList = append(directoryList, directory)
+	}
+	sort.Slice(directoryList, func(left, right int) bool {
+		leftDepth, rightDepth := depth(directoryList[left].Path), depth(directoryList[right].Path)
+		return leftDepth < rightDepth || leftDepth == rightDepth && directoryList[left].Path < directoryList[right].Path
+	})
+	if _, err := filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directoryList, operations); err != nil {
+		return GroupResult{}, ErrFailed
+	}
+	return result, nil
+}
+func validGroupRequests(requests []GroupRequest) bool {
+	if len(requests) < 1 || len(requests) > 3 {
+		return false
+	}
+	roots := make([]string, 0, len(requests))
+	last, snapshot := -1, ""
+	for _, request := range requests {
+		plan, observation := request.Plan, request.Observation
+		rank := runtimeRank(plan.RuntimeID())
+		bundle, bound := plan.Bundle()
+		if rank < 0 || rank <= last || !validRoot(plan.RootPath()) || !bound || !observation.MatchesCandidate(plan) || bundle.Manifest().RuntimeID() != plan.RuntimeID() || bundle.Manifest().SnapshotFingerprint() != plan.SnapshotFingerprint() {
+			return false
+		}
+		if snapshot == "" {
+			snapshot = plan.SnapshotFingerprint()
+		} else if snapshot != plan.SnapshotFingerprint() {
+			return false
+		}
+		for _, root := range roots {
+			if rootsOverlap(root, plan.RootPath()) {
+				return false
+			}
+		}
+		roots, last = append(roots, plan.RootPath()), rank
+	}
+	return true
+}
+
+func runtimeRank(id runtimematrix.RuntimeID) int {
+	for index, canonical := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+		if id == canonical {
+			return index
+		}
+	}
+	return -1
+}
+
+func rootsOverlap(left, right string) bool {
+	return containsRoot(left, right) || containsRoot(right, left)
+}
+
+func containsRoot(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && (relative == "." || relative != ".." && !(len(relative) > 3 && relative[:3] == ".."+string(filepath.Separator)))
+}
+
+func transactionRoot(requests []GroupRequest) (string, bool) {
+	volume := filepath.VolumeName(requests[0].Plan.RootPath())
+	root := filepath.Dir(requests[0].Plan.RootPath())
+	for _, request := range requests {
+		if filepath.VolumeName(request.Plan.RootPath()) != volume {
+			return "", false
+		}
+		for !containsRoot(root, request.Plan.RootPath()) {
+			parent := filepath.Dir(root)
+			if parent == root {
+				return "", false
+			}
+			root = parent
+		}
+	}
+	if !validRoot(root) {
+		return "", false
+	}
+	return root, true
+}
+
+func rebaseOperation(operation filetxn.Operation, prefix string) (filetxn.Operation, bool, bool) {
+	statePath := path.Join(prefix, ".cortex/install-state.json")
+	if operation.Create != nil {
+		copy := *operation.Create
+		copy.Path = path.Join(prefix, copy.Path)
+		return filetxn.Operation{Create: &copy}, copy.Path == statePath, true
+	}
+	if operation.Replace != nil {
+		copy := *operation.Replace
+		copy.Path = path.Join(prefix, copy.Path)
+		return filetxn.Operation{Replace: &copy}, copy.Path == statePath, true
+	}
+	if operation.Remove != nil {
+		copy := *operation.Remove
+		copy.Path = path.Join(prefix, copy.Path)
+		return filetxn.Operation{Remove: &copy}, copy.Path == statePath, true
+	}
+	return filetxn.Operation{}, false, false
+}
+
+func addCounts(counts Counts, result Result) Counts {
+	for _, action := range result.Actions() {
+		switch action.Action {
+		case ownership.Create:
+			counts.Create++
+		case ownership.Replace:
+			counts.Replace++
+		case ownership.Remove:
+			counts.Remove++
+		case ownership.Unchanged:
+			counts.Unchanged++
+		case ownership.Preserve:
+			counts.Preserve++
+		}
+	}
+	return counts
 }
 
 func operationsFor(candidate installplan.Plan, observation installobserve.FilesystemObservation) ([]filetxn.Operation, error) {

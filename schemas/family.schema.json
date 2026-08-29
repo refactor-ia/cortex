@@ -26,8 +26,10 @@
       "items": {
         "type": "string",
         "enum": [
-          "pcsoft-expert", "test-runner", "security-audit", "frontend-quality",
-          "flutter-quality", "kb-feeder"
+          "pcsoft-expert",
+          "requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester",
+          "test-runner", "evidence-auditor",
+          "security-audit", "frontend-quality", "flutter-quality", "kb-feeder"
         ]
       }
     }

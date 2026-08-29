@@ -27,6 +27,21 @@ EXPECTED_FILES = {
         "docs/architecture/overview.md",
         "go.mod",
         "cmd/cortex/main.go",
+        "catalog/catalog.json",
+        "catalog/families/quality-assurance/family.json",
+        "catalog/families/quality-assurance/router.md",
+        "catalog/families/quality-assurance/capabilities/requirements-analyst.json",
+        "catalog/families/quality-assurance/capabilities/test-designer.json",
+        "catalog/families/quality-assurance/capabilities/exploratory-tester.json",
+        "catalog/families/quality-assurance/capabilities/adversarial-tester.json",
+        "catalog/families/quality-assurance/capabilities/test-runner.json",
+        "catalog/families/quality-assurance/capabilities/evidence-auditor.json",
+        "catalog/families/quality-assurance/sources/requirements-analyst.md",
+        "catalog/families/quality-assurance/sources/test-designer.md",
+        "catalog/families/quality-assurance/sources/exploratory-tester.md",
+        "catalog/families/quality-assurance/sources/adversarial-tester.md",
+        "catalog/families/quality-assurance/sources/test-runner.md",
+        "catalog/families/quality-assurance/sources/evidence-auditor.md",
         "internal/artifact/bundle.go",
         "internal/artifact/bundle_test.go",
         "internal/artifact/manifest.go",
@@ -84,6 +99,8 @@ EXPECTED_FILES = {
         "internal/catalog/load.go",
         "internal/qarole/role.go",
         "internal/qarole/role_test.go",
+        "internal/qarole/source.go",
+        "internal/qarole/source_test.go",
         "internal/catalog/load_catalog.go",
         "internal/catalog/load_catalog_test.go",
         "internal/catalog/snapshot.go",
@@ -180,8 +197,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 129)
-                self.assertEqual(len(actual_files), 129)
+                self.assertEqual(len(EXPECTED_FILES), 146)
+                self.assertEqual(len(actual_files), 146)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

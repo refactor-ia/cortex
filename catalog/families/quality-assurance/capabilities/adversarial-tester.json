@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"adversarial-tester","description":"Challenge assumptions, boundaries, and failure behavior.","family":"quality-assurance","source":"families/quality-assurance/sources/adversarial-tester.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

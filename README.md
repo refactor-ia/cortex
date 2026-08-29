@@ -18,6 +18,8 @@ Cortex is intended to become one curated open-source distribution of agent capab
 
 Cortex curates one complete distribution rather than separate releases or user-selected packs. It will project approved capabilities into compatible runtimes through generated adapters; it does **not** install Pi, OpenCode, or Claude Code. When the target lifecycle is certified, Cortex will detect compatible runtimes already present, configure each compatible present runtime transactionally, and warn about absent, unknown, or incompatible runtimes without taking over ordinary work.
 
+Cortex complements rather than competes with Gentle-AI; the [functional-precedence boundary](docs/architecture/overview.md#gentle-ai-functional-precedence) is normative.
+
 For the full intended contract, see the [architecture overview](docs/architecture/overview.md). The [documentation map](docs/README.md) points to the repository authorities.
 
 ## Target capability families

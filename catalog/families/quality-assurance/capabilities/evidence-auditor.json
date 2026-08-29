@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"evidence-auditor","description":"Evaluate evidence sufficiency, attribution, and uncertainty.","family":"quality-assurance","source":"families/quality-assurance/sources/evidence-auditor.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

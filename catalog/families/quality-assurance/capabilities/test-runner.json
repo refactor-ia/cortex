@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"test-runner","description":"Execute and assess relevant tests with bounded diagnostic evidence.","family":"quality-assurance","source":"families/quality-assurance/sources/test-runner.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

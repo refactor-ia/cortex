@@ -4,7 +4,7 @@
 
 Start material product, architecture, or policy decisions with an issue, then land accepted work through reviewable pull requests. During the architecture transition, the [target architecture](docs/architecture/overview.md) is authoritative for future Cortex product boundaries.
 
-RefactorIA stewards Cortex product scope, architecture, releases, trademark and identity, security response, and maintainer appointments.
+RefactorIA stewards Cortex product scope, architecture, releases, trademark and identity, security response, and maintainer appointments. RefactorIA exercises product-scope stewardship within the product boundaries defined by the target architecture, including its [Gentle AI™ functional-precedence policy](docs/architecture/overview.md#gentle-ai-functional-precedence). Functional precedence constrains overlapping product-scope decisions; it does not transfer Cortex governance, repository authority, release control, or maintainer authority to Gentle AI™.
 
 ## Community roles
 

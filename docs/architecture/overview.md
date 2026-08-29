@@ -39,13 +39,13 @@ Optional harnesses may govern lifecycle, Git, TDD, SDD, or review. Cortex does n
 | Not Cortex | A harness, lifecycle authority, SDD/TDD owner, review or receipt gate, Git/GitHub workflow owner, runtime installer, plugin marketplace, or memory server. |
 | Separate product | `cortex-brains` owns memory servers, storage, embeddings, backups, `brain-doctor`, and memory-specific skills. Cortex owns integration adapters, compatibility/connectivity checks, and generic consumers only. |
 
-### Gentle-AI functional precedence
+### Gentle AI™ functional precedence
 
-Cortex is designed to complement, not compete with, Gentle-AI. Gentle-AI has functional precedence for an overlapping capability when that capability becomes an official, supported Gentle-AI product capability. Cortex MUST NOT retain or develop a parallel implementation solely to preserve feature ownership or historical scope.
+Cortex is designed to complement, not compete with, Gentle AI™. Gentle AI™ has functional precedence for an overlapping capability when that capability becomes an official, supported Gentle AI™ product capability. Cortex MUST NOT retain or develop a parallel implementation solely to preserve feature ownership or historical scope.
 
-This boundary applies to existing catalog capabilities and future additions. Before admitting a capability, Cortex evaluates its scope against the current official, supported Gentle-AI product surface and avoids material overlap. When the Gentle-AI boundary expands, Cortex yields the overlap by pruning it from the canonical catalog or reducing Cortex to the minimum appropriate integration or adapter surface needed to expose or interoperate with it.
+This boundary applies to existing catalog capabilities and future additions. Before admitting a capability, Cortex evaluates its scope against the current official, supported Gentle AI™ product surface and avoids material overlap. When the Gentle AI™ boundary expands, Cortex yields the overlap by pruning it from the canonical catalog or reducing Cortex to the minimum appropriate integration or adapter surface needed to expose or interoperate with it.
 
-This is a product and responsibility boundary, not a required technical or runtime dependency and not organizational authority. Cortex remains independently usable with its supported runtimes and does not require Gentle-AI merely because Gentle-AI is authoritative for an overlap. Cortex retains its own governance, releases, maintainers, repository permissions, and repository decisions. Gentle-AI owns capabilities and governance within its development ecosystem and workflow; Cortex owns complementary capabilities outside that boundary. The goal is to avoid duplicated authority, divergent implementations, and ecosystem fragmentation while allowing both projects to evolve independently.
+This is a product and responsibility boundary, not a required technical or runtime dependency and not organizational authority. Cortex remains independently usable with its supported runtimes and does not require Gentle AI™ merely because Gentle AI™ is authoritative for an overlap. Cortex retains its own governance, releases, maintainers, repository permissions, and repository decisions. Gentle AI™ owns capabilities and governance within its development ecosystem and workflow; Cortex owns complementary capabilities outside that boundary. The goal is to avoid duplicated authority, divergent implementations, and ecosystem fragmentation while allowing both projects to evolve independently.
 
 ## Runtime and installation contract
 
@@ -128,7 +128,7 @@ Build and release generate runtime artifacts from catalog/family manifests; the 
 
 Unknown versions warn. Known-incompatible versions skip only the affected adapter. A parity claim is not published before these gates pass.
 
-Catalog admission has hard gates for explicit license, provenance, and redistribution permission. Proposed catalog capabilities SHOULD be evaluated against the current official, supported Gentle-AI product surface, and material overlap SHOULD be avoided; outcomes are governed by the `Gentle-AI functional precedence` subsection. Project code uses a permissive license. Cortex-owned content and knowledge use CC BY-SA. Third-party or imported material requires an explicit compatible redistribution license and proven provenance; otherwise it remains out of the catalog.
+Catalog admission has hard gates for explicit license, provenance, and redistribution permission. Proposed catalog capabilities SHOULD be evaluated against the current official, supported Gentle AI™ product surface, and material overlap SHOULD be avoided; outcomes are governed by the `Gentle AI™ functional precedence` subsection. Project code uses a permissive license. Cortex-owned content and knowledge use CC BY-SA. Third-party or imported material requires an explicit compatible redistribution license and proven provenance; otherwise it remains out of the catalog.
 
 ## Permanent removals and naming
 

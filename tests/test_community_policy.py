@@ -122,6 +122,8 @@ EXPECTED_FILES = {
         "internal/skillartifact/bind_test.go",
         "internal/skilldest/plan.go",
         "internal/skilldest/plan_test.go",
+        "internal/skilldest/qa.go",
+        "internal/skilldest/qa_test.go",
         "internal/skillroot/resolve.go",
         "internal/skillroot/resolve_test.go",
         "internal/safepath/path.go",
@@ -197,8 +199,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 146)
-                self.assertEqual(len(actual_files), 146)
+                self.assertEqual(len(EXPECTED_FILES), 148)
+                self.assertEqual(len(actual_files), 148)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

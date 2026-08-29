@@ -30,6 +30,26 @@ EXPECTED_FILES = {
         "catalog/catalog.json",
         "catalog/families/quality-assurance/family.json",
         "catalog/families/quality-assurance/router.md",
+        "catalog/families/reasoning/family.json",
+        "catalog/families/reasoning/router.md",
+        "catalog/families/model-intelligence/family.json",
+        "catalog/families/model-intelligence/router.md",
+        "catalog/families/execution/family.json",
+        "catalog/families/execution/router.md",
+        "catalog/families/web/family.json",
+        "catalog/families/web/router.md",
+        "catalog/families/mobile/family.json",
+        "catalog/families/mobile/router.md",
+        "catalog/families/pcsoft/family.json",
+        "catalog/families/pcsoft/router.md",
+        "catalog/families/services/family.json",
+        "catalog/families/services/router.md",
+        "catalog/families/personal/family.json",
+        "catalog/families/personal/router.md",
+        "catalog/families/memory-integration/family.json",
+        "catalog/families/memory-integration/router.md",
+        "catalog/families/documentation/family.json",
+        "catalog/families/documentation/router.md",
         "catalog/families/quality-assurance/capabilities/requirements-analyst.json",
         "catalog/families/quality-assurance/capabilities/test-designer.json",
         "catalog/families/quality-assurance/capabilities/exploratory-tester.json",
@@ -124,6 +144,7 @@ EXPECTED_FILES = {
         "internal/skilldest/plan_test.go",
         "internal/skilldest/qa.go",
         "internal/skilldest/qa_test.go",
+        "internal/skilldest/qa_catalog_test.go",
         "internal/skillroot/resolve.go",
         "internal/skillroot/resolve_test.go",
         "internal/safepath/path.go",
@@ -199,8 +220,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 148)
-                self.assertEqual(len(actual_files), 148)
+                self.assertEqual(len(EXPECTED_FILES), 169)
+                self.assertEqual(len(actual_files), 169)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skilldest"
 )
@@ -18,11 +19,25 @@ import (
 type ArtifactInput struct{ LogicalID, RelativePath, SHA256 string }
 
 // Artifact is one immutable logical artifact identity.
-type Artifact struct{ logicalID, relativePath, sha256 string }
+type Artifact struct {
+	logicalID, relativePath, sha256 string
+	kind                            Kind
+	capabilityID                    string
+	roleID                          qarole.RoleID
+	actorContractVersion            string
+	installationID                  InstallationID
+}
 
-func (artifact Artifact) LogicalID() string    { return artifact.logicalID }
-func (artifact Artifact) RelativePath() string { return artifact.relativePath }
-func (artifact Artifact) SHA256() string       { return artifact.sha256 }
+func (artifact Artifact) LogicalID() string            { return artifact.logicalID }
+func (artifact Artifact) RelativePath() string         { return artifact.relativePath }
+func (artifact Artifact) SHA256() string               { return artifact.sha256 }
+func (artifact Artifact) Kind() Kind                   { return artifact.kind }
+func (artifact Artifact) CapabilityID() string         { return artifact.capabilityID }
+func (artifact Artifact) RoleID() qarole.RoleID        { return artifact.roleID }
+func (artifact Artifact) ActorContractVersion() string { return artifact.actorContractVersion }
+func (artifact Artifact) InstallationID() InstallationID {
+	return artifact.installationID
+}
 
 // Manifest is an immutable path-neutral candidate installed-state record.
 type Manifest struct {
@@ -32,6 +47,7 @@ type Manifest struct {
 	rootKind            skilldest.RootKind
 	snapshotFingerprint string
 	artifacts           []Artifact
+	installationID      InstallationID
 }
 
 func (manifest Manifest) SchemaVersion() int                 { return manifest.schemaVersion }
@@ -40,6 +56,7 @@ func (manifest Manifest) Scope() string                      { return manifest.s
 func (manifest Manifest) RuntimeID() runtimematrix.RuntimeID { return manifest.runtimeID }
 func (manifest Manifest) RootKind() skilldest.RootKind       { return manifest.rootKind }
 func (manifest Manifest) SnapshotFingerprint() string        { return manifest.snapshotFingerprint }
+func (manifest Manifest) InstallationID() InstallationID     { return manifest.installationID }
 
 // Artifacts returns a detached, non-nil logical-ID-sorted copy.
 func (manifest Manifest) Artifacts() []Artifact {
@@ -50,9 +67,21 @@ func (manifest Manifest) Artifacts() []Artifact {
 func New(runtimeID runtimematrix.RuntimeID, rootKind skilldest.RootKind, snapshot string, inputs []ArtifactInput) (Manifest, error) {
 	artifacts := make([]Artifact, len(inputs))
 	for index, input := range inputs {
-		artifacts[index] = Artifact{input.LogicalID, input.RelativePath, input.SHA256}
+		artifacts[index] = Artifact{
+			logicalID:    input.LogicalID,
+			relativePath: input.RelativePath,
+			sha256:       input.SHA256,
+		}
 	}
-	manifest := Manifest{1, "cortex", "user", runtimeID, rootKind, snapshot, artifacts}
+	manifest := Manifest{
+		schemaVersion:       1,
+		owner:               "cortex",
+		scope:               "user",
+		runtimeID:           runtimeID,
+		rootKind:            rootKind,
+		snapshotFingerprint: snapshot,
+		artifacts:           artifacts,
+	}
 	if !valid(manifest) {
 		return Manifest{}, invalid()
 	}
@@ -124,7 +153,7 @@ type manifestEncoded struct {
 
 // Encode validates and canonically encodes candidate state.
 func Encode(manifest Manifest) ([]byte, error) {
-	if !valid(manifest) {
+	if manifest.schemaVersion != 1 || !valid(manifest) {
 		return nil, invalid()
 	}
 	artifacts := make(map[string]artifactEncoded, len(manifest.artifacts))
@@ -136,12 +165,23 @@ func Encode(manifest Manifest) ([]byte, error) {
 
 func invalid() error { return errors.New("install state: invalid manifest") }
 func valid(manifest Manifest) bool {
-	if manifest.schemaVersion != 1 || manifest.owner != "cortex" || manifest.scope != "user" || !validPair(manifest.runtimeID, manifest.rootKind) || !validHash(manifest.snapshotFingerprint) || len(manifest.artifacts) == 0 {
+	switch manifest.schemaVersion {
+	case 1:
+		return validV1(manifest)
+	case 2:
+		return validV2(manifest)
+	default:
+		return false
+	}
+}
+
+func validV1(manifest Manifest) bool {
+	if manifest.owner != "cortex" || manifest.scope != "user" || !validPair(manifest.runtimeID, manifest.rootKind) || !validHash(manifest.snapshotFingerprint) || manifest.installationID != "" || len(manifest.artifacts) == 0 {
 		return false
 	}
 	seen := make(map[string]bool, len(manifest.artifacts))
 	for _, artifact := range manifest.artifacts {
-		if !validArtifact(artifact) || seen[artifact.logicalID] {
+		if !validArtifact(artifact) || artifact.kind != "" || artifact.capabilityID != "" || artifact.roleID != "" || artifact.actorContractVersion != "" || artifact.installationID != "" || seen[artifact.logicalID] {
 			return false
 		}
 		seen[artifact.logicalID] = true

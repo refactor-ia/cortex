@@ -200,6 +200,271 @@ func TestFilesystemConcurrentReads(t *testing.T) {
 	group.Wait()
 }
 
+func TestObserveFilesystemRecoveryBuildsCompletePlan(t *testing.T) {
+	handle, roots, before := recoveryFilesystemFixture(t)
+	plan, err := observeFilesystemRecovery(handle, roots)
+	if err != nil || !plan.ready || len(plan.entries) != len(before) {
+		t.Fatalf("plan = %#v, %v", plan, err)
+	}
+	for index, entry := range plan.entries {
+		if entry.state != atBefore || !bytes.Equal(entry.before.bytes, before[index]) {
+			t.Fatalf("entry %d = %#v", index, entry)
+		}
+	}
+	plan.entries[0].before.bytes[0] = 'X'
+	again, err := observeFilesystemRecovery(handle, roots)
+	if err != nil || !bytes.Equal(again.entries[0].before.bytes, before[0]) {
+		t.Fatalf("detached plan = %#v, %v", again, err)
+	}
+}
+
+func TestObserveFilesystemRecoveryRejectsUninitializedHandle(t *testing.T) {
+	_, roots, _ := recoveryFilesystemFixture(t)
+	plan, err := observeFilesystemRecovery(backupjournal.Handle{}, roots)
+	if err == nil || plan.ready || len(plan.entries) != 0 {
+		t.Fatalf("plan = %#v, error = %v", plan, err)
+	}
+}
+
+func TestObserveFilesystemRecoveryRejectsTerminalHandlesBeforeObservation(t *testing.T) {
+	for _, state := range []backupjournal.State{backupjournal.Committed, backupjournal.Recovered} {
+		t.Run(string(state), func(t *testing.T) {
+			handle, roots, _, home := recoveryFilesystemFixtureWithHome(t)
+			terminal, err := backupjournal.Transition(home, handle.TransactionID(), state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeFiles := snapshotRecoveryFiles(t, roots)
+			beforeBlobs := snapshotRecoveryBlobs(t, terminal)
+
+			plan, err := observeFilesystemRecovery(terminal, nil)
+			if !errors.Is(err, terminalFilesystemError{}) || err.Error() != "backup recovery: terminal journal handle" || plan.ready || len(plan.entries) != 0 {
+				t.Fatalf("plan = %#v, error = %v", plan, err)
+			}
+			assertRecoveryFilesUnchanged(t, roots, beforeFiles)
+			assertRecoveryBlobsUnchanged(t, terminal, beforeBlobs)
+		})
+	}
+}
+
+func TestObserveFilesystemRecoveryClassifiesMixedEvidenceWithoutMutation(t *testing.T) {
+	handle, roots := mixedRecoveryFilesystemFixture(t)
+	manifest, ok := handle.Manifest()
+	if !ok {
+		t.Fatal("fixture handle has no manifest")
+	}
+	beforeFiles := snapshotRecoveryFiles(t, roots)
+	beforeBlobs := snapshotRecoveryBlobs(t, handle)
+
+	plan, err := observeFilesystemRecovery(handle, roots)
+	if err != nil || plan.ready || len(plan.entries) != 3 {
+		t.Fatalf("plan = %#v, error = %v", plan, err)
+	}
+	for index, want := range []classification{atBefore, atAfter, drifted} {
+		if plan.entries[index].state != want || plan.entries[index].key != keyFor(manifest.Entries()[index]) {
+			t.Fatalf("entry %d = %#v", index, plan.entries[index])
+		}
+	}
+	assertRecoveryFilesUnchanged(t, roots, beforeFiles)
+	assertRecoveryBlobsUnchanged(t, handle, beforeBlobs)
+}
+
+func TestObserveFilesystemRecoveryRejectsAmbiguousRootEvidence(t *testing.T) {
+	handle, roots, _ := recoveryFilesystemFixture(t)
+	for _, test := range []struct {
+		name  string
+		roots func(*testing.T, []filesystemRoot) []filesystemRoot
+	}{
+		{"missing", func(_ *testing.T, roots []filesystemRoot) []filesystemRoot { return roots[:len(roots)-1] }},
+		{"extra", func(_ *testing.T, roots []filesystemRoot) []filesystemRoot { return append(roots, roots[0]) }},
+		{"duplicate", func(_ *testing.T, roots []filesystemRoot) []filesystemRoot { roots[1] = roots[0]; return roots }},
+		{"mismatched", func(t *testing.T, roots []filesystemRoot) []filesystemRoot {
+			t.Helper()
+			replacement, err := newFilesystemRoot(roots[0].runtime, roots[0].kind, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			roots[0] = replacement
+			return roots
+		}},
+		{"uninitialized", func(_ *testing.T, roots []filesystemRoot) []filesystemRoot {
+			roots[0] = filesystemRoot{runtime: roots[0].runtime, kind: roots[0].kind}
+			return roots
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := append([]filesystemRoot(nil), roots...)
+			plan, err := observeFilesystemRecovery(handle, test.roots(t, candidate))
+			if err == nil || plan.ready || len(plan.entries) != 0 || bytes.Contains([]byte(err.Error()), []byte(roots[0].path)) {
+				t.Fatalf("plan = %#v, error = %v", plan, err)
+			}
+		})
+	}
+}
+
+func recoveryFilesystemFixture(t *testing.T) (backupjournal.Handle, []filesystemRoot, [][]byte) {
+	handle, roots, before, _ := recoveryFilesystemFixtureWithHome(t)
+	return handle, roots, before
+}
+
+func recoveryFilesystemFixtureWithHome(t *testing.T) (backupjournal.Handle, []filesystemRoot, [][]byte, string) {
+	t.Helper()
+	roots := make([]filesystemRoot, 0, len(runtimeList))
+	bindings := make([]backupjournal.RootBinding, 0, len(runtimeList))
+	inputs := make([]backupjournal.RecoverableEntryInput, 0, len(runtimeList))
+	blobs := make([]backupjournal.BlobInput, 0, len(runtimeList))
+	before := make([][]byte, 0, len(runtimeList))
+	for _, runtime := range runtimeList {
+		root, err := newFilesystemRoot(runtime, backupjournal.RootKind(runtime), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := []byte(string(runtime) + " before")
+		if err := os.WriteFile(filepath.Join(root.path, "config.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		roots = append(roots, root)
+		bindings = append(bindings, root.binding)
+		inputs = append(inputs, backupjournal.RecoverableEntryInput{
+			Before: backupjournal.EntryInput{Runtime: runtime, Root: backupjournal.RootKind(runtime), RelativePath: "config.json", Existence: backupjournal.Present, Mode: 0600, SHA256: hashBytes(data), Length: int64(len(data))},
+			After:  backupjournal.Evidence{Existence: backupjournal.Absent},
+		})
+		blobs = append(blobs, backupjournal.BlobInput{Runtime: runtime, RelativePath: "config.json", Bytes: data, Mode: 0600})
+		before = append(before, append([]byte(nil), data...))
+	}
+	manifest, err := backupjournal.NewRecoverable(hashBytes([]byte("transaction")), hashBytes([]byte("candidate")), bindings, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if _, err = backupjournal.Create(home, manifest, blobs); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := backupjournal.Open(home, manifest.TransactionID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle, roots, before, home
+}
+
+func mixedRecoveryFilesystemFixture(t *testing.T) (backupjournal.Handle, []filesystemRoot) {
+	t.Helper()
+	inputs := make([]backupjournal.RecoverableEntryInput, 0, len(runtimeList))
+	bindings := make([]backupjournal.RootBinding, 0, len(runtimeList))
+	blobs := make([]backupjournal.BlobInput, 0, len(runtimeList))
+	roots := make([]filesystemRoot, 0, len(runtimeList))
+	for index, runtime := range runtimeList {
+		root, err := newFilesystemRoot(runtime, backupjournal.RootKind(runtime), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, after := backupjournal.Present, backupjournal.Absent
+		beforeData := []byte(string(runtime) + " before")
+		if index == 0 {
+			before, after = backupjournal.Absent, backupjournal.Present
+		}
+		inputs = append(inputs, backupjournal.RecoverableEntryInput{
+			Before: entry(runtime, before, beforeData),
+			After:  evidence(after, []byte(string(runtime)+" after")),
+		})
+		if before == backupjournal.Present {
+			blobs = append(blobs, backupjournal.BlobInput{Runtime: runtime, RelativePath: "config.json", Bytes: beforeData, Mode: 0600})
+		}
+		if index == 2 {
+			name := filepath.Join(root.path, "config.json")
+			mustNoFilesystemError(t, os.WriteFile(name, beforeData, 0640))
+			mustNoFilesystemError(t, os.Chmod(name, 0640))
+		}
+		roots = append(roots, root)
+		bindings = append(bindings, root.binding)
+	}
+	manifest, err := backupjournal.NewRecoverable(hash("mixed transaction"), hash("mixed candidate"), bindings, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if _, err = backupjournal.Create(home, manifest, blobs); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := backupjournal.Open(home, manifest.TransactionID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle, roots
+}
+
+type recoveryFileSnapshot struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+func snapshotRecoveryFiles(t *testing.T, roots []filesystemRoot) []recoveryFileSnapshot {
+	t.Helper()
+	snapshots := make([]recoveryFileSnapshot, len(roots))
+	for index, root := range roots {
+		name := filepath.Join(root.path, "config.json")
+		info, err := os.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshots[index] = recoveryFileSnapshot{exists: true, data: data, mode: info.Mode()}
+	}
+	return snapshots
+}
+
+func assertRecoveryFilesUnchanged(t *testing.T, roots []filesystemRoot, want []recoveryFileSnapshot) {
+	t.Helper()
+	if got := snapshotRecoveryFiles(t, roots); len(got) != len(want) {
+		t.Fatalf("file snapshot count = %d, want %d", len(got), len(want))
+	} else {
+		for index := range want {
+			if got[index].exists != want[index].exists || !bytes.Equal(got[index].data, want[index].data) || got[index].mode != want[index].mode {
+				t.Fatalf("file %d changed: got %#v, want %#v", index, got[index], want[index])
+			}
+		}
+	}
+}
+
+func snapshotRecoveryBlobs(t *testing.T, handle backupjournal.Handle) map[entryKey][]byte {
+	t.Helper()
+	manifest, ok := handle.Manifest()
+	if !ok {
+		t.Fatal("handle has no manifest")
+	}
+	blobs := make(map[entryKey][]byte)
+	for _, entry := range manifest.Entries() {
+		if entry.Existence == backupjournal.Present {
+			data, found := handle.Blob(entry.Runtime, entry.RelativePath)
+			if !found {
+				t.Fatalf("missing blob for %q", entry.RelativePath)
+			}
+			blobs[keyFor(entry)] = data
+		}
+	}
+	return blobs
+}
+
+func assertRecoveryBlobsUnchanged(t *testing.T, handle backupjournal.Handle, want map[entryKey][]byte) {
+	t.Helper()
+	got := snapshotRecoveryBlobs(t, handle)
+	if len(got) != len(want) {
+		t.Fatalf("blob count = %d, want %d", len(got), len(want))
+	}
+	for key, data := range want {
+		if !bytes.Equal(got[key], data) {
+			t.Fatalf("blob %q changed", key)
+		}
+	}
+}
+
 func filesystemRootForTest(t *testing.T) filesystemRoot {
 	t.Helper()
 	root, err := newFilesystemRoot(backupjournal.RuntimePi, backupjournal.RootPi, t.TempDir())

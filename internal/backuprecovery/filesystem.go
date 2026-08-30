@@ -54,6 +54,65 @@ func osFilesystemOperations() filesystemOperations {
 	return filesystemOperations{open: func(root *os.Root, name string) (filesystemFile, error) { return root.Open(name) }}
 }
 
+func observeFilesystemRecovery(handle backupjournal.Handle, roots []filesystemRoot) (recoveryPlan, error) {
+	manifest, ok := handle.Manifest()
+	if !ok {
+		return recoveryPlan{}, invalidFilesystem()
+	}
+	rootsByRuntime, ok := rootsForManifest(manifest, roots)
+	if !ok {
+		return recoveryPlan{}, invalidFilesystem()
+	}
+	entries := manifest.Entries()
+	current := make([]currentEvidence, 0, len(entries))
+	blobs := make([]beforeBlob, 0, len(entries))
+	for _, entry := range entries {
+		root := rootsByRuntime[entry.Runtime]
+		evidence, err := readFilesystemEntry(entry, root, defaultFilesystemReadOptions(), osFilesystemOperations())
+		if err != nil {
+			return recoveryPlan{}, err
+		}
+		current = append(current, evidence)
+		if entry.Existence == backupjournal.Present {
+			data, found := handle.Blob(entry.Runtime, entry.RelativePath)
+			if !found {
+				return recoveryPlan{}, invalidFilesystem()
+			}
+			blobs = append(blobs, newBeforeBlob(keyFor(entry), data))
+		}
+	}
+	return classify(manifest, blobs, current)
+}
+
+func rootsForManifest(manifest backupjournal.Manifest, roots []filesystemRoot) (map[backupjournal.Runtime]filesystemRoot, bool) {
+	bindings := manifest.RootBindings()
+	if len(bindings) == 0 || len(roots) != len(bindings) {
+		return nil, false
+	}
+	rootsByRuntime := make(map[backupjournal.Runtime]filesystemRoot, len(roots))
+	for _, root := range roots {
+		if !validFilesystemRoot(root) {
+			return nil, false
+		}
+		if _, duplicate := rootsByRuntime[root.runtime]; duplicate {
+			return nil, false
+		}
+		rootsByRuntime[root.runtime] = root
+	}
+	for _, binding := range bindings {
+		root, found := rootsByRuntime[binding.Runtime()]
+		if !found || root.runtime != binding.Runtime() || root.kind != binding.Kind() || root.binding != binding {
+			return nil, false
+		}
+	}
+	return rootsByRuntime, true
+}
+
+func validFilesystemRoot(root filesystemRoot) bool {
+	return root.runtime != "" && root.kind != "" && root.path != "" && root.identity != nil &&
+		root.binding.Runtime() == root.runtime && root.binding.Kind() == root.kind && root.binding.MatchesRoot(root.path)
+}
+
 func readFilesystemEntry(entry backupjournal.Entry, root filesystemRoot, options filesystemReadOptions, operations filesystemOperations) (currentEvidence, error) {
 	key, err := validFilesystemRead(entry, root, options, operations)
 	if err != nil {

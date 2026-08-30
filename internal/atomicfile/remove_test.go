@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/refactor-ia/cortex/internal/safepath"
 )
 
 func TestRemoveIfExactRemovesMatchingRegularFile(t *testing.T) {
@@ -24,6 +26,22 @@ func TestRemoveIfExactRemovesMatchingRegularFile(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed file stat error = %v, want not exist", err)
+	}
+}
+
+func TestRemoveIfExactRemovesMatchingZeroByteFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "safe", "empty.txt")
+	writeFile(t, path, []byte{})
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveIfExact(root, "safe/empty.txt", []byte{}, 0o600); err != nil {
+		t.Fatalf("RemoveIfExact() error = %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed zero-byte file stat error = %v, want not exist", err)
 	}
 }
 
@@ -183,6 +201,7 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 	}
 	lstatCalls := 0
 	operations := exactRemovalOperations{
+		resolve: safepath.Resolve,
 		lstat: func(name string) (fs.FileInfo, error) {
 			lstatCalls++
 			if lstatCalls == 2 {
@@ -210,6 +229,137 @@ func TestRemoveIfExactDetectsIdentityDrift(t *testing.T) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || !bytes.Equal(data, replacement) {
 		t.Fatalf("replacement data = %q, error %v", data, readErr)
+	}
+}
+
+func TestRemoveIfExactRevalidatesPathBeforeRemoval(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	data := []byte("cortex-created")
+	path := filepath.Join(root, "safe", "config.txt")
+	outsidePath := filepath.Join(outside, "config.txt")
+	writeFile(t, path, data)
+	writeFile(t, outsidePath, data)
+	for _, name := range []string{path, outsidePath} {
+		if err := os.Chmod(name, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resolveCalls := 0
+	operations := exactRemovalOperations{
+		resolve: func(root, relativePath string) (string, error) {
+			resolveCalls++
+			if resolveCalls == 2 {
+				if err := os.Rename(filepath.Join(root, "safe"), filepath.Join(root, "displaced")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "safe")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return safepath.Resolve(root, relativePath)
+		},
+		lstat: os.Lstat,
+		open:  os.Open,
+		remove: func(string) error {
+			t.Fatal("removeIfExact() attempted removal after ancestor drift")
+			return nil
+		},
+		syncDirectory: syncDirectory,
+	}
+
+	err := removeIfExact(root, "safe/config.txt", data, 0o600, operations)
+	if err == nil || !strings.Contains(err.Error(), "destination is unsafe") {
+		t.Fatalf("removeIfExact() error = %v, want unsafe destination", err)
+	}
+	for _, preserved := range []string{filepath.Join(root, "displaced", "config.txt"), outsidePath} {
+		actual, readErr := os.ReadFile(preserved)
+		if readErr != nil || !bytes.Equal(actual, data) {
+			t.Fatalf("preserved file %q = %q, error %v", preserved, actual, readErr)
+		}
+	}
+}
+
+func TestRemoveIfExactRechecksBytesBeforeRemoval(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "safe", "config.txt")
+	original := []byte("cortex-created")
+	replacement := []byte("user-rewritten")
+	writeFile(t, path, original)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolveCalls := 0
+	operations := exactRemovalOperations{
+		resolve: func(root, relativePath string) (string, error) {
+			resolveCalls++
+			if resolveCalls == 2 {
+				if err := os.WriteFile(path, replacement, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return safepath.Resolve(root, relativePath)
+		},
+		lstat: os.Lstat,
+		open:  os.Open,
+		remove: func(string) error {
+			t.Fatal("removeIfExact() attempted removal after byte drift")
+			return nil
+		},
+		syncDirectory: syncDirectory,
+	}
+
+	err := removeIfExact(root, "safe/config.txt", original, 0o600, operations)
+	if err == nil || !strings.Contains(err.Error(), "destination bytes do not match") {
+		t.Fatalf("removeIfExact() error = %v, want byte drift", err)
+	}
+	actual, readErr := os.ReadFile(path)
+	if readErr != nil || !bytes.Equal(actual, replacement) {
+		t.Fatalf("preserved replacement = %q, error %v", actual, readErr)
+	}
+}
+
+func TestRemoveIfExactRechecksModeBeforeRemoval(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "safe", "config.txt")
+	data := []byte("cortex-created")
+	writeFile(t, path, data)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolveCalls := 0
+	operations := exactRemovalOperations{
+		resolve: func(root, relativePath string) (string, error) {
+			resolveCalls++
+			if resolveCalls == 2 {
+				if err := os.Chmod(path, 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return safepath.Resolve(root, relativePath)
+		},
+		lstat: os.Lstat,
+		open:  os.Open,
+		remove: func(string) error {
+			t.Fatal("removeIfExact() attempted removal after mode drift")
+			return nil
+		},
+		syncDirectory: syncDirectory,
+	}
+
+	err := removeIfExact(root, "safe/config.txt", data, 0o600, operations)
+	if err == nil || !strings.Contains(err.Error(), "destination mode does not match") {
+		t.Fatalf("removeIfExact() error = %v, want mode drift", err)
+	}
+	actual, readErr := os.ReadFile(path)
+	if readErr != nil || !bytes.Equal(actual, data) {
+		t.Fatalf("preserved file = %q, error %v", actual, readErr)
+	}
+	if info, statErr := os.Lstat(path); statErr != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("preserved mode = %v, error %v", info, statErr)
 	}
 }
 
@@ -251,16 +401,17 @@ func TestRemoveIfExactRequiresDurabilityAndReadback(t *testing.T) {
 			if tt.readbackFailure {
 				lstat = func(name string) (fs.FileInfo, error) {
 					lstatCalls++
-					if lstatCalls < 3 {
+					if lstatCalls < 5 {
 						return os.Lstat(name)
 					}
 					return nil, errors.New("readback unavailable")
 				}
 			}
 			operations := exactRemovalOperations{
-				lstat:  lstat,
-				open:   os.Open,
-				remove: os.Remove,
+				resolve: safepath.Resolve,
+				lstat:   lstat,
+				open:    os.Open,
+				remove:  os.Remove,
 				syncDirectory: func(directory string) error {
 					syncCalls++
 					return tt.sync(directory)

@@ -117,6 +117,8 @@ EXPECTED_FILES = {
         "internal/catalog/family.go",
         "internal/catalog/family_test.go",
         "internal/catalog/load.go",
+        "internal/qaactor/actor_test.go",
+        "internal/qaactor/source.go",
         "internal/qarole/role.go",
         "internal/qarole/role_test.go",
         "internal/qarole/source.go",
@@ -220,8 +222,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 169)
-                self.assertEqual(len(actual_files), 169)
+                self.assertEqual(len(EXPECTED_FILES), 171)
+                self.assertEqual(len(actual_files), 171)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

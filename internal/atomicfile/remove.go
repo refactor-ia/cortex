@@ -16,6 +16,7 @@ import (
 const removeExactMaxEvidenceBytes = 32 << 20
 
 type exactRemovalOperations struct {
+	resolve       func(string, string) (string, error)
 	lstat         func(string) (fs.FileInfo, error)
 	open          func(string) (*os.File, error)
 	remove        func(string) error
@@ -29,6 +30,7 @@ type exactRemovalOperations struct {
 // race between that final check and removal.
 func RemoveIfExact(root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode) error {
 	return removeIfExact(root, relativePath, expectedBytes, expectedMode, exactRemovalOperations{
+		resolve:       safepath.Resolve,
 		lstat:         os.Lstat,
 		open:          os.Open,
 		remove:        os.Remove,
@@ -40,7 +42,14 @@ func removeIfExact(root, relativePath string, expectedBytes []byte, expectedMode
 	if err := validateExactRemoval(root, relativePath, expectedBytes, expectedMode); err != nil {
 		return err
 	}
-	destination, err := safepath.Resolve(root, relativePath)
+	destination, err := operations.resolve(root, relativePath)
+	if err != nil {
+		return errors.New("atomic remove exact: destination is unsafe")
+	}
+	if err := exactRemovalMatches(destination, expectedBytes, expectedMode, operations); err != nil {
+		return err
+	}
+	destination, err = operations.resolve(root, relativePath)
 	if err != nil {
 		return errors.New("atomic remove exact: destination is unsafe")
 	}
@@ -79,7 +88,7 @@ func validateExactRemoval(root, relativePath string, expectedBytes []byte, expec
 			return errors.New("atomic remove exact: invalid relative path")
 		}
 	}
-	if len(expectedBytes) == 0 || len(expectedBytes) > removeExactMaxEvidenceBytes {
+	if expectedBytes == nil || len(expectedBytes) > removeExactMaxEvidenceBytes {
 		return errors.New("atomic remove exact: invalid expected bytes")
 	}
 	if expectedMode&^fs.FileMode(0o777) != 0 {

@@ -1,6 +1,8 @@
 package qaactor
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,8 +76,16 @@ func TestSourcesRetainsChangedCatalogBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(sources.Sources()[4].Body()), "# Changed Test Runner") {
-		t.Fatal("Sources() did not retain the supplied snapshot bytes")
+	rendered, err := Render(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, actor := sources.Sources()[4], rendered.Actors()[4]
+	if source.SourceSHA256() != fmt.Sprintf("%x", sha256.Sum256(source.Body())) || actor.SourceSHA256() != source.SourceSHA256() || actor.GeneratedSHA256() != fmt.Sprintf("%x", sha256.Sum256(actor.Content())) || actor.SourceSHA256() == actor.GeneratedSHA256() {
+		t.Fatal("Render did not derive independent source and generated hashes")
+	}
+	if !strings.Contains(string(source.Body()), "# Changed Test Runner") || !strings.HasSuffix(string(actor.Content()), string(source.Body())) {
+		t.Fatal("Render did not preserve the changed admitted source body")
 	}
 }
 
@@ -119,4 +129,83 @@ func qaFamily(t *testing.T, snapshot catalog.CatalogSnapshot) catalog.CatalogFam
 	}
 	t.Fatal("quality-assurance family is missing")
 	return catalog.CatalogFamilySnapshot{}
+}
+
+func TestRenderReturnsCanonicalGoldens(t *testing.T) {
+	sourceSet, rendered := testRendered(t)
+	if rendered.ActorContract() != ActorContractVersion {
+		t.Fatalf("actor contract = %q, want %q", rendered.ActorContract(), ActorContractVersion)
+	}
+	if rendered.CatalogFingerprint() != sourceSet.CatalogFingerprint() {
+		t.Fatal("rendered catalog fingerprint differs from source set")
+	}
+	sources := sourceSet.Sources()
+	actors := rendered.Actors()
+	if len(actors) != len(sources) {
+		t.Fatalf("actor count = %d, want %d", len(actors), len(sources))
+	}
+	for index, actor := range actors {
+		source := sources[index]
+		expected, err := os.ReadFile(filepath.Join("testdata", "pi-actors", string(source.RoleID())+".golden"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actor.RoleID() != source.RoleID() || actor.RoleContractVersion() != source.RoleContractVersion() || actor.Description() != source.Description() {
+			t.Fatalf("actor %d does not preserve its source identity", index)
+		}
+		if actor.SourceSHA256() != source.SourceSHA256() || actor.GeneratedSHA256() != fmt.Sprintf("%x", sha256.Sum256(actor.Content())) {
+			t.Fatalf("actor %q has incorrect hashes", actor.RoleID())
+		}
+		if string(actor.Content()) != string(expected) || !strings.HasSuffix(string(expected), string(source.Body())) {
+			t.Fatalf("actor %q differs from its golden or source body", actor.RoleID())
+		}
+		if strings.HasPrefix(string(expected), "\ufeff") || strings.Count(string(expected), "\n") != 23 || !strings.HasSuffix(string(expected), "\n") {
+			t.Fatalf("actor %q golden does not have exact LF-only line shape", actor.RoleID())
+		}
+	}
+}
+
+func TestRenderUsesDeterministicScalarQuoting(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{"requires: quoting", `"requires: quoting"`},
+		{"true", `"true"`},
+		{"null", `"null"`},
+		{"123", `"123"`},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			if got := yamlScalar(tc.value); got != tc.want {
+				t.Fatalf("yamlScalar(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderCopiesValuesAndRejectsUnusableSourceSets(t *testing.T) {
+	if _, err := Render(SourceSet{}); err == nil {
+		t.Fatal("Render accepted an unusable source set")
+	}
+
+	_, rendered := testRendered(t)
+	sources := rendered.Sources()
+	actors := rendered.Actors()
+	content := actors[0].Content()
+	sources[0].body[0] = 'X'
+	actors[0].content[0] = 'X'
+	content[0] = 'X'
+	if rendered.Sources()[0].body[0] == 'X' || rendered.Actors()[0].content[0] == 'X' || rendered.Actors()[0].Content()[0] == 'X' {
+		t.Fatal("Set returned shared source or actor bytes")
+	}
+}
+
+func testRendered(t *testing.T) (SourceSet, Set) {
+	t.Helper()
+	sourceSet, err := Sources(testSnapshot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(sourceSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceSet, rendered
 }

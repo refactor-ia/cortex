@@ -185,6 +185,9 @@ type v2ManifestWire struct {
 }
 
 func decodeV2(data []byte) (Manifest, error) {
+	if err := rejectDuplicateV2ArtifactMembers(data); err != nil {
+		return Manifest{}, invalid()
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var wire v2ManifestWire
@@ -234,6 +237,99 @@ func decodeV2(data []byte) (Manifest, error) {
 		return Manifest{}, invalid()
 	}
 	return manifest, nil
+}
+
+func rejectDuplicateV2ArtifactMembers(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return errors.New("install state: invalid JSON")
+	}
+	for decoder.More() {
+		token, err = decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok {
+			return errors.New("install state: invalid JSON")
+		}
+		if key == "artifacts" {
+			if err := scanV2ArtifactMembers(decoder); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := consumeJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return errors.New("install state: invalid JSON")
+	}
+	if token, err = decoder.Token(); err != io.EOF || token != nil {
+		return errors.New("install state: invalid JSON")
+	}
+	return nil
+}
+
+func scanV2ArtifactMembers(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('{') {
+		return consumeJSONToken(decoder, token)
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		token, err = decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || seen[key] {
+			return errors.New("install state: invalid JSON")
+		}
+		seen[key] = true
+		if err := consumeJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return errors.New("install state: invalid JSON")
+	}
+	return nil
+}
+
+func consumeJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	return consumeJSONToken(decoder, token)
+}
+
+func consumeJSONToken(decoder *json.Decoder, token json.Token) error {
+	object := token == json.Delim('{')
+	closing := json.Delim(']')
+	if object {
+		closing = json.Delim('}')
+	} else if token != json.Delim('[') {
+		return nil
+	}
+	for decoder.More() {
+		if object {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if _, ok := key.(string); !ok {
+				return errors.New("install state: invalid JSON")
+			}
+		}
+		if err := consumeJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != closing {
+		return errors.New("install state: invalid JSON")
+	}
+	return nil
 }
 
 type artifactEncoded struct {

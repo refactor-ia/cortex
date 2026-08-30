@@ -37,10 +37,13 @@ type beforeBlob struct {
 	bytes []byte
 }
 type recoveryEntry struct {
-	key    entryKey
-	state  classification
-	before currentEvidence
-	after  currentEvidence
+	key          entryKey
+	runtime      backupjournal.Runtime
+	relativePath string
+	state        classification
+	before       currentEvidence
+	after        currentEvidence
+	current      currentEvidence
 }
 type recoveryPlan struct {
 	entries []recoveryEntry
@@ -127,7 +130,15 @@ func classify(manifest backupjournal.Manifest, blobs []beforeBlob, current []cur
 		}
 		delete(currentByKey, key)
 		state := classifyCurrent(evidence, before, after)
-		plan.entries[index] = recoveryEntry{key: key, state: state, before: copyCurrent(before), after: copyCurrent(after)}
+		plan.entries[index] = recoveryEntry{
+			key:          key,
+			runtime:      entry.Runtime,
+			relativePath: entry.RelativePath,
+			state:        state,
+			before:       copyCurrent(before),
+			after:        copyCurrent(after),
+			current:      copyCurrent(evidence),
+		}
 		plan.ready = plan.ready && (state == atBefore || state == atAfter)
 	}
 	if len(blobsByKey) != 0 || len(currentByKey) != 0 {

@@ -60,8 +60,13 @@ func TestV2Model(t *testing.T) {
 	if manifest.Artifacts()[0].LogicalID() != "actors/adversarial-tester" {
 		t.Fatal("Artifacts exposed state")
 	}
-	if _, err := Encode(manifest); err == nil {
-		t.Fatal("Encode() accepted v2 before the v2 codec exists")
+	encoded, err := Encode(manifest)
+	if err != nil {
+		t.Fatalf("Encode() = %v", err)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil || !bytes.Equal(encoded, mustEncode(t, decoded)) {
+		t.Fatalf("Decode(Encode(manifest)) = (%+v, %v)", decoded, err)
 	}
 }
 

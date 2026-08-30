@@ -120,6 +120,7 @@ EXPECTED_FILES = {
         "internal/qaactor/actor_test.go",
         "internal/qaactor/render.go",
         "internal/qaactor/source.go",
+        "internal/qaactor/validate.go",
         "internal/qaactor/testdata/pi-actors/requirements-analyst.golden",
         "internal/qaactor/testdata/pi-actors/test-designer.golden",
         "internal/qaactor/testdata/pi-actors/exploratory-tester.golden",
@@ -229,8 +230,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 178)
-                self.assertEqual(len(actual_files), 178)
+                self.assertEqual(len(EXPECTED_FILES), 179)
+                self.assertEqual(len(actual_files), 179)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

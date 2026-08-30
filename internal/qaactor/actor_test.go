@@ -209,3 +209,119 @@ func testRendered(t *testing.T) (SourceSet, Set) {
 	}
 	return sourceSet, rendered
 }
+
+func TestValidateAcceptsCanonicalRenderedSet(t *testing.T) {
+	_, rendered := testRendered(t)
+	if err := Validate(rendered); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidSetStructure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Set)
+	}{
+		{"actor contract", func(set *Set) { set.actorContract = "other" }},
+		{"catalog fingerprint", func(set *Set) { set.catalogFingerprint = "not-a-fingerprint" }},
+		{"missing source", func(set *Set) { set.sources = set.sources[:5] }},
+		{"extra actor", func(set *Set) { set.actors = append(set.actors, set.actors[0]) }},
+		{"duplicate source", func(set *Set) { set.sources[1].roleID = set.sources[0].roleID }},
+		{"reordered actor", func(set *Set) { set.actors[0], set.actors[1] = set.actors[1], set.actors[0] }},
+		{"source role contract", func(set *Set) { set.sources[0].roleContractVersion = "other" }},
+		{"empty source description", func(set *Set) { set.sources[0].description = "" }},
+		{"source body hash", func(set *Set) { set.sources[0].sourceSHA256 = "bad" }},
+		{"source markers", func(set *Set) {
+			set.sources[0].body = []byte(strings.Replace(string(set.sources[0].body), "<!-- cortex-qa:role-id=requirements-analyst -->", "", 1))
+			refreshSourceHash(&set.sources[0])
+		}},
+		{"actor source identity", func(set *Set) { set.actors[0].sourceSHA256 = "bad" }},
+		{"actor role contract", func(set *Set) { set.actors[0].roleContractVersion = "other" }},
+		{"actor generated hash", func(set *Set) { set.actors[0].generatedSHA256 = "bad" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, rendered := testRendered(t)
+			tc.mutate(&rendered)
+			if err := Validate(rendered); err == nil {
+				t.Fatal("Validate() accepted an invalid actor set")
+			}
+		})
+	}
+}
+
+func TestValidateRejectsCanonicalContentDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{"unknown frontmatter", func(content string) string {
+			return strings.Replace(content, "tools:\n", "unknown: value\ntools:\n", 1)
+		}},
+		{"duplicate frontmatter", func(content string) string {
+			return strings.Replace(content, "name: cortex-requirements-analyst\n", "name: cortex-requirements-analyst\nname: cortex-requirements-analyst\n", 1)
+		}},
+		{"reordered frontmatter", func(content string) string {
+			return strings.Replace(content, "name: cortex-requirements-analyst\ndescription:", "description:", 1) + "\nname: cortex-requirements-analyst"
+		}},
+		{"single mode", func(content string) string {
+			return strings.Replace(content, "subagent_mode: task", "subagent_mode: single", 1)
+		}},
+		{"background mode", func(content string) string {
+			return strings.Replace(content, "subagent_mode: task", "subagent_mode: background", 1)
+		}},
+		{"tool change", func(content string) string { return strings.Replace(content, "  - ls", "  - write", 1) }},
+		{"provider branding", func(content string) string {
+			return strings.Replace(content, "description:", "provider: nan\ndescription:", 1)
+		}},
+		{"model branding", func(content string) string {
+			return strings.Replace(content, "description:", "model: qwen\ndescription:", 1)
+		}},
+		{"effort branding", func(content string) string {
+			return strings.Replace(content, "description:", "effort: high\ndescription:", 1)
+		}},
+		{"profile branding", func(content string) string {
+			return strings.Replace(content, "description:", "profile: default\ndescription:", 1)
+		}},
+		{"BOM", func(content string) string { return "\ufeff" + content }},
+		{"CRLF", func(content string) string { return strings.ReplaceAll(content, "\n", "\r\n") }},
+		{"separator", func(content string) string { return strings.Replace(content, "---\n\n#", "---\n#", 1) }},
+		{"body", func(content string) string { return strings.Replace(content, "# Requirements Analyst", "# Other", 1) }},
+		{"trailing bytes", func(content string) string { return content + "extra\n" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, rendered := testRendered(t)
+			rendered.actors[0].content = []byte(tc.mutate(string(rendered.actors[0].content)))
+			refreshActorHash(&rendered.actors[0])
+			if err := Validate(rendered); err == nil {
+				t.Fatal("Validate() accepted non-canonical actor content")
+			}
+		})
+	}
+}
+
+func TestValidateOnlyProvesInternalSourceIntegrity(t *testing.T) {
+	_, rendered := testRendered(t)
+	replacement := append([]byte(nil), rendered.sources[0].body...)
+	replacement = append(replacement, []byte("\nReplacement text with retained markers.\n")...)
+	rendered.sources[0].body = replacement
+	refreshSourceHash(&rendered.sources[0])
+
+	canonical, err := Render(SourceSet{
+		catalogFingerprint: rendered.catalogFingerprint,
+		sources:            rendered.Sources(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(canonical); err != nil {
+		t.Fatalf("Validate() rejected internally consistent replacement: %v", err)
+	}
+}
+
+func refreshSourceHash(source *Source) {
+	source.sourceSHA256 = fmt.Sprintf("%x", sha256.Sum256(source.body))
+}
+
+func refreshActorHash(actor *Actor) {
+	actor.generatedSHA256 = fmt.Sprintf("%x", sha256.Sum256(actor.content))
+}

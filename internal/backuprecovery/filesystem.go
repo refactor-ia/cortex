@@ -55,6 +55,9 @@ func osFilesystemOperations() filesystemOperations {
 }
 
 func observeFilesystemRecovery(handle backupjournal.Handle, roots []filesystemRoot) (recoveryPlan, error) {
+	if handle.State() == backupjournal.Committed || handle.State() == backupjournal.Recovered {
+		return recoveryPlan{}, terminalFilesystem()
+	}
 	manifest, ok := handle.Manifest()
 	if !ok {
 		return recoveryPlan{}, invalidFilesystem()
@@ -214,6 +217,9 @@ func sameFilesystemFile(left, right os.FileInfo) bool {
 }
 
 type invalidFilesystemError struct{}
+type terminalFilesystemError struct{}
 
-func (invalidFilesystemError) Error() string { return "backup recovery: invalid filesystem evidence" }
-func invalidFilesystem() error               { return invalidFilesystemError{} }
+func (invalidFilesystemError) Error() string  { return "backup recovery: invalid filesystem evidence" }
+func (terminalFilesystemError) Error() string { return "backup recovery: terminal journal handle" }
+func invalidFilesystem() error                { return invalidFilesystemError{} }
+func terminalFilesystem() error               { return terminalFilesystemError{} }

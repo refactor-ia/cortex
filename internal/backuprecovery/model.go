@@ -150,7 +150,7 @@ func validCurrent(value currentEvidence) bool {
 	if value.state == currentAbsent || value.state == currentUnsafe {
 		return value.mode == 0 && value.length == 0 && value.hash == "" && len(value.bytes) == 0
 	}
-	return value.state == currentPresent && validJournal(value) && int64(len(value.bytes)) == value.length && hashBytes(value.bytes) == value.hash
+	return value.state == currentPresent && value.mode <= 0777 && value.length >= 0 && validHash(value.hash) && int64(len(value.bytes)) == value.length && hashBytes(value.bytes) == value.hash
 }
 func validJournal(value currentEvidence) bool {
 	return (value.state == currentAbsent && value.mode == 0 && value.length == 0 && value.hash == "" && len(value.bytes) == 0) ||

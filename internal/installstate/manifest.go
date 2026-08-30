@@ -103,11 +103,37 @@ type manifestWire struct {
 	Artifacts           *map[string]*artifactWire `json:"artifacts"`
 }
 
-// Decode strictly decodes a version 1 candidate installed-state manifest.
+type schemaVersionWire struct {
+	SchemaVersion *int `json:"schemaVersion"`
+}
+
+// Decode strictly decodes a versioned candidate installed-state manifest.
 func Decode(data []byte) (Manifest, error) {
 	if !utf8.Valid(data) {
 		return Manifest{}, errors.New("install state: invalid JSON")
 	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var version schemaVersionWire
+	if err := decoder.Decode(&version); err != nil {
+		return Manifest{}, errors.New("install state: invalid JSON")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Manifest{}, errors.New("install state: trailing JSON")
+	}
+	if version.SchemaVersion == nil {
+		return Manifest{}, errors.New("install state: required field is missing")
+	}
+	switch *version.SchemaVersion {
+	case 1:
+		return decodeV1(data)
+	case 2:
+		return decodeV2(data)
+	default:
+		return Manifest{}, invalid()
+	}
+}
+
+func decodeV1(data []byte) (Manifest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var wire manifestWire
@@ -137,6 +163,79 @@ func Decode(data []byte) (Manifest, error) {
 	return manifest, nil
 }
 
+type v2ArtifactWire struct {
+	Kind                 *Kind           `json:"kind"`
+	CapabilityID         *string         `json:"capabilityId"`
+	RoleID               *qarole.RoleID  `json:"roleId"`
+	ActorContractVersion *string         `json:"actorContractVersion"`
+	RelativePath         *string         `json:"relativePath"`
+	SHA256               *string         `json:"sha256"`
+	InstallationID       *InstallationID `json:"installationId"`
+}
+
+type v2ManifestWire struct {
+	SchemaVersion       *int                        `json:"schemaVersion"`
+	Owner               *string                     `json:"owner"`
+	Scope               *string                     `json:"scope"`
+	Runtime             *runtimematrix.RuntimeID    `json:"runtime"`
+	RootKind            *skilldest.RootKind         `json:"rootKind"`
+	SnapshotFingerprint *string                     `json:"snapshotFingerprint"`
+	InstallationID      *InstallationID             `json:"installationId"`
+	Artifacts           *map[string]*v2ArtifactWire `json:"artifacts"`
+}
+
+func decodeV2(data []byte) (Manifest, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var wire v2ManifestWire
+	if err := decoder.Decode(&wire); err != nil {
+		return Manifest{}, errors.New("install state: invalid JSON")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Manifest{}, errors.New("install state: trailing JSON")
+	}
+	if wire.SchemaVersion == nil || wire.Owner == nil || wire.Scope == nil || wire.Runtime == nil || wire.RootKind == nil || wire.SnapshotFingerprint == nil || wire.InstallationID == nil || wire.Artifacts == nil {
+		return Manifest{}, errors.New("install state: required field is missing")
+	}
+	if *wire.SchemaVersion != 2 || *wire.Owner != "cortex" || *wire.Scope != "user" {
+		return Manifest{}, invalid()
+	}
+	inputs := make([]V2ArtifactInput, 0, len(*wire.Artifacts))
+	for logicalID, artifact := range *wire.Artifacts {
+		if artifact == nil || artifact.Kind == nil || artifact.RelativePath == nil || artifact.SHA256 == nil || artifact.InstallationID == nil {
+			return Manifest{}, invalid()
+		}
+		input := V2ArtifactInput{
+			LogicalID:      logicalID,
+			Kind:           *artifact.Kind,
+			RelativePath:   *artifact.RelativePath,
+			SHA256:         *artifact.SHA256,
+			InstallationID: *artifact.InstallationID,
+		}
+		switch input.Kind {
+		case KindSkill:
+			if artifact.CapabilityID == nil || artifact.RoleID != nil || artifact.ActorContractVersion != nil {
+				return Manifest{}, invalid()
+			}
+			input.CapabilityID = *artifact.CapabilityID
+		case KindPiActor:
+			if artifact.CapabilityID != nil || artifact.RoleID == nil || artifact.ActorContractVersion == nil {
+				return Manifest{}, invalid()
+			}
+			input.RoleID = *artifact.RoleID
+			input.ActorContractVersion = *artifact.ActorContractVersion
+		default:
+			return Manifest{}, invalid()
+		}
+		inputs = append(inputs, input)
+	}
+	manifest, err := NewV2(*wire.Runtime, *wire.RootKind, *wire.SnapshotFingerprint, *wire.InstallationID, inputs)
+	if err != nil {
+		return Manifest{}, invalid()
+	}
+	return manifest, nil
+}
+
 type artifactEncoded struct {
 	RelativePath string `json:"relativePath"`
 	SHA256       string `json:"sha256"`
@@ -151,16 +250,65 @@ type manifestEncoded struct {
 	Artifacts           map[string]artifactEncoded `json:"artifacts"`
 }
 
+type v2ArtifactEncoded struct {
+	Kind                 Kind           `json:"kind"`
+	CapabilityID         string         `json:"capabilityId,omitempty"`
+	RoleID               qarole.RoleID  `json:"roleId,omitempty"`
+	ActorContractVersion string         `json:"actorContractVersion,omitempty"`
+	RelativePath         string         `json:"relativePath"`
+	SHA256               string         `json:"sha256"`
+	InstallationID       InstallationID `json:"installationId"`
+}
+
+type v2ManifestEncoded struct {
+	SchemaVersion       int                          `json:"schemaVersion"`
+	Owner               string                       `json:"owner"`
+	Scope               string                       `json:"scope"`
+	Runtime             runtimematrix.RuntimeID      `json:"runtime"`
+	RootKind            skilldest.RootKind           `json:"rootKind"`
+	SnapshotFingerprint string                       `json:"snapshotFingerprint"`
+	InstallationID      InstallationID               `json:"installationId"`
+	Artifacts           map[string]v2ArtifactEncoded `json:"artifacts"`
+}
+
 // Encode validates and canonically encodes candidate state.
 func Encode(manifest Manifest) ([]byte, error) {
-	if manifest.schemaVersion != 1 || !valid(manifest) {
+	if !valid(manifest) {
 		return nil, invalid()
 	}
-	artifacts := make(map[string]artifactEncoded, len(manifest.artifacts))
-	for _, artifact := range manifest.artifacts {
-		artifacts[artifact.logicalID] = artifactEncoded{artifact.relativePath, artifact.sha256}
+	switch manifest.schemaVersion {
+	case 1:
+		artifacts := make(map[string]artifactEncoded, len(manifest.artifacts))
+		for _, artifact := range manifest.artifacts {
+			artifacts[artifact.logicalID] = artifactEncoded{artifact.relativePath, artifact.sha256}
+		}
+		return json.Marshal(manifestEncoded{manifest.schemaVersion, manifest.owner, manifest.scope, manifest.runtimeID, manifest.rootKind, manifest.snapshotFingerprint, artifacts})
+	case 2:
+		artifacts := make(map[string]v2ArtifactEncoded, len(manifest.artifacts))
+		for _, artifact := range manifest.artifacts {
+			artifacts[artifact.logicalID] = v2ArtifactEncoded{
+				Kind:                 artifact.kind,
+				CapabilityID:         artifact.capabilityID,
+				RoleID:               artifact.roleID,
+				ActorContractVersion: artifact.actorContractVersion,
+				RelativePath:         artifact.relativePath,
+				SHA256:               artifact.sha256,
+				InstallationID:       artifact.installationID,
+			}
+		}
+		return json.Marshal(v2ManifestEncoded{
+			SchemaVersion:       manifest.schemaVersion,
+			Owner:               manifest.owner,
+			Scope:               manifest.scope,
+			Runtime:             manifest.runtimeID,
+			RootKind:            manifest.rootKind,
+			SnapshotFingerprint: manifest.snapshotFingerprint,
+			InstallationID:      manifest.installationID,
+			Artifacts:           artifacts,
+		})
+	default:
+		return nil, invalid()
 	}
-	return json.Marshal(manifestEncoded{manifest.schemaVersion, manifest.owner, manifest.scope, manifest.runtimeID, manifest.rootKind, manifest.snapshotFingerprint, artifacts})
 }
 
 func invalid() error { return errors.New("install state: invalid manifest") }

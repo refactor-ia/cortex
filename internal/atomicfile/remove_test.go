@@ -574,7 +574,6 @@ func TestObserveRootedExactRejectsSpecialDestinationMode(t *testing.T) {
 		}
 	})
 }
-
 func TestObserveRootedExactDetectsEvidenceDrift(t *testing.T) {
 	for _, tt := range []struct {
 		name, watch, want string
@@ -623,6 +622,9 @@ func TestObserveRootedExactDetectsEvidenceDrift(t *testing.T) {
 				}
 				return r.Lstat(name)
 			}})
+			if hits < tt.at {
+				t.Fatalf("mutation hook hits = %d, want at least %d", hits, tt.at)
+			}
 			rootedObservationError(t, err, tt.want, "safe/config.txt", []byte("expected"))
 			assertRootedPreserved(t, target, tt.wantData, outside)
 			if info, statErr := os.Lstat(target); statErr != nil || info.Mode().Perm() != tt.wantMode {
@@ -641,7 +643,6 @@ func rootedObservationError(t *testing.T, err error, want, relative string, evid
 		t.Fatalf("error leaked private input: %v", err)
 	}
 }
-
 func assertRootedPreserved(t *testing.T, target string, want []byte, outside string) {
 	t.Helper()
 	if _, err := os.Lstat(target); err != nil {
@@ -658,7 +659,6 @@ func assertRootedPreserved(t *testing.T, target string, want []byte, outside str
 		}
 	}
 }
-
 func openTestRoot(t *testing.T, path string) *os.Root {
 	t.Helper()
 	root, err := os.OpenRoot(path)

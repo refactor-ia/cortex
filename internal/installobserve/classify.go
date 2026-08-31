@@ -28,10 +28,19 @@ type SlotObservation struct {
 	SHA256    string
 }
 
-// Result is detached neutral ownership input plus the candidate state-file action.
+// ArtifactDecision is a detached ownership decision with no path, content, or touch authority.
+type ArtifactDecision struct {
+	LogicalID         string
+	Kind              installstate.Kind
+	ObservedOwnership ownership.Ownership
+	Action            ownership.Action
+}
+
+// Result is detached neutral ownership input plus candidate lifecycle decisions.
 type Result struct {
-	observed    []ownership.ObservedArtifact
-	stateAction ownership.Action
+	observed          []ownership.ObservedArtifact
+	artifactDecisions []ArtifactDecision
+	stateAction       ownership.Action
 }
 
 // Observed returns a detached, canonical slice suitable for ownership.Build.
@@ -42,16 +51,19 @@ func (result Result) Observed() []ownership.ObservedArtifact {
 // ObservedArtifacts is an alias for Observed.
 func (result Result) ObservedArtifacts() []ownership.ObservedArtifact { return result.Observed() }
 
+// ArtifactDecisions returns detached, logical-ID-sorted typed ownership decisions.
+func (result Result) ArtifactDecisions() []ArtifactDecision { return append([]ArtifactDecision{}, result.artifactDecisions...) }
+
 // StateAction reports create, replace, or unchanged for the candidate state file.
 func (result Result) StateAction() ownership.Action { return result.stateAction }
 
-// Classify derives neutral ownership observations from validated in-memory inputs only.
+// Classify preserves the v1 in-memory classification API and behavior.
 func Classify(candidate installplan.Plan, prior *PriorState, slots []SlotObservation) (Result, error) {
-	manifest, stateHash, ok := validCandidate(candidate)
+	manifest, stateHash, ok := validV1Candidate(candidate)
 	if !ok {
 		return Result{}, invalid()
 	}
-	var priorArtifacts map[string]string
+	priorArtifacts := map[string]string(nil)
 	if prior != nil {
 		var valid bool
 		priorArtifacts, valid = validPrior(*prior, candidate, manifest)
@@ -63,19 +75,78 @@ func Classify(candidate installplan.Plan, prior *PriorState, slots []SlotObserva
 	if !validSlots(slots, ids) {
 		return Result{}, invalid()
 	}
+	return classify(manifest, stateHash, prior, priorArtifacts, slots), nil
+}
+
+// ClassifyFilesystem classifies an observation bound to the exact candidate. V2
+// accepts only fresh installation or migration from exact v1 ownership evidence.
+func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObservation) (Result, error) {
+	if !observation.MatchesCandidate(candidate) {
+		return Result{}, invalid()
+	}
+	manifest := candidate.InstalledState()
+	prior := observation.PriorState()
+	if manifest.SchemaVersion() == 1 {
+		if !validExactObservation(candidate, observation, prior) {
+			return Result{}, invalid()
+		}
+		return Classify(candidate, prior, observation.Slots())
+	}
+	if manifest.SchemaVersion() != 2 || prior != nil && prior.Manifest.SchemaVersion() != 1 {
+		return Result{}, invalid()
+	}
+	priorArtifacts := map[string]string(nil)
+	if prior != nil {
+		var valid bool
+		priorArtifacts, valid = validPrior(*prior, candidate, manifest)
+		if !valid {
+			return Result{}, invalid()
+		}
+	}
+	if !validExactObservation(candidate, observation, prior) {
+		return Result{}, invalid()
+	}
+	for id := range priorArtifacts {
+		if exact, found := observation.exact[id]; found && exact.mode != installplan.CanonicalFileMode {
+			delete(priorArtifacts, id)
+		}
+	}
+	return classify(manifest, hash(candidate.StateJSON()), prior, priorArtifacts, observation.Slots()), nil
+}
+
+func classify(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation) Result {
+	artifacts := artifactMap(manifest)
+	decisions := make([]ArtifactDecision, 0, len(slots))
 	observed := make([]ownership.ObservedArtifact, 0, len(slots))
 	for _, slot := range slots {
-		if !slot.Present {
-			continue
+		artifact, desired := artifacts[slot.LogicalID]
+		kind := installstate.KindSkill
+		if desired && artifact.Kind() != "" {
+			kind = artifact.Kind()
 		}
-		owner := ownership.Unrelated
-		if expected, found := priorArtifacts[slot.LogicalID]; found {
-			owner = ownership.UserOwned
-			if slot.SHA256 == expected {
-				owner = ownership.CortexOwned
-			}
+		owner, action := ownership.Unrelated, ownership.Preserve
+		priorHash, owned := priorArtifacts[slot.LogicalID]
+		switch {
+		case !slot.Present && desired:
+			owner, action = ownership.CortexOwned, ownership.Create
+		case !slot.Present:
+		case owned && slot.SHA256 == priorHash && desired && slot.SHA256 == artifact.SHA256():
+			owner, action = ownership.CortexOwned, ownership.Unchanged
+		case owned && slot.SHA256 == priorHash && desired:
+			owner, action = ownership.CortexOwned, ownership.Replace
+		case owned && slot.SHA256 == priorHash:
+			owner, action = ownership.CortexOwned, ownership.Remove
+		case owned && desired:
+			owner, action = ownership.UserOwned, ownership.Conflict
+		case owned:
+			owner, action = ownership.UserOwned, ownership.Preserve
+		case desired:
+			owner, action = ownership.Unrelated, ownership.Conflict
 		}
-		observed = append(observed, ownership.ObservedArtifact{LogicalID: slot.LogicalID, CurrentHash: slot.SHA256, Ownership: owner})
+		if slot.Present && kind == installstate.KindSkill {
+			observed = append(observed, ownership.ObservedArtifact{LogicalID: slot.LogicalID, CurrentHash: slot.SHA256, Ownership: owner})
+		}
+		decisions = append(decisions, ArtifactDecision{LogicalID: slot.LogicalID, Kind: kind, ObservedOwnership: owner, Action: action})
 	}
 	action := ownership.Create
 	if prior != nil {
@@ -84,11 +155,14 @@ func Classify(candidate installplan.Plan, prior *PriorState, slots []SlotObserva
 			action = ownership.Unchanged
 		}
 	}
-	return Result{observed: observed, stateAction: action}, nil
+	return Result{observed: observed, artifactDecisions: decisions, stateAction: action}
 }
 
-func validCandidate(candidate installplan.Plan) (installstate.Manifest, string, bool) {
+func validV1Candidate(candidate installplan.Plan) (installstate.Manifest, string, bool) {
 	manifest, state := candidate.InstalledState(), candidate.StateJSON()
+	if manifest.SchemaVersion() != 1 {
+		return installstate.Manifest{}, "", false
+	}
 	encoded, err := installstate.Encode(manifest)
 	if err != nil || !bytes.Equal(state, encoded) || candidate.RuntimeID() != manifest.RuntimeID() || candidate.RootKind() != manifest.RootKind() || candidate.SnapshotFingerprint() != manifest.SnapshotFingerprint() || !validPath(candidate.RootPath()) {
 		return installstate.Manifest{}, "", false
@@ -112,15 +186,55 @@ func validCandidate(candidate installplan.Plan) (installstate.Manifest, string, 
 
 func validPrior(prior PriorState, candidate installplan.Plan, current installstate.Manifest) (map[string]string, bool) {
 	encoded, err := installstate.Encode(prior.Manifest)
-	if err != nil || prior.StateSHA256 != hash(encoded) || prior.Manifest.RuntimeID() != candidate.RuntimeID() || prior.Manifest.RootKind() != candidate.RootKind() || current.RuntimeID() != prior.Manifest.RuntimeID() {
+	if prior.Manifest.SchemaVersion() != 1 || err != nil || prior.StateSHA256 != hash(encoded) || prior.Manifest.RuntimeID() != candidate.RuntimeID() || prior.Manifest.RootKind() != candidate.RootKind() || current.RuntimeID() != prior.Manifest.RuntimeID() {
 		return nil, false
 	}
-	artifacts := prior.Manifest.Artifacts()
-	out := make(map[string]string, len(artifacts))
-	for _, artifact := range artifacts {
+	out := make(map[string]string, len(prior.Manifest.Artifacts()))
+	for _, artifact := range prior.Manifest.Artifacts() {
 		out[artifact.LogicalID()] = artifact.SHA256()
 	}
 	return out, true
+}
+
+func validExactObservation(candidate installplan.Plan, observation FilesystemObservation, prior *PriorState) bool {
+	artifacts := artifactMap(candidate.InstalledState())
+	priorArtifacts := map[string]string(nil)
+	if prior != nil {
+		var valid bool
+		priorArtifacts, valid = validPrior(*prior, candidate, candidate.InstalledState())
+		if !valid {
+			return false
+		}
+		state, found := observation.Exact("state/install-state")
+		encoded, err := installstate.Encode(prior.Manifest)
+		if !found || err != nil || state.Mode() != installplan.CanonicalFileMode || !bytes.Equal(state.Bytes(), encoded) || hash(state.Bytes()) != prior.StateSHA256 {
+			return false
+		}
+	}
+	ids := union(candidate.InstalledState(), priorArtifacts)
+	slots := observation.Slots()
+	if !validSlots(slots, ids) {
+		return false
+	}
+	for _, slot := range slots {
+		exact, found := observation.Exact(slot.LogicalID)
+		if slot.Present != found || slot.Present && hash(exact.Bytes()) != slot.SHA256 {
+			return false
+		}
+		if _, desired := artifacts[slot.LogicalID]; !desired && prior == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactMap(manifest installstate.Manifest) map[string]installstate.Artifact {
+	artifacts := manifest.Artifacts()
+	out := make(map[string]installstate.Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		out[artifact.LogicalID()] = artifact
+	}
+	return out
 }
 
 func union(current installstate.Manifest, prior map[string]string) []string {
@@ -142,7 +256,7 @@ func validSlots(slots []SlotObservation, ids []string) bool {
 		return false
 	}
 	for index, slot := range slots {
-		if slot.LogicalID != ids[index] || (slot.Present && !validHash(slot.SHA256)) || (!slot.Present && slot.SHA256 != "") {
+		if slot.LogicalID != ids[index] || slot.Present && !validHash(slot.SHA256) || !slot.Present && slot.SHA256 != "" {
 			return false
 		}
 	}
@@ -152,6 +266,7 @@ func validSlots(slots []SlotObservation, ids []string) bool {
 func validPath(path string) bool {
 	return path != "" && !strings.ContainsRune(path, 0) && filepath.IsAbs(path) && filepath.Clean(path) == path && filepath.Dir(path) != path && (filepath.Separator != '/' || !strings.Contains(path, "\\"))
 }
+
 func validHash(value string) bool {
 	if len(value) != 64 {
 		return false
@@ -163,5 +278,10 @@ func validHash(value string) bool {
 	}
 	return true
 }
-func hash(value []byte) string { sum := sha256.Sum256(value); return hex.EncodeToString(sum[:]) }
-func invalid() error           { return errors.New("install observe: invalid input") }
+
+func hash(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func invalid() error { return errors.New("install observe: invalid input") }

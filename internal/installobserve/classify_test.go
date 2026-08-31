@@ -16,6 +16,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/ownership"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
@@ -115,6 +116,235 @@ func TestClassifyRejectsInvalidInputsAndDetachesResults(t *testing.T) {
 	if _, err := ownership.Build(bundle, got.Observed()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestClassifyFilesystemActorAwareCore(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, candidate installplan.Plan)
+		state ownership.Action
+		check func(t *testing.T, candidate installplan.Plan, result installobserve.Result)
+	}{
+		{
+			name:  "fresh creates every typed asset",
+			state: ownership.Create,
+			check: func(t *testing.T, candidate installplan.Plan, result installobserve.Result) {
+				decisions := result.ArtifactDecisions()
+				if len(decisions) != len(candidate.Files())-1 || !allAction(decisions, ownership.Create) || !hasKinds(decisions) || !sortedDecisions(decisions) {
+					t.Fatalf("ArtifactDecisions() = %#v", decisions)
+				}
+			},
+		},
+		{
+			name: "fresh present actor conflicts",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				writePlanFile(t, actorFileForPlan(t, candidate))
+			},
+			state: ownership.Create,
+			check: func(t *testing.T, _ installplan.Plan, result installobserve.Result) {
+				for _, decision := range result.ArtifactDecisions() {
+					if decision.Kind == installstate.KindPiActor && decision.Action == ownership.Conflict {
+						return
+					}
+				}
+				t.Fatal("present actor did not conflict")
+			},
+		},
+		{
+			name:  "v1 migration owns exact skills and creates actors",
+			setup: func(t *testing.T, candidate installplan.Plan) { writeV1ObservedSkills(t, candidate, false, false) },
+			state: ownership.Replace,
+			check: func(t *testing.T, candidate installplan.Plan, result installobserve.Result) {
+				assertV1Migration(t, candidate, result, false)
+			},
+		},
+		{
+			name:  "v1 migration rejects present actor",
+			setup: func(t *testing.T, candidate installplan.Plan) { writeV1ObservedSkills(t, candidate, false, true) },
+			state: ownership.Replace,
+			check: func(t *testing.T, candidate installplan.Plan, result installobserve.Result) {
+				assertV1Migration(t, candidate, result, true)
+			},
+		},
+		{
+			name:  "v1 skill drift conflicts",
+			setup: func(t *testing.T, candidate installplan.Plan) { writeV1ObservedSkills(t, candidate, true, false) },
+			state: ownership.Replace,
+			check: func(t *testing.T, _ installplan.Plan, result installobserve.Result) {
+				for _, decision := range result.ArtifactDecisions() {
+					if decision.Kind == installstate.KindSkill && decision.Action != ownership.Conflict {
+						t.Fatalf("skill decision = %#v, want conflict", decision)
+					}
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := makeActorAwareCandidate(t)
+			if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.setup != nil {
+				tc.setup(t, candidate)
+			}
+			observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := installobserve.ClassifyFilesystem(candidate, observation)
+			if err != nil || result.StateAction() != tc.state {
+				t.Fatalf("ClassifyFilesystem() = (%#v, %v)", result, err)
+			}
+			tc.check(t, candidate, result)
+		})
+	}
+}
+
+func TestClassifyFilesystemRejectsPriorV2AndDetachesDecisions(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	writeCandidateFiles(t, candidate)
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := installobserve.ClassifyFilesystem(candidate, observation)
+	if err == nil || result.StateAction() != "" || len(result.ArtifactDecisions()) != 0 || len(result.Observed()) != 0 {
+		t.Fatalf("ClassifyFilesystem() = (%#v, %v), want empty rejected result", result, err)
+	}
+
+	candidate = makeActorAwareCandidate(t)
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	observation, err = installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = installobserve.ClassifyFilesystem(candidate, observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := result.ArtifactDecisions()
+	decisions[0].LogicalID = "changed"
+	if result.ArtifactDecisions()[0].LogicalID == "changed" {
+		t.Fatal("result exposed mutable artifact decisions")
+	}
+}
+
+func writeV1ObservedSkills(t *testing.T, candidate installplan.Plan, drift, actor bool) {
+	t.Helper()
+	inputs := make([]installstate.ArtifactInput, 0)
+	for _, artifact := range candidate.InstalledState().Artifacts() {
+		if artifact.Kind() == installstate.KindSkill {
+			inputs = append(inputs, installstate.ArtifactInput{LogicalID: artifact.LogicalID(), RelativePath: artifact.RelativePath(), SHA256: artifact.SHA256()})
+		}
+	}
+	prior, err := installstate.New(candidate.RuntimeID(), candidate.RootKind(), candidate.SnapshotFingerprint(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := installstate.Encode(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(candidate.RootPath(), ".cortex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate.RootPath(), ".cortex", "install-state.json"), state, installplan.CanonicalFileMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range candidate.Files() {
+		if file.Role() == "skill" {
+			content := file.Content()
+			if drift {
+				content = []byte("drift")
+			}
+			if err := os.MkdirAll(filepath.Dir(file.AbsolutePath()), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file.AbsolutePath(), content, installplan.CanonicalFileMode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if actor && file.Role() == "actor" {
+			writePlanFile(t, file)
+		}
+	}
+}
+
+func writePlanFile(t *testing.T, file installplan.File) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(file.AbsolutePath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file.AbsolutePath(), file.Content(), 0o640); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func actorFileForPlan(t *testing.T, candidate installplan.Plan) installplan.File {
+	t.Helper()
+	for _, file := range candidate.Files() {
+		if file.Role() == "actor" {
+			return file
+		}
+	}
+	t.Fatal("missing actor")
+	return installplan.File{}
+}
+
+func assertV1Migration(t *testing.T, candidate installplan.Plan, result installobserve.Result, actorConflict bool) {
+	t.Helper()
+	for _, decision := range result.ArtifactDecisions() {
+		switch decision.Kind {
+		case installstate.KindSkill:
+			if decision.Action != ownership.Unchanged || decision.ObservedOwnership != ownership.CortexOwned {
+				t.Fatalf("skill decision = %#v", decision)
+			}
+		case installstate.KindPiActor:
+			want := ownership.Create
+			if actorConflict {
+				want = ownership.Conflict
+			}
+			if decision.Action != want {
+				t.Fatalf("actor decision = %#v, want %q", decision, want)
+			}
+		}
+	}
+	bundle, found := candidate.Bundle()
+	if !found {
+		t.Fatal("candidate lacks bundle")
+	}
+	plan, err := ownership.Build(bundle, result.Observed())
+	if err != nil || !plan.Ready() {
+		t.Fatalf("ownership.Build() = (%#v, %v)", plan, err)
+	}
+	for _, observed := range result.Observed() {
+		if observed.LogicalID[:7] != "skills/" {
+			t.Fatalf("Observed() included non-skill %#v", observed)
+		}
+	}
+}
+
+func allAction(decisions []installobserve.ArtifactDecision, action ownership.Action) bool {
+	for _, decision := range decisions {
+		if decision.Action != action {
+			return false
+		}
+	}
+	return true
+}
+
+func hasKinds(decisions []installobserve.ArtifactDecision) bool {
+	kinds := map[installstate.Kind]bool{}
+	for _, decision := range decisions {
+		kinds[decision.Kind] = true
+	}
+	return kinds[installstate.KindSkill] && kinds[installstate.KindPiActor]
+}
+
+func sortedDecisions(decisions []installobserve.ArtifactDecision) bool {
+	return sort.SliceIsSorted(decisions, func(i, j int) bool { return decisions[i].LogicalID < decisions[j].LogicalID })
 }
 
 func makeCandidate(t *testing.T, version string, ids ...string) (installplan.Plan, artifact.Bundle) {

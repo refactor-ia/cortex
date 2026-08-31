@@ -61,6 +61,7 @@ type applyDependencies struct {
 	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
 	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
 	removeIfMatches  func(string, string, []byte) error
+	finalVerify      func() error
 }
 
 type operation struct {
@@ -82,6 +83,18 @@ func ApplyOperations(sourceRoot, backupRoot, backupName string, operations []Ope
 	return applyOperations(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, operations)
 }
 
+// ApplyOperationsWithDirectoriesAndVerify runs finalVerify after every operation
+// succeeds and before the transaction is accepted. A verification failure rolls
+// the completed operations back with the existing transaction snapshot.
+func ApplyOperationsWithDirectoriesAndVerify(sourceRoot, backupRoot, backupName string, directories []Directory, operations []Operation, finalVerify func() error) (Snapshot, error) {
+	if finalVerify == nil {
+		return Snapshot{}, errors.New("apply final verification is required")
+	}
+	deps := defaultApplyDependencies()
+	deps.finalVerify = finalVerify
+	return applyOperationsWithDirectories(deps, sourceRoot, backupRoot, backupName, directories, operations)
+}
+
 func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
 		capture: Capture, verify: Verify, replace: atomicfile.Replace,
@@ -97,6 +110,11 @@ func apply(deps applyDependencies, sourceRoot, backupRoot, backupName string, wr
 		operations[index] = Operation{Write: &write}
 	}
 	return applyOperations(deps, sourceRoot, backupRoot, backupName, operations)
+}
+
+func applyOperationsWithFinalVerification(deps applyDependencies, sourceRoot, backupRoot, backupName string, raw []Operation, finalVerify func() error) (Snapshot, error) {
+	deps.finalVerify = finalVerify
+	return applyOperations(deps, sourceRoot, backupRoot, backupName, raw)
 }
 
 func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName string, raw []Operation) (Snapshot, error) {
@@ -153,6 +171,12 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 		}
 		if err != nil {
 			applyErr := fmt.Errorf("apply %s %s: %w", kind, operation.path, err)
+			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted))
+		}
+	}
+	if deps.finalVerify != nil {
+		if err := deps.finalVerify(); err != nil {
+			applyErr := fmt.Errorf("apply final verification: %w", err)
 			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted))
 		}
 	}

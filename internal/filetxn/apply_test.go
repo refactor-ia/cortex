@@ -532,3 +532,30 @@ func assertFile(t *testing.T, path, want string, mode fs.FileMode) {
 		t.Fatalf("file %q = %q, %#o, %v", path, data, fileMode(t, path), err)
 	}
 }
+
+func TestApplyOperationsFinalVerificationRollsBackInReverse(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("before"), 0o640)
+	var verified []string
+	_, err := applyOperationsWithFinalVerification(defaultApplyDependencies(), root, backups, "batch", []Operation{
+		{Replace: &Replace{Path: "existing.txt", ExpectedData: []byte("before"), ExpectedMode: 0o640, Data: []byte("after"), Mode: 0o600}},
+		{Create: &Create{Path: "created.txt", Data: []byte("created"), Mode: 0o600}},
+	}, func() error {
+		for _, name := range []string{"existing.txt", "created.txt"} {
+			verified = append(verified, name)
+		}
+		assertFile(t, filepath.Join(root, "existing.txt"), "after", 0o600)
+		assertFile(t, filepath.Join(root, "created.txt"), "created", 0o600)
+		return errors.New("injected final verification failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected final verification failure") {
+		t.Fatalf("final verification error = %v", err)
+	}
+	if strings.Join(verified, ",") != "existing.txt,created.txt" {
+		t.Fatalf("verified = %v", verified)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "before", 0o640)
+	if _, err := os.Lstat(filepath.Join(root, "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("created target remains: %v", err)
+	}
+}

@@ -583,11 +583,11 @@ func TestObserveRootedExactDetectsEvidenceDrift(t *testing.T) {
 		wantData          []byte
 		wantMode          fs.FileMode
 	}{
-		{"leaf identity replacement", "safe/config.txt", "destination drifted", 3, func(t *testing.T, target, _ string) {
-			if err := os.Remove(target); err != nil {
+		{"leaf identity replacement", "safe/config.txt", "destination drifted", 3, func(t *testing.T, target, root string) {
+			writeMode(t, filepath.Join(root, "replacement"), []byte("expected"), 0o600)
+			if err := os.Rename(filepath.Join(root, "replacement"), target); err != nil {
 				t.Fatal(err)
 			}
-			writeMode(t, target, []byte("expected"), 0o600)
 		}, []byte("expected"), 0o600},
 		{"byte rewrite", "safe/config.txt", "destination drifted", 4, func(t *testing.T, target, _ string) { writeMode(t, target, []byte("changed!"), 0o600) }, []byte("changed!"), 0o600},
 		{"mode rewrite", "safe/config.txt", "destination drifted", 3, func(t *testing.T, target, _ string) { writeMode(t, target, []byte("expected"), 0o640) }, []byte("expected"), 0o640},

@@ -75,6 +75,38 @@ func TestV2CodecRejectsInvalidWire(t *testing.T) {
 	}
 }
 
+func TestV2DuplicateArtifactMembers(t *testing.T) {
+	duplicate := `"skills/alpha":` + expectedSkillJSON + `,"skills/alpha":` + expectedSkillJSON
+	v1 := string(mustEncode(t, mustNew(t)))
+	v1Alpha := `"skills/alpha":{"relativePath":"skills/cortex-alpha/SKILL.md","sha256":"` + fingerprint + `"}`
+	withNestedDuplicate := strings.Replace(expectedSkillJSON, `"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, `"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, 1)
+	prefix, artifactObject, found := strings.Cut(expectedV2JSON, `"artifacts":`)
+	if !found {
+		t.Fatal("expected v2 JSON lacks artifacts")
+	}
+	artifactObject = strings.TrimSuffix(artifactObject, `}`)
+	withSeparateArtifactsObjects := prefix + `"artifacts":` + artifactObject + `,"artifacts":` + artifactObject + `}`
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"duplicate immediate member", strings.Replace(expectedV2JSON, `"skills/alpha":`+expectedSkillJSON, duplicate, 1), false},
+		{"escaped duplicate immediate member", strings.Replace(expectedV2JSON, `"skills/alpha":`+expectedSkillJSON, `"skills\\/alpha":`+expectedSkillJSON+`,"skills/alpha":`+expectedSkillJSON, 1), false},
+		{"duplicate nested entry member remains accepted", strings.Replace(expectedV2JSON, expectedSkillJSON, withNestedDuplicate, 1), true},
+		{"separate top-level artifacts objects remain accepted", withSeparateArtifactsObjects, true},
+		{"v1 duplicate artifact member remains accepted", strings.Replace(v1, v1Alpha, v1Alpha+","+v1Alpha, 1), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Decode([]byte(tc.input))
+			if (err == nil) != tc.want {
+				t.Fatalf("Decode() error = %v, want accepted = %t", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestV1CodecBytePreservation(t *testing.T) {
 	encoded := mustEncode(t, mustNew(t))
 	decoded, err := Decode(encoded)

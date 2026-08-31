@@ -1,6 +1,7 @@
 package installtxn
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -14,7 +15,9 @@ import (
 	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/ownership"
 	"github.com/refactor-ia/cortex/internal/projection"
+	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
@@ -376,4 +379,189 @@ func write(t *testing.T, root, path, value string) {
 	target := filepath.Join(root, path)
 	must(t, os.MkdirAll(filepath.Dir(target), 0o700))
 	must(t, os.WriteFile(target, []byte(value), 0o600))
+}
+
+func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	cwd := physicalTempDir(t)
+	var trace []string
+
+	result, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+		for _, operation := range operations {
+			switch {
+			case operation.Create != nil:
+				trace = append(trace, operation.Create.Path)
+			case operation.Replace != nil:
+				trace = append(trace, operation.Replace.Path)
+			case operation.Remove != nil:
+				trace = append(trace, operation.Remove.Path)
+			}
+		}
+		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, verify)
+	})
+	if err != nil || len(result.Actions()) != len(candidate.Files()) {
+		t.Fatalf("ApplyVerified() = (%#v, %v)", result, err)
+	}
+	for _, file := range candidate.Files() {
+		data, readErr := os.ReadFile(file.AbsolutePath())
+		if readErr != nil || !bytes.Equal(data, file.Content()) || mode(t, file.AbsolutePath()) != file.DesiredMode() {
+			t.Fatalf("final file %q = (%q, %#o, %v)", file.LogicalID(), data, mode(t, file.AbsolutePath()), readErr)
+		}
+	}
+	expected := make([]string, 0, len(candidate.Files()))
+	for _, role := range []string{"skill", "actor"} {
+		for _, file := range candidate.Files()[:len(candidate.Files())-1] {
+			if file.Role() == role {
+				expected = append(expected, file.RelativePath())
+			}
+		}
+	}
+	expected = append(expected, ".cortex/install-state.json")
+	if !reflect.DeepEqual(trace, expected) {
+		t.Fatalf("transaction trace = %v, want %v", trace, expected)
+	}
+	observation, observeErr := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	must(t, observeErr)
+	classified, classifyErr := installobserve.ClassifyFilesystem(candidate, observation)
+	must(t, classifyErr)
+	if classified.StateAction() != ownership.Unchanged {
+		t.Fatalf("state action = %q", classified.StateAction())
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
+			t.Fatalf("final decision = %#v", decision)
+		}
+	}
+	shadows, shadowErr := installobserve.ObserveActorShadows(candidate, observation, cwd)
+	if shadowErr != nil || !shadows.Clean() {
+		t.Fatalf("final shadows = (%#v, %v)", shadows, shadowErr)
+	}
+}
+
+func TestApplyVerifiedRejectsShadowBeforeMutation(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	cwd := physicalTempDir(t)
+	var actor installplan.File
+	for _, file := range candidate.Files() {
+		if file.Role() == "actor" {
+			actor = file
+			break
+		}
+	}
+	mustMkdir(t, filepath.Join(cwd, ".pi", "subagents"))
+	must(t, os.WriteFile(filepath.Join(cwd, ".pi", "subagents", "shadow.md"), actor.Content(), actor.DesiredMode()))
+	backups := t.TempDir()
+
+	_, err := ApplyVerified(candidate, cwd, backups, "snapshot")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("ApplyVerified() error = %v", err)
+	}
+	for _, file := range candidate.Files() {
+		assertFile(t, file, false)
+	}
+	if _, statErr := os.Lstat(filepath.Join(backups, "snapshot")); !os.IsNotExist(statErr) {
+		t.Fatalf("backup was created: %v", statErr)
+	}
+}
+
+func TestApplyVerifiedRollsBackFinalReadbackFailure(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	cwd := physicalTempDir(t)
+	state := candidate.Files()[len(candidate.Files())-1]
+
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, func() error {
+			must(t, os.WriteFile(state.AbsolutePath(), []byte("drift"), state.DesiredMode()))
+			return verify()
+		})
+	})
+	if !errors.Is(err, ErrFailed) {
+		t.Fatalf("ApplyVerified() error = %v", err)
+	}
+	for _, file := range candidate.Files()[:len(candidate.Files())-1] {
+		assertFile(t, file, false)
+	}
+	data, readErr := os.ReadFile(state.AbsolutePath())
+	if readErr != nil || bytes.Equal(data, state.Content()) {
+		t.Fatalf("state drift = (%q, %v)", data, readErr)
+	}
+}
+
+func actorAwareCandidate(t *testing.T) installplan.Plan {
+	t.Helper()
+	root := filepath.Join("..", "..", "catalog")
+	snapshot, err := catalog.BuildCatalogSnapshot(root, "catalog.json", catalog.AdmissionPolicy{})
+	must(t, err)
+	sources, err := skillrender.Render(snapshot)
+	must(t, err)
+	projected, err := skillprojection.Build(runtimematrix.RuntimePi, sources)
+	must(t, err)
+	assessments := make([]projection.Assessment, 0, 3)
+	observations := make([]runtimematrix.Observation, 0, 3)
+	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+		assessment, buildErr := skillprojection.Build(runtimeID, sources)
+		must(t, buildErr)
+		assessments = append(assessments, assessment.Assessment())
+		observations = append(observations, runtimematrix.Observation{ID: runtimeID, Present: true, Version: "test", Compatibility: runtimematrix.Compatible})
+	}
+	base, err := adapterplan.Build(snapshot.Fingerprint(), observations)
+	must(t, err)
+	plan, err := projection.BuildPlan(base, assessments)
+	must(t, err)
+	binding, err := skillartifact.Build(projected, plan)
+	must(t, err)
+	bundle, found := binding.Bundle()
+	if !found {
+		t.Fatal("missing skill bundle")
+	}
+	destinations, err := skilldest.Build(binding)
+	must(t, err)
+	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: physicalTempDir(t)})
+	must(t, err)
+	skills, err := installplan.BuildWithBundle(resolved, bundle)
+	must(t, err)
+	actorSources, err := qaactor.Sources(snapshot)
+	must(t, err)
+	set, err := qaactor.Render(actorSources)
+	must(t, err)
+	actors, err := qaactor.ProjectPi(set)
+	must(t, err)
+	actorBinding, err := qaactor.Bind(actors)
+	must(t, err)
+	candidate, err := installplan.BuildActorAware(skills, actorBinding, "000102030405060708090a0b0c0d0e0f")
+	must(t, err)
+	return candidate
+}
+
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	return root
+}
+
+func TestApplyVerifiedRejectsPreTransactionAssetRace(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	cwd := physicalTempDir(t)
+	asset := candidate.Files()[0]
+
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+		mustMkdir(t, filepath.Dir(asset.AbsolutePath()))
+		must(t, os.WriteFile(asset.AbsolutePath(), []byte("raced"), asset.DesiredMode()))
+		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, verify)
+	})
+	if !errors.Is(err, ErrFailed) {
+		t.Fatalf("ApplyVerified() error = %v", err)
+	}
+	data, readErr := os.ReadFile(asset.AbsolutePath())
+	if readErr != nil || string(data) != "raced" {
+		t.Fatalf("raced asset = (%q, %v)", data, readErr)
+	}
+	for _, file := range candidate.Files()[1:] {
+		assertFile(t, file, false)
+	}
 }

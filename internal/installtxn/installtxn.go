@@ -13,6 +13,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/ownership"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
@@ -34,6 +35,156 @@ type Result struct{ actions []Action }
 
 // Actions returns the canonical logical artifact actions.
 func (result Result) Actions() []Action { return append([]Action(nil), result.actions...) }
+
+type applyVerifiedTransaction func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error) (filetxn.Snapshot, error)
+
+// ApplyVerified materializes an actor-aware candidate only after a fresh
+// ownership and shadow preflight. It accepts state only after final readback.
+func ApplyVerified(candidate installplan.Plan, cwd, backupRoot, backupName string) (Result, error) {
+	return applyVerifiedWith(candidate, cwd, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndVerify)
+}
+
+func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName string, apply applyVerifiedTransaction) (Result, error) {
+	if apply == nil || candidate.InstalledState().SchemaVersion() != 2 || !validRoot(candidate.RootPath()) || !validCWD(cwd) {
+		return Result{}, ErrInvalid
+	}
+	current, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		return Result{}, ErrFailed
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, current)
+	if err != nil || !verifiedDecisionsReady(classified) {
+		return Result{}, ErrConflict
+	}
+	shadows, err := installobserve.ObserveActorShadows(candidate, current, cwd)
+	if err != nil || !shadows.Clean() {
+		return Result{}, ErrConflict
+	}
+	operations, result, err := verifiedOperations(candidate, current, classified)
+	if err != nil {
+		return Result{}, ErrInvalid
+	}
+	verify := func() error { return verifyAccepted(candidate, cwd) }
+	if len(operations) == 0 {
+		if err := verify(); err != nil {
+			return Result{}, ErrFailed
+		}
+		return result, nil
+	}
+	if _, err := apply(candidate.RootPath(), backupRoot, backupName, directoriesFor(candidate, operations), operations, verify); err != nil {
+		return Result{}, ErrFailed
+	}
+	return result, nil
+}
+
+func verifiedDecisionsReady(classified installobserve.Result) bool {
+	if classified.StateAction() != ownership.Create && classified.StateAction() != ownership.Replace && classified.StateAction() != ownership.Unchanged {
+		return false
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		switch decision.Action {
+		case ownership.Create, ownership.Replace, ownership.Remove, ownership.Unchanged:
+			if decision.ObservedOwnership != ownership.CortexOwned {
+				return false
+			}
+		case ownership.Preserve:
+			if decision.ObservedOwnership == ownership.UserOwned {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func verifiedOperations(candidate installplan.Plan, observation installobserve.FilesystemObservation, classified installobserve.Result) ([]filetxn.Operation, Result, error) {
+	decisions := make(map[string]installobserve.ArtifactDecision, len(classified.ArtifactDecisions()))
+	for _, decision := range classified.ArtifactDecisions() {
+		decisions[decision.LogicalID] = decision
+	}
+	skills, actors := make([]filetxn.Operation, 0, len(decisions)), make([]filetxn.Operation, 0, len(decisions))
+	for _, file := range candidate.Files()[:len(candidate.Files())-1] {
+		decision, found := decisions[file.LogicalID()]
+		if !found {
+			return nil, Result{}, errors.New("missing candidate decision")
+		}
+		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, file, observation)
+		if !ok {
+			return nil, Result{}, errors.New("invalid candidate decision")
+		}
+		if include {
+			switch decision.Kind {
+			case installstate.KindSkill:
+				skills = append(skills, operation)
+			case installstate.KindPiActor:
+				actors = append(actors, operation)
+			default:
+				return nil, Result{}, errors.New("invalid candidate decision kind")
+			}
+		}
+		delete(decisions, file.LogicalID())
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if _, pending := decisions[decision.LogicalID]; !pending || decision.Action != ownership.Remove {
+			continue
+		}
+		if decision.Kind != installstate.KindSkill {
+			return nil, Result{}, errors.New("invalid removal decision kind")
+		}
+		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, installplan.File{}, observation)
+		if !ok {
+			return nil, Result{}, errors.New("invalid removal decision")
+		}
+		if include {
+			skills = append(skills, operation)
+		}
+	}
+	operations := append(skills, actors...)
+	state, found := candidate.Files()[len(candidate.Files())-1], true
+	operation, include, ok := stateOperation(classified.StateAction(), state, found, observation)
+	if !ok {
+		return nil, Result{}, errors.New("invalid state decision")
+	}
+	if include {
+		operations = append(operations, operation)
+	}
+	return operations, Result{actions: actionsFromClassification(classified)}, nil
+}
+
+func verifyAccepted(candidate installplan.Plan, cwd string) error {
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
+	if err != nil || classified.StateAction() != ownership.Unchanged {
+		return errors.New("accepted state readback is invalid")
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
+			return errors.New("accepted artifact readback is invalid")
+		}
+	}
+	shadows, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
+	if err != nil || !shadows.Clean() {
+		return errors.New("accepted actor shadows are invalid")
+	}
+	return nil
+}
+
+func actionsFromClassification(classified installobserve.Result) []Action {
+	decisions := classified.ArtifactDecisions()
+	actions := make([]Action, 0, len(decisions)+1)
+	for _, decision := range decisions {
+		actions = append(actions, Action{LogicalID: decision.LogicalID, Action: decision.Action})
+	}
+	return append(actions, Action{LogicalID: "state/install-state", Action: classified.StateAction()})
+}
+
+func validCWD(cwd string) bool {
+	return filepath.IsAbs(cwd) && filepath.Clean(cwd) == cwd && validRoot(cwd)
+}
 
 // Apply materializes the supplied bundle-bound candidate only when its bounded
 // observation matches. It writes skills before the installation state file.

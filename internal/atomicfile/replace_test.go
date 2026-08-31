@@ -833,6 +833,225 @@ func TestStageRootedCreateFailureCleanupAndDiscard(t *testing.T) {
 	}
 }
 
+func TestFinalizeRootedCreateStage(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted finalization is unsupported")
+	}
+	for _, tt := range []struct {
+		name, relative string
+		data           []byte
+		mode           fs.FileMode
+	}{
+		{"nested content", "safe/config", []byte("final data"), 0o600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stage, path := rootedCreateLinkedStage(t, tt.relative, tt.data, tt.mode)
+			temporary := stage.temporary
+			closes := 0
+			operations := rootedCreateFinalizationOperations{rootedCreateStagingOperations: rootedCreateStagingOperations{closeParent: func(root *os.Root) error {
+				closes++
+				return root.Close()
+			}}}
+			verified, err := finalizeRootedCreateStage(&stage, operations)
+			if err != nil || !verified || closes != 1 || stage.parent != nil || stage.temporary != "" || stage.info != nil || stage.data != nil {
+				t.Fatalf("finalize = %v, %v, closes = %d, stage = %+v", verified, err, closes, stage)
+			}
+			destination := filepath.Join(path, tt.relative)
+			assertFile(t, destination, tt.data, tt.mode)
+			if _, err := os.Lstat(filepath.Join(path, filepath.Dir(tt.relative), temporary)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("temporary remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestFinalizeRootedCreateStageRejectsUnreadableStageAfterCleanup(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted finalization is unsupported")
+	}
+	stage, path := rootedCreateLinkedStage(t, "config", []byte("data"), 0o000)
+	temporary, calls, reads := stage.temporary, [3]int{}, 0
+	verified, err := finalizeRootedCreateStage(&stage, rootedCreateFinalizationOperations{rootedCreateStagingOperations: rootedCreateStagingOperations{
+		remove: func(root *os.Root, name string) error { calls[0]++; return root.Remove(name) },
+		syncParent: func(root *os.Root) error {
+			calls[1]++
+			return rootedCreateSyncParent(rootedCreateStagingOperations{}, root)
+		},
+		closeParent: func(root *os.Root) error { calls[2]++; return root.Close() },
+	}, openRead: func(*os.Root, string) (rootedCreateReadbackFile, error) { reads++; return nil, errors.New("private") }})
+	if verified || err == nil || !strings.Contains(err.Error(), "readback failed") || strings.Contains(err.Error(), "private") || calls != [3]int{1, 1, 1} || reads != 0 || stage.parent != nil {
+		t.Fatalf("finalize = %v, %v, cleanup/reads = %v/%d", verified, err, calls, reads)
+	}
+	if info, statErr := os.Lstat(filepath.Join(path, "config")); statErr != nil || info.Mode().Perm() != 0o000 {
+		t.Fatalf("destination = %v, error = %v", info, statErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(path, temporary)); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("temporary remains: %v", statErr)
+	}
+}
+
+func TestFinalizeRootedCreateStageRejectsRivalAndConsumesStage(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted finalization is unsupported")
+	}
+	stage, path := rootedCreateStaged(t, "safe/config", []byte("same"), 0o600)
+	if err := os.WriteFile(filepath.Join(path, "safe", "config"), []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temporary := stage.temporary
+	verified, err := finalizeRootedCreateStage(&stage, rootedCreateFinalizationOperations{})
+	if verified || err == nil || stage.parent != nil || strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "same") {
+		t.Fatalf("finalize = %v, %v, stage = %+v", verified, err, stage)
+	}
+	assertFile(t, filepath.Join(path, "safe", "config"), []byte("same"), 0o600)
+	if _, err := os.Lstat(filepath.Join(path, "safe", temporary)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temporary remains: %v", err)
+	}
+}
+
+func TestFinalizeRootedCreateStageReadbackMatrix(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted finalization is unsupported")
+	}
+	private := errors.New("private path and data")
+	for _, tt := range []struct {
+		name       string
+		lstatAt    int
+		openErr    error
+		statAt     int
+		firstErr   error
+		secondData []byte
+		seekErr    error
+		closeErr   error
+		wantTrue   bool
+		wantCloses int
+	}{
+		{"first lstat", 1, nil, 0, nil, nil, nil, nil, false, 0},
+		{"open nonnil error", 0, private, 0, nil, nil, nil, private, false, 1},
+		{"fstat", 0, nil, 1, nil, nil, nil, nil, false, 1},
+		{"first read", 0, nil, 0, private, nil, nil, nil, false, 1},
+		{"second lstat", 2, nil, 0, nil, nil, nil, nil, false, 1},
+		{"seek", 0, nil, 0, nil, nil, private, nil, false, 1},
+		{"second read", 0, nil, 0, nil, []byte("drift"), nil, nil, false, 1},
+		{"final fstat", 0, nil, 2, nil, nil, nil, nil, false, 1},
+		{"final lstat", 3, nil, 0, nil, nil, nil, nil, false, 1},
+		{"read close after proof", 0, nil, 0, nil, nil, nil, private, true, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stage, _ := rootedCreateLinkedStage(t, "config", []byte("data"), 0o600)
+			info, err := stage.parent.Lstat(stage.basename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file := &rootedCreateReadbackTestFile{info: info, first: stage.data, second: stage.data, statAt: tt.statAt, firstErr: tt.firstErr, seekErr: tt.seekErr, closeErr: tt.closeErr}
+			if tt.secondData != nil {
+				file.second = tt.secondData
+			}
+			lstats := 0
+			operations := rootedCreateFinalizationOperations{rootedCreateStagingOperations: rootedCreateStagingOperations{rootedAbsentEvidenceOperations: rootedAbsentEvidenceOperations{lstat: func(root *os.Root, name string) (fs.FileInfo, error) {
+				lstats++
+				if lstats == tt.lstatAt {
+					return nil, private
+				}
+				return root.Lstat(name)
+			}}}, openRead: func(*os.Root, string) (rootedCreateReadbackFile, error) { return file, tt.openErr }}
+			verified, err := finalizeRootedCreateStage(&stage, operations)
+			if verified != tt.wantTrue || err == nil || file.closes != tt.wantCloses || strings.Contains(err.Error(), "private") || tt.name == "open nonnil error" && (!strings.Contains(err.Error(), "readback failed") || !strings.Contains(err.Error(), "read close failed")) {
+				t.Fatalf("finalize = %v, %v, file closes = %d", verified, err, file.closes)
+			}
+		})
+	}
+}
+
+func TestFinalizeRootedCreateStageAttemptsCleanupAndPinsInvalidReuse(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted finalization is unsupported")
+	}
+	stage, _ := rootedCreateLinkedStage(t, "config", []byte("data"), 0o600)
+	private := errors.New("private cause")
+	calls := [3]int{}
+	fileInfo, err := stage.parent.Lstat(stage.basename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &rootedCreateReadbackTestFile{info: fileInfo, first: stage.data, second: stage.data}
+	verified, err := finalizeRootedCreateStage(&stage, rootedCreateFinalizationOperations{rootedCreateStagingOperations: rootedCreateStagingOperations{
+		remove: func(*os.Root, string) error { calls[0]++; return private }, syncParent: func(*os.Root) error { calls[1]++; return private }, closeParent: func(*os.Root) error { calls[2]++; return private },
+	}, openRead: func(*os.Root, string) (rootedCreateReadbackFile, error) { return file, nil }})
+	if !verified || err == nil || calls != [3]int{1, 1, 1} || file.closes != 1 || strings.Contains(err.Error(), "private") {
+		t.Fatalf("finalize = %v, %v, calls = %v, closes = %d", verified, err, calls, file.closes)
+	}
+	if verified, err = finalizeRootedCreateStage(&stage, rootedCreateFinalizationOperations{}); verified || err == nil || !strings.Contains(err.Error(), "invalid stage") {
+		t.Fatalf("reuse = %v, %v", verified, err)
+	}
+	root, openErr := os.OpenRoot(t.TempDir())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	invalid := rootedCreateStage{parent: root}
+	if verified, err = finalizeRootedCreateStage(&invalid, rootedCreateFinalizationOperations{}); verified || err == nil || invalid.parent != nil {
+		t.Fatalf("invalid = %v, %v, stage = %+v", verified, err, invalid)
+	}
+}
+
+func rootedCreateStaged(t *testing.T, relative string, data []byte, mode fs.FileMode) (rootedCreateStage, string) {
+	t.Helper()
+	path := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(path, filepath.Dir(relative)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	stage, err := stageRootedCreate(root, relative, data, mode, rootedCreateStagingOperations{random: bytes.NewReader(make([]byte, 16))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stage, path
+}
+
+func rootedCreateLinkedStage(t *testing.T, relative string, data []byte, mode fs.FileMode) (rootedCreateStage, string) {
+	t.Helper()
+	stage, path := rootedCreateStaged(t, relative, data, mode)
+	if err := stage.parent.Link(stage.temporary, stage.basename); err != nil {
+		t.Fatal(err)
+	}
+	return stage, path
+}
+
+type rootedCreateReadbackTestFile struct {
+	info                        fs.FileInfo
+	first, second               []byte
+	statAt                      int
+	firstErr, seekErr, closeErr error
+	stats, seeks, closes        int
+}
+
+func (f *rootedCreateReadbackTestFile) Stat() (fs.FileInfo, error) {
+	f.stats++
+	if f.stats == f.statAt {
+		return nil, errors.New("private stat")
+	}
+	return f.info, nil
+}
+func (f *rootedCreateReadbackTestFile) Read(p []byte) (int, error) {
+	if f.seeks == 0 && f.firstErr != nil {
+		return 0, f.firstErr
+	}
+	data := f.first
+	if f.seeks > 0 {
+		data = f.second
+	}
+	return copy(p, data), io.EOF
+}
+func (f *rootedCreateReadbackTestFile) Seek(int64, int) (int64, error) {
+	f.seeks++
+	return 0, f.seekErr
+}
+func (f *rootedCreateReadbackTestFile) Close() error { f.closes++; return f.closeErr }
+
 type rootedCreateTestFile struct {
 	chmodErr, writeErr, syncErr, statErr, closeErr error
 	zeroWrite                                      bool

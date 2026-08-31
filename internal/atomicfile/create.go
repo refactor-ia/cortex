@@ -1,6 +1,7 @@
 package atomicfile
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -349,6 +350,122 @@ func rootedCreateCloseParent(operations rootedCreateStagingOperations, parent *o
 	}
 	return parent.Close()
 }
+
+type rootedCreateReadbackFile interface {
+	Stat() (fs.FileInfo, error)
+	Read([]byte) (int, error)
+	Seek(int64, int) (int64, error)
+	Close() error
+}
+
+type rootedCreateFinalizationOperations struct {
+	rootedCreateStagingOperations
+	openRead func(*os.Root, string) (rootedCreateReadbackFile, error)
+}
+
+// finalizeRootedCreateStage consumes a staged file after its caller has linked it.
+// It never publishes or otherwise changes the destination. A future exported
+// CreateIfAbsentRoot must reject modes without owner-read permission before
+// staging: this finalizer cannot reopen an unreadable stage. Replacement after
+// its final Lstat remains outside the verified interval.
+func finalizeRootedCreateStage(stage *rootedCreateStage, operations rootedCreateFinalizationOperations) (verified bool, resultErr error) {
+	if stage == nil {
+		return false, errors.New("atomic rooted create: invalid stage")
+	}
+	owned := *stage
+	*stage = rootedCreateStage{}
+	if owned.parent == nil || owned.temporary == "" || owned.basename == "" || owned.info == nil {
+		resultErr = errors.New("atomic rooted create: invalid stage")
+		if err := rootedCreateCloseParent(operations.rootedCreateStagingOperations, owned.parent); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("atomic rooted create: close parent failed"))
+		}
+		return false, resultErr
+	}
+	if err := rootedCreateRemove(operations.rootedCreateStagingOperations, owned.parent, owned.temporary); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted create: remove temporary failed"))
+	}
+	if err := rootedCreateSyncParent(operations.rootedCreateStagingOperations, owned.parent); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted create: sync parent failed"))
+	}
+	readbackVerified, readbackErr := verifyRootedCreateReadback(owned, operations)
+	verified = readbackVerified
+	resultErr = errors.Join(resultErr, readbackErr)
+	if err := rootedCreateCloseParent(operations.rootedCreateStagingOperations, owned.parent); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted create: close parent failed"))
+	}
+	return verified, resultErr
+}
+
+func verifyRootedCreateReadback(stage rootedCreateStage, operations rootedCreateFinalizationOperations) (verified bool, resultErr error) {
+	if stage.mode&0o400 == 0 {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	first, err := rootedCreateReadbackLstat(operations, stage.parent, stage.basename)
+	if err != nil || !rootedCreateReadbackInfoOK(first, stage) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	file, err := rootedCreateOpenRead(operations, stage.parent, stage.basename)
+	if err != nil || file == nil {
+		resultErr = errors.New("atomic rooted create: readback failed")
+		if file != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				resultErr = errors.Join(resultErr, errors.New("atomic rooted create: read close failed"))
+			}
+		}
+		return false, resultErr
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("atomic rooted create: read close failed"))
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil || !rootedCreateReadbackInfoOK(info, stage) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	if data, err := rootedCreateReadbackBytes(file, len(stage.data)); err != nil || !bytes.Equal(data, stage.data) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	second, err := rootedCreateReadbackLstat(operations, stage.parent, stage.basename)
+	if err != nil || !rootedCreateReadbackInfoOK(second, stage) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	if data, err := rootedCreateReadbackBytes(file, len(stage.data)); err != nil || !bytes.Equal(data, stage.data) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	info, err = file.Stat()
+	if err != nil || !rootedCreateReadbackInfoOK(info, stage) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	last, err := rootedCreateReadbackLstat(operations, stage.parent, stage.basename)
+	if err != nil || !rootedCreateReadbackInfoOK(last, stage) {
+		return false, errors.New("atomic rooted create: readback failed")
+	}
+	return true, nil
+}
+
+func rootedCreateReadbackInfoOK(info fs.FileInfo, stage rootedCreateStage) bool {
+	return info != nil && info.Mode().IsRegular() && rootedCreateModeOK(info.Mode(), stage.mode, runtime.GOOS == "windows") && info.Size() == int64(len(stage.data)) && os.SameFile(info, stage.info)
+}
+
+func rootedCreateReadbackBytes(file rootedCreateReadbackFile, length int) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(file, int64(length)+1))
+}
+
+func rootedCreateReadbackLstat(operations rootedCreateFinalizationOperations, parent *os.Root, name string) (fs.FileInfo, error) {
+	return rootedAbsentLstat(operations.rootedAbsentEvidenceOperations, parent, name)
+}
+
+func rootedCreateOpenRead(operations rootedCreateFinalizationOperations, parent *os.Root, name string) (rootedCreateReadbackFile, error) {
+	if operations.openRead != nil {
+		return operations.openRead(parent, name)
+	}
+	return parent.Open(name)
+}
+
 func destinationAbsent(destination string) error {
 	info, err := os.Lstat(destination)
 	if os.IsNotExist(err) {

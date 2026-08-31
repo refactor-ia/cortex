@@ -200,34 +200,206 @@ func TestClassifyFilesystemActorAwareCore(t *testing.T) {
 	}
 }
 
-func TestClassifyFilesystemRejectsPriorV2AndDetachesDecisions(t *testing.T) {
-	candidate := makeActorAwareCandidate(t)
-	writeCandidateFiles(t, candidate)
-	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := installobserve.ClassifyFilesystem(candidate, observation)
-	if err == nil || result.StateAction() != "" || len(result.ArtifactDecisions()) != 0 || len(result.Observed()) != 0 {
-		t.Fatalf("ClassifyFilesystem() = (%#v, %v), want empty rejected result", result, err)
-	}
+func TestClassifyFilesystemPriorV2Integrity(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		priorID       installstate.InstallationID
+		priorBytes    map[string][]byte
+		observedBytes map[string][]byte
+		modes         map[string]os.FileMode
+		wantError     bool
+		state         ownership.Action
+		logicalID     string
+		ownership     ownership.Ownership
+		action        ownership.Action
+		allUnchanged  bool
+	}{
+		{
+			name:         "exact prior v2 is unchanged",
+			state:        ownership.Unchanged,
+			allUnchanged: true,
+		},
+		{
+			name:       "prior actor bytes are replaced",
+			priorBytes: map[string][]byte{"actors/requirements-analyst": []byte("old actor bytes")},
+			state:      ownership.Replace,
+			logicalID:  "actors/requirements-analyst",
+			ownership:  ownership.CortexOwned,
+			action:     ownership.Replace,
+		},
+		{
+			name:          "actor hash drift conflicts",
+			observedBytes: map[string][]byte{"actors/requirements-analyst": []byte("drifted actor bytes")},
+			state:         ownership.Unchanged,
+			logicalID:     "actors/requirements-analyst",
+			ownership:     ownership.UserOwned,
+			action:        ownership.Conflict,
+		},
+		{
+			name:      "actor mode drift conflicts",
+			modes:     map[string]os.FileMode{"actors/requirements-analyst": 0o640},
+			state:     ownership.Unchanged,
+			logicalID: "actors/requirements-analyst",
+			ownership: ownership.UserOwned,
+			action:    ownership.Conflict,
+		},
+		{
+			name:      "prior state mode rejects",
+			modes:     map[string]os.FileMode{"state/install-state": 0o640},
+			wantError: true,
+		},
+		{
+			name:      "different installation ID rejects",
+			priorID:   "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+			wantError: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := makeActorAwareCandidate(t)
+			prior := priorV2(t, candidate, tc.priorID, tc.priorBytes)
+			writePriorV2(t, candidate, prior, tc.priorBytes, tc.observedBytes, tc.modes)
 
-	candidate = makeActorAwareCandidate(t)
-	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
-		t.Fatal(err)
+			observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := installobserve.ClassifyFilesystem(candidate, observation)
+			if tc.wantError {
+				if err == nil || result.StateAction() != "" || len(result.ArtifactDecisions()) != 0 || len(result.Observed()) != 0 {
+					t.Fatalf("ClassifyFilesystem() = (%#v, %v), want empty rejected result", result, err)
+				}
+				return
+			}
+			if err != nil || result.StateAction() != tc.state {
+				t.Fatalf("ClassifyFilesystem() = (%#v, %v), want state %q", result, err, tc.state)
+			}
+			if tc.allUnchanged {
+				for _, decision := range result.ArtifactDecisions() {
+					if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
+						t.Fatalf("ArtifactDecisions() = %#v, want all typed unchanged", result.ArtifactDecisions())
+					}
+				}
+				return
+			}
+			for _, decision := range result.ArtifactDecisions() {
+				if decision.LogicalID == tc.logicalID {
+					if decision.ObservedOwnership != tc.ownership || decision.Action != tc.action {
+						t.Fatalf("decision = %#v, want ownership %q action %q", decision, tc.ownership, tc.action)
+					}
+					return
+				}
+			}
+			t.Fatalf("ArtifactDecisions() = %#v, missing %q", result.ArtifactDecisions(), tc.logicalID)
+		})
 	}
-	observation, err = installobserve.Observe(candidate, installobserve.DefaultOptions())
+}
+
+func TestClassifyFilesystemRejectsMalformedPriorV2Metadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		old  []byte
+		new  []byte
+	}{
+		{
+			name: "actor path",
+			old:  []byte("agents/cortex-adversarial-tester.md"),
+			new:  []byte("agents/cortex-test-designer.md"),
+		},
+		{
+			name: "actor contract",
+			old:  []byte("cortex.qa.pi-actor.v1"),
+			new:  []byte("cortex.qa.pi-actor.v2"),
+		},
+		{
+			name: "actor kind",
+			old:  []byte(`"kind":"pi-actor"`),
+			new:  []byte(`"kind":"skill"`),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := makeActorAwareCandidate(t)
+			state := bytes.Replace(candidate.StateJSON(), tc.old, tc.new, 1)
+			statePath := filepath.Join(candidate.RootPath(), ".cortex", "install-state.json")
+			if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, state, installplan.CanonicalFileMode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := installobserve.Observe(candidate, installobserve.DefaultOptions()); err == nil {
+				t.Fatalf("Observe() accepted prior v2 %s metadata drift", tc.name)
+			}
+		})
+	}
+}
+
+func priorV2(t *testing.T, candidate installplan.Plan, installationID installstate.InstallationID, replacements map[string][]byte) installstate.Manifest {
+	t.Helper()
+	if installationID == "" {
+		installationID = candidate.InstalledState().InstallationID()
+	}
+	inputs := make([]installstate.V2ArtifactInput, 0, len(candidate.InstalledState().Artifacts()))
+	for _, artifact := range candidate.InstalledState().Artifacts() {
+		input := installstate.V2ArtifactInput{
+			LogicalID:            artifact.LogicalID(),
+			Kind:                 artifact.Kind(),
+			CapabilityID:         artifact.CapabilityID(),
+			RoleID:               artifact.RoleID(),
+			ActorContractVersion: artifact.ActorContractVersion(),
+			RelativePath:         artifact.RelativePath(),
+			SHA256:               artifact.SHA256(),
+			InstallationID:       installationID,
+		}
+		if replacement, found := replacements[artifact.LogicalID()]; found {
+			input.SHA256 = hashBytes(replacement)
+		}
+		inputs = append(inputs, input)
+	}
+	prior, err := installstate.NewV2(candidate.RuntimeID(), candidate.RootKind(), candidate.SnapshotFingerprint(), installationID, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = installobserve.ClassifyFilesystem(candidate, observation)
+	return prior
+}
+
+func writePriorV2(t *testing.T, candidate installplan.Plan, prior installstate.Manifest, priorBytes, observedBytes map[string][]byte, modes map[string]os.FileMode) {
+	t.Helper()
+	for _, file := range candidate.Files() {
+		if file.Role() == "state" {
+			continue
+		}
+		content := file.Content()
+		if replacement, found := priorBytes[file.LogicalID()]; found {
+			content = replacement
+		}
+		if replacement, found := observedBytes[file.LogicalID()]; found {
+			content = replacement
+		}
+		mode := installplan.CanonicalFileMode
+		if value, found := modes[file.LogicalID()]; found {
+			mode = value
+		}
+		if err := os.MkdirAll(filepath.Dir(file.AbsolutePath()), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file.AbsolutePath(), content, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := installstate.Encode(prior)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decisions := result.ArtifactDecisions()
-	decisions[0].LogicalID = "changed"
-	if result.ArtifactDecisions()[0].LogicalID == "changed" {
-		t.Fatal("result exposed mutable artifact decisions")
+	mode := installplan.CanonicalFileMode
+	if value, found := modes["state/install-state"]; found {
+		mode = value
+	}
+	statePath := filepath.Join(candidate.RootPath(), ".cortex", "install-state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, state, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 

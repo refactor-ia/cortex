@@ -52,7 +52,9 @@ func (result Result) Observed() []ownership.ObservedArtifact {
 func (result Result) ObservedArtifacts() []ownership.ObservedArtifact { return result.Observed() }
 
 // ArtifactDecisions returns detached, logical-ID-sorted typed ownership decisions.
-func (result Result) ArtifactDecisions() []ArtifactDecision { return append([]ArtifactDecision{}, result.artifactDecisions...) }
+func (result Result) ArtifactDecisions() []ArtifactDecision {
+	return append([]ArtifactDecision{}, result.artifactDecisions...)
+}
 
 // StateAction reports create, replace, or unchanged for the candidate state file.
 func (result Result) StateAction() ownership.Action { return result.stateAction }
@@ -78,8 +80,9 @@ func Classify(candidate installplan.Plan, prior *PriorState, slots []SlotObserva
 	return classify(manifest, stateHash, prior, priorArtifacts, slots), nil
 }
 
-// ClassifyFilesystem classifies an observation bound to the exact candidate. V2
-// accepts only fresh installation or migration from exact v1 ownership evidence.
+const nonCanonicalOwnershipHash = "noncanonical-mode"
+
+// ClassifyFilesystem classifies an observation bound to the exact candidate.
 func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObservation) (Result, error) {
 	if !observation.MatchesCandidate(candidate) {
 		return Result{}, invalid()
@@ -92,7 +95,7 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 		}
 		return Classify(candidate, prior, observation.Slots())
 	}
-	if manifest.SchemaVersion() != 2 || prior != nil && prior.Manifest.SchemaVersion() != 1 {
+	if manifest.SchemaVersion() != 2 || prior != nil && (prior.Manifest.SchemaVersion() != 1 && prior.Manifest.SchemaVersion() != 2) {
 		return Result{}, invalid()
 	}
 	priorArtifacts := map[string]string(nil)
@@ -108,7 +111,7 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 	}
 	for id := range priorArtifacts {
 		if exact, found := observation.exact[id]; found && exact.mode != installplan.CanonicalFileMode {
-			delete(priorArtifacts, id)
+			priorArtifacts[id] = nonCanonicalOwnershipHash
 		}
 	}
 	return classify(manifest, hash(candidate.StateJSON()), prior, priorArtifacts, observation.Slots()), nil
@@ -186,14 +189,46 @@ func validV1Candidate(candidate installplan.Plan) (installstate.Manifest, string
 
 func validPrior(prior PriorState, candidate installplan.Plan, current installstate.Manifest) (map[string]string, bool) {
 	encoded, err := installstate.Encode(prior.Manifest)
-	if prior.Manifest.SchemaVersion() != 1 || err != nil || prior.StateSHA256 != hash(encoded) || prior.Manifest.RuntimeID() != candidate.RuntimeID() || prior.Manifest.RootKind() != candidate.RootKind() || current.RuntimeID() != prior.Manifest.RuntimeID() {
+	if err != nil || prior.StateSHA256 != hash(encoded) || prior.Manifest.RuntimeID() != candidate.RuntimeID() || prior.Manifest.RootKind() != candidate.RootKind() || current.RuntimeID() != prior.Manifest.RuntimeID() || current.RootKind() != prior.Manifest.RootKind() {
 		return nil, false
 	}
-	out := make(map[string]string, len(prior.Manifest.Artifacts()))
-	for _, artifact := range prior.Manifest.Artifacts() {
-		out[artifact.LogicalID()] = artifact.SHA256()
+	priorArtifacts := prior.Manifest.Artifacts()
+	out := make(map[string]string, len(priorArtifacts))
+	switch prior.Manifest.SchemaVersion() {
+	case 1:
+		for _, artifact := range priorArtifacts {
+			out[artifact.LogicalID()] = artifact.SHA256()
+		}
+	case 2:
+		if current.SchemaVersion() != 2 || current.InstallationID() != prior.Manifest.InstallationID() {
+			return nil, false
+		}
+		currentArtifacts := artifactMap(current)
+		for _, artifact := range priorArtifacts {
+			currentArtifact, found := currentArtifacts[artifact.LogicalID()]
+			if (found && !sameOwnershipMetadata(artifact, currentArtifact)) || (!found && artifact.Kind() != installstate.KindSkill) {
+				return nil, false
+			}
+			out[artifact.LogicalID()] = artifact.SHA256()
+		}
+	default:
+		return nil, false
 	}
 	return out, true
+}
+
+func sameOwnershipMetadata(left, right installstate.Artifact) bool {
+	if left.Kind() != right.Kind() || left.RelativePath() != right.RelativePath() || left.InstallationID() != right.InstallationID() {
+		return false
+	}
+	switch left.Kind() {
+	case installstate.KindSkill:
+		return left.CapabilityID() == right.CapabilityID()
+	case installstate.KindPiActor:
+		return left.RoleID() == right.RoleID() && left.ActorContractVersion() == right.ActorContractVersion()
+	default:
+		return false
+	}
 }
 
 func validExactObservation(candidate installplan.Plan, observation FilesystemObservation, prior *PriorState) bool {

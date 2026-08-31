@@ -418,6 +418,204 @@ func actorFile(t *testing.T, candidate installplan.Plan) installplan.File {
 	return installplan.File{}
 }
 
+func TestObserveActorShadows(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, candidate installplan.Plan, cwd string)
+		clean bool
+		count int
+	}{
+		{name: "fresh absent is clean", clean: true},
+		{
+			name: "exact prior v2 global actors are allowed",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writeCandidateFiles(t, candidate)
+			},
+			clean: true,
+		},
+		{
+			name: "fresh malformed global target conflicts",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writeShadow(t, candidate.RootPath(), "agents", "cortex-test-designer.md", []byte("not frontmatter"), 0o600)
+			},
+			count: 1,
+		},
+		{
+			name: "v1 byte-identical global targets conflict",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writeV1ObservedSkills(t, candidate, false, true)
+			},
+			count: 6,
+		},
+		{
+			name: "prior actor drift conflicts",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writePriorV2(t, candidate, priorV2(t, candidate, "", nil), nil, map[string][]byte{
+					"actors/test-designer": []byte("drift"),
+				}, nil)
+			},
+			count: 1,
+		},
+		{
+			name: "prior actor mode drift conflicts",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writePriorV2(t, candidate, priorV2(t, candidate, "", nil), nil, nil, map[string]os.FileMode{
+					"actors/test-designer": 0o640,
+				})
+			},
+			count: 1,
+		},
+		{
+			name: "non global locations conflict",
+			setup: func(t *testing.T, candidate installplan.Plan, cwd string) {
+				writeShadow(t, candidate.RootPath(), "subagents", "cortex-test-designer.md", []byte("x"), 0o600)
+				writeShadow(t, cwd, ".pi/agents", "cortex-test-runner.md", []byte("x"), 0o600)
+				writeShadow(t, cwd, ".pi/subagents", "cortex-evidence-auditor.md", []byte("x"), 0o600)
+			},
+			count: 3,
+		},
+		{
+			name: "normalized names conflict",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writeShadow(t, candidate.RootPath(), "agents", "plain.md", []byte("---\nname: cortex-test-designer # comment\n---\n"), 0o600)
+				writeShadow(t, candidate.RootPath(), "agents", "single.md", []byte("---\nname: 'cortex-test-runner'\n---\n"), 0o600)
+				writeShadow(t, candidate.RootPath(), "agents", "escaped.md", []byte("---\nname: \"cortex-evidence-\\u0061uditor\"\n---\n"), 0o600)
+				writeShadow(t, candidate.RootPath(), "agents", "malformed.md", []byte("---\nname: \"cortex-adversarial-tester\n---\n"), 0o600)
+			},
+			count: 4,
+		},
+		{
+			name: "ambiguous target names conflict while malformed unrelated is ignored",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				writeShadow(t, candidate.RootPath(), "agents", "ambiguous.md", []byte("---\nname: other\nname: cortex-test-designer\n---\n"), 0o600)
+				writeShadow(t, candidate.RootPath(), "agents", "other.md", []byte("---\nname\n"), 0o600)
+			},
+			count: 1,
+		},
+		{
+			name: "unsafe and oversized target basenames conflict",
+			setup: func(t *testing.T, candidate installplan.Plan, _ string) {
+				path := filepath.Join(candidate.RootPath(), "subagents", "cortex-test-designer.md")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("missing", path); err != nil {
+					t.Fatal(err)
+				}
+				writeShadow(t, candidate.RootPath(), "subagents", "cortex-test-runner.md", bytes.Repeat([]byte("x"), 256<<10+1), 0o600)
+			},
+			count: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, cwd := makeActorAwareCandidate(t), physicalTempDir(t)
+			if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.setup != nil {
+				tc.setup(t, candidate, cwd)
+			}
+			observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
+			if err != nil || result.Clean() != tc.clean || len(result.Conflicts()) != tc.count {
+				t.Fatalf("ObserveActorShadows() = (%#v, %v)", result, err)
+			}
+		})
+	}
+}
+
+func TestObserveActorShadowsRejectsSymlinkCWD(t *testing.T) {
+	candidate, cwd := makeActorAwareCandidate(t), physicalTempDir(t)
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cwd")
+	if err := os.Symlink(cwd, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installobserve.ObserveActorShadows(candidate, observation, link); err == nil {
+		t.Fatal("ObserveActorShadows() accepted a symlink cwd")
+	}
+}
+
+func TestObserveActorShadowsRechecksAllAllowedActors(t *testing.T) {
+	candidate, cwd := makeActorAwareCandidate(t), physicalTempDir(t)
+	writeCandidateFiles(t, candidate)
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(actorFile(t, candidate).AbsolutePath()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installobserve.ObserveActorShadows(candidate, observation, cwd); err == nil {
+		t.Fatal("ObserveActorShadows() accepted an allowed actor removed after observation")
+	}
+}
+
+func TestObserveActorShadowsPublicResultIsClosedAndDetached(t *testing.T) {
+	candidate, cwd := makeActorAwareCandidate(t), physicalTempDir(t)
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeShadow(t, cwd, ".pi/subagents", "cortex-test-designer.md", []byte("x"), 0o600)
+	writeShadow(t, cwd, ".pi/subagents", "cortex-adversarial-tester.md", []byte("x"), 0o600)
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
+	if err != nil || result.Clean() {
+		t.Fatalf("ObserveActorShadows() = (%#v, %v)", result, err)
+	}
+	conflicts := result.Conflicts()
+	if len(conflicts) != 2 || conflicts[0].RoleID() != "adversarial-tester" || conflicts[1].Location() != installobserve.ShadowLocationProjectSubagents {
+		t.Fatalf("Conflicts() = %#v", conflicts)
+	}
+	conflicts[0] = installobserve.ShadowConflict{}
+	if len(result.Conflicts()) != 2 {
+		t.Fatal("Conflicts() exposed mutable state")
+	}
+	for _, value := range []any{installobserve.ShadowObservation{}, installobserve.ShadowConflict{}} {
+		typeOf := reflect.TypeOf(value)
+		for index := 0; index < typeOf.NumField(); index++ {
+			if typeOf.Field(index).IsExported() {
+				t.Fatalf("%v exposes %q", typeOf, typeOf.Field(index).Name)
+			}
+		}
+	}
+	if (installobserve.ShadowObservation{}).Clean() {
+		t.Fatal("zero observation is clean")
+	}
+}
+
+func writeShadow(t *testing.T, root, directory, name string, contents []byte, mode os.FileMode) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(directory), name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // makeActorAwareCandidate builds a real-catalog Pi v2 plan for observation tests.
 func makeActorAwareCandidate(t *testing.T) installplan.Plan {
 	t.Helper()
@@ -464,7 +662,7 @@ func makeActorAwareCandidate(t *testing.T) installplan.Plan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: t.TempDir()})
+	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: physicalTempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

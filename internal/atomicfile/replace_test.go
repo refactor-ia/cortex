@@ -2,9 +2,11 @@ package atomicfile
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -327,6 +329,265 @@ func TestCreateIfAbsent(t *testing.T) {
 			assertNoTemporaryFiles(t, root)
 		})
 	}
+}
+
+func TestObserveRootedAbsent(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted absence evidence is unsupported")
+	}
+	t.Run("retains an anchored parent without closing the caller root", func(t *testing.T) {
+		for _, tt := range []struct {
+			name, relative string
+			mode           fs.FileMode
+		}{
+			{"top level", "config.txt", 0o000},
+			{"nested", "safe/nested/config.txt", 0o600},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				path := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(path, filepath.Dir(tt.relative)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				root, err := os.OpenRoot(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				evidence, err := observeRootedAbsent(root, tt.relative, tt.mode, rootedAbsentEvidenceOperations{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer evidence.parent.Close()
+				if evidence.basename != "config.txt" || evidence.mode != tt.mode {
+					t.Fatalf("evidence = %+v", evidence)
+				}
+				if _, err := root.Lstat("."); err != nil {
+					t.Fatalf("caller root was closed: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("retains the opened root across a rename", func(t *testing.T) {
+		path := t.TempDir()
+		if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		dots := 0
+		evidence, err := observeRootedAbsent(root, "safe/config.txt", 0o600, rootedAbsentEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+			info, err := r.Lstat(name)
+			if name == "." {
+				dots++
+				if dots == 2 {
+					moved := path + "-moved"
+					t.Cleanup(func() { _ = os.RemoveAll(moved) })
+					if err := os.Rename(path, moved); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Join(path, "safe"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			return info, err
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer evidence.parent.Close()
+		if _, err := evidence.parent.Lstat("."); err != nil {
+			t.Fatalf("retained parent is unusable: %v", err)
+		}
+	})
+
+	t.Run("rejects parent replacement before opening it", func(t *testing.T) {
+		path := t.TempDir()
+		if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		_, err = observeRootedAbsent(root, "safe/config.txt", 0o600, rootedAbsentEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+			info, err := r.Lstat(name)
+			if name == "safe" {
+				if err := os.Rename(filepath.Join(path, "safe"), filepath.Join(path, "old")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return info, err
+		}})
+		if err == nil || strings.Contains(err.Error(), "safe") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("rejects destination appearance and existing leaf types", func(t *testing.T) {
+		for _, tt := range []struct {
+			name  string
+			setup func(string) error
+		}{
+			{"appearance", func(path string) error { return os.WriteFile(path, []byte("appeared"), 0o600) }},
+			{"regular", func(path string) error { return os.WriteFile(path, []byte("existing"), 0o600) }},
+			{"directory", func(path string) error { return os.Mkdir(path, 0o755) }},
+			{"symlink", func(path string) error { return os.Symlink("target", path) }},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				path := t.TempDir()
+				if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				root, err := os.OpenRoot(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				if tt.name == "appearance" {
+					_, err = observeRootedAbsent(root, "safe/config", 0o600, rootedAbsentEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+						if name == "config" {
+							_ = tt.setup(filepath.Join(path, "safe", name))
+						}
+						return r.Lstat(name)
+					}})
+				} else {
+					if err := tt.setup(filepath.Join(path, "safe", "config")); err != nil {
+						t.Fatal(err)
+					}
+					_, err = observeRootedAbsent(root, "safe/config", 0o600, rootedAbsentEvidenceOperations{})
+				}
+				if err == nil {
+					t.Fatal("observeRootedAbsent() error = nil")
+				}
+			})
+		}
+	})
+}
+
+func TestObserveRootedAbsentRejectsInvalidInputsAndClosesOwnedRoots(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted absence evidence is unsupported")
+	}
+	path := t.TempDir()
+	if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, tt := range []struct {
+		name, relative string
+		root           *os.Root
+		mode           fs.FileMode
+	}{
+		{"nil root", "safe/config", nil, 0o600},
+		{"empty path", "", root, 0o600},
+		{"traversal", "../secret/path", root, 0o600},
+		{"noncanonical", "safe/../secret/path", root, 0o600},
+		{"backslash", `safe\secret`, root, 0o600},
+		{"unsupported mode", "safe/config", root, fs.ModeSetuid | 0o600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := observeRootedAbsent(tt.root, tt.relative, tt.mode, rootedAbsentEvidenceOperations{})
+			if err == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	if err := os.WriteFile(filepath.Join(path, "not-a-directory"), []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"missing/config", "not-a-directory/config"} {
+		_, err := observeRootedAbsent(root, relative, 0o600, rootedAbsentEvidenceOperations{})
+		if err == nil {
+			t.Fatalf("invalid parent %q was accepted", relative)
+		}
+	}
+	closed, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observeRootedAbsent(closed, "safe/config", 0o600, rootedAbsentEvidenceOperations{}); err == nil {
+		t.Fatal("closed root was accepted")
+	}
+	for _, tt := range []struct {
+		name string
+		op   func(*os.Root, string) (fs.FileInfo, error)
+	}{
+		{"nil nil", func(*os.Root, string) (fs.FileInfo, error) { return nil, nil }},
+		{"other error", func(*os.Root, string) (fs.FileInfo, error) { return nil, errors.New("secret lstat") }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := observeRootedAbsent(root, "safe/config", 0o600, rootedAbsentEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+				if name == "config" {
+					return tt.op(r, name)
+				}
+				return r.Lstat(name)
+			}})
+			if err == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		open func(*os.Root, string) (*os.Root, error)
+		want int
+	}{
+		{"initial nonnil error", func(*os.Root, string) (*os.Root, error) {
+			r, _ := os.OpenRoot(path)
+			return r, errors.New("secret open")
+		}, 1},
+		{"intermediate nonnil error", func(r *os.Root, name string) (*os.Root, error) {
+			if name == "." {
+				return r.OpenRoot(name)
+			}
+			next, _ := r.OpenRoot(name)
+			return next, errors.New("secret open")
+		}, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			closes := 0
+			_, err := observeRootedAbsent(root, "safe/config", 0o600, rootedAbsentEvidenceOperations{openRoot: tt.open, close: func(r *os.Root) error {
+				closes++
+				return r.Close()
+			}})
+			if err == nil || strings.Contains(err.Error(), "secret") || closes != tt.want {
+				t.Fatalf("error = %v, closes = %d, want %d", err, closes, tt.want)
+			}
+		})
+	}
+	t.Run("closes the next root once when prior close fails", func(t *testing.T) {
+		closes := 0
+		_, err := observeRootedAbsent(root, "safe/config", 0o600, rootedAbsentEvidenceOperations{close: func(r *os.Root) error {
+			closes++
+			if err := r.Close(); err != nil {
+				return err
+			}
+			if closes == 1 {
+				return errors.New("secret close")
+			}
+			return nil
+		}})
+		if err == nil || strings.Contains(err.Error(), "secret") || closes != 2 {
+			t.Fatalf("error = %v, closes = %d, want 2", err, closes)
+		}
+	})
 }
 
 func TestCreateIfAbsentPreservesConcurrentAppearance(t *testing.T) {

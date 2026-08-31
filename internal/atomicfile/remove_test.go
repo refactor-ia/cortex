@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -675,6 +676,258 @@ func writeMode(t *testing.T, path string, data []byte, mode fs.FileMode) {
 		t.Fatal(err)
 	}
 }
+func TestRemoveIfExactRootContract(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted removal is unsupported")
+	}
+	for _, tt := range []struct {
+		name, relative string
+		data           []byte
+		nilEvidence    bool
+		wantAbsent     bool
+	}{
+		{"removes nested file", "safe/config.txt", []byte("rooted evidence"), false, true},
+		{"removes nonnil zero byte file", "safe/empty", []byte{}, false, true},
+		{"rejects nil evidence and preserves target", "safe/config.txt", []byte("rooted evidence"), true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.relative)
+			writeMode(t, path, tt.data, 0o600)
+			root := openTestRoot(t, filepath.Dir(filepath.Dir(path)))
+			defer root.Close()
+			evidence := tt.data
+			if tt.nilEvidence {
+				evidence = nil
+			}
+			err := RemoveIfExactRoot(root, tt.relative, evidence, 0o600)
+			if tt.nilEvidence && (err == nil || !strings.Contains(err.Error(), "invalid expected bytes")) {
+				t.Fatalf("RemoveIfExactRoot() error = %v", err)
+			}
+			_, statErr := os.Lstat(path)
+			if tt.wantAbsent && !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("target stat = %v, want absent", statErr)
+			}
+			if !tt.wantAbsent && statErr != nil {
+				t.Fatalf("target stat = %v, want preserved", statErr)
+			}
+		})
+	}
+}
+
+func TestRemoveIfExactRootRetainsDirectoryAuthority(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("descriptor retention is unsupported")
+	}
+	t.Run("top root rename", func(t *testing.T) {
+		original := t.TempDir()
+		moved := original + "-moved"
+		path := filepath.Join(original, "safe", "config.txt")
+		data := []byte("rooted evidence")
+		writeMode(t, path, data, 0o600)
+		root := openTestRoot(t, original)
+		defer root.Close()
+		if err := os.Rename(original, moved); err != nil {
+			t.Fatal(err)
+		}
+		writeMode(t, filepath.Join(original, "safe", "config.txt"), data, 0o600)
+		outside := filepath.Join(t.TempDir(), "outside")
+		writeFile(t, outside, []byte("sentinel"))
+		if err := RemoveIfExactRoot(root, "safe/config.txt", data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, preserved := range []string{filepath.Join(original, "safe", "config.txt"), outside} {
+			if _, err := os.Lstat(preserved); err != nil {
+				t.Fatalf("preserved %q: %v", preserved, err)
+			}
+		}
+		if _, err := os.Lstat(filepath.Join(moved, "safe", "config.txt")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("moved target = %v, want absent", err)
+		}
+	})
+	t.Run("retained parent survives replacement", func(t *testing.T) {
+		rootPath := t.TempDir()
+		path := filepath.Join(rootPath, "safe", "config.txt")
+		data := []byte("rooted evidence")
+		writeMode(t, path, data, 0o600)
+		outside := filepath.Join(t.TempDir(), "outside")
+		writeFile(t, outside, []byte("sentinel"))
+		root := openTestRoot(t, rootPath)
+		defer root.Close()
+		removed := false
+		err := removeIfExactRoot(root, "safe/config.txt", data, 0o600, rootedExactRemovalOperations{
+			remove: func(parent *os.Root, name string) error {
+				if err := os.Rename(filepath.Join(rootPath, "safe"), filepath.Join(rootPath, "moved")); err != nil {
+					t.Fatal(err)
+				}
+				writeMode(t, filepath.Join(rootPath, "safe", name), data, 0o600)
+				removed = true
+				return parent.Remove(name)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !removed {
+			t.Fatal("remove hook was not invoked")
+		}
+		if _, err := os.Lstat(filepath.Join(rootPath, "moved", "config.txt")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("moved target = %v, want absent", err)
+		}
+		for _, preserved := range []string{filepath.Join(rootPath, "safe", "config.txt"), outside} {
+			if _, err := os.Lstat(preserved); err != nil {
+				t.Fatalf("preserved %q: %v", preserved, err)
+			}
+		}
+	})
+}
+
+func TestRemoveIfExactRootRejectsFinalDrift(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted removal is unsupported")
+	}
+	for _, tt := range []struct {
+		name, want string
+		mutate     func(*testing.T, string)
+	}{
+		{"bytes", "destination drifted", func(t *testing.T, path string) { writeMode(t, path, []byte("changed"), 0o600) }},
+		{"mode", "destination drifted", func(t *testing.T, path string) {
+			if err := os.Chmod(path, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"identity", "destination drifted", func(t *testing.T, path string) {
+			writeMode(t, filepath.Join(filepath.Dir(path), "replacement"), []byte("rooted evidence"), 0o600)
+			if err := os.Rename(filepath.Join(filepath.Dir(path), "replacement"), path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			path := filepath.Join(rootPath, "safe", "config.txt")
+			data := []byte("rooted evidence")
+			writeMode(t, path, data, 0o600)
+			root := openTestRoot(t, rootPath)
+			defer root.Close()
+			hits, removed := 0, false
+			err := removeIfExactRoot(root, "safe/config.txt", data, 0o600, rootedExactRemovalOperations{
+				rootedExactEvidenceOperations: rootedExactEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+					if name == "config.txt" && r != root {
+						hits++
+						if hits == 3 {
+							tt.mutate(t, path)
+						}
+					}
+					return r.Lstat(name)
+				}},
+				remove: func(*os.Root, string) error { removed = true; return nil },
+			})
+			if hits < 3 || err == nil || !strings.Contains(err.Error(), tt.want) || removed {
+				t.Fatalf("hits=%d removed=%t error=%v", hits, removed, err)
+			}
+		})
+	}
+}
+
+func TestRemoveIfExactRootPostAttemptFailures(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted removal is unsupported")
+	}
+	for _, tt := range []struct {
+		name, want string
+		configure  func(*testing.T, string, *rootedExactRemovalOperations, *[4]bool)
+	}{
+		{"remove still verifies", "remove failed", func(t *testing.T, path string, ops *rootedExactRemovalOperations, calls *[4]bool) {
+			ops.remove = func(r *os.Root, n string) error {
+				calls[0] = true
+				_ = r.Remove(n)
+				return errors.New("private remove failure")
+			}
+		}},
+		{"sync", "parent directory sync failed", func(_ *testing.T, _ string, ops *rootedExactRemovalOperations, calls *[4]bool) {
+			ops.sync = func(*os.Root) error { calls[1] = true; return errors.New("private sync failure") }
+		}},
+		{"readback", "absence verification failed", func(_ *testing.T, _ string, ops *rootedExactRemovalOperations, calls *[4]bool) {
+			ops.readback = func(*os.Root, string) (fs.FileInfo, error) {
+				calls[2] = true
+				return nil, errors.New("private readback failure")
+			}
+		}},
+		{"present readback", "absence verification failed", func(_ *testing.T, path string, ops *rootedExactRemovalOperations, calls *[4]bool) {
+			ops.readback = func(*os.Root, string) (fs.FileInfo, error) {
+				calls[2] = true
+				return os.Lstat(filepath.Dir(filepath.Dir(path)))
+			}
+		}},
+		{"close", "parent close failed", func(_ *testing.T, _ string, ops *rootedExactRemovalOperations, calls *[4]bool) {
+			ops.close = func(r *os.Root) error { calls[3] = true; _ = r.Close(); return errors.New("private close failure") }
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			path := filepath.Join(rootPath, "safe", "config.txt")
+			data := []byte("rooted evidence")
+			writeMode(t, path, data, 0o600)
+			root := openTestRoot(t, rootPath)
+			defer root.Close()
+			calls := [4]bool{}
+			ops := rootedExactRemovalOperations{
+				sync: func(r *os.Root) error {
+					calls[1] = true
+					return syncRootedExactRemoval(r, rootedExactRemovalOperations{})
+				},
+				readback: func(r *os.Root, n string) (fs.FileInfo, error) {
+					calls[2] = true
+					return r.Lstat(n)
+				},
+				close: func(r *os.Root) error { calls[3] = true; return r.Close() },
+			}
+			tt.configure(t, path, &ops, &calls)
+			err := removeIfExactRoot(root, "safe/config.txt", data, 0o600, ops)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error = %v", err)
+			}
+			if _, statErr := os.Lstat(path); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("target stat = %v, want absent", statErr)
+			}
+			if tt.name == "remove still verifies" && !calls[0] {
+				t.Fatalf("remove was not invoked: %v", calls)
+			}
+			if !calls[1] || !calls[2] || !calls[3] {
+				t.Fatalf("post-attempt calls = %v", calls)
+			}
+		})
+	}
+}
+
+func TestRemoveIfExactRootJoinsPostAttemptFailures(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted removal is unsupported")
+	}
+	rootPath := t.TempDir()
+	path := filepath.Join(rootPath, "safe", "config.txt")
+	data := []byte("secret evidence")
+	writeMode(t, path, data, 0o600)
+	root := openTestRoot(t, rootPath)
+	defer root.Close()
+	err := removeIfExactRoot(root, "safe/config.txt", data, 0o600, rootedExactRemovalOperations{
+		remove:   func(r *os.Root, n string) error { _ = r.Remove(n); return errors.New("secret remove") },
+		sync:     func(*os.Root) error { return errors.New("secret sync") },
+		readback: func(*os.Root, string) (fs.FileInfo, error) { return nil, errors.New("secret readback") },
+		close:    func(r *os.Root) error { _ = r.Close(); return errors.New("secret close") },
+	})
+	for _, want := range []string{"remove failed", "parent directory sync failed", "absence verification failed", "parent close failed"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	for _, secret := range []string{"safe/config.txt", string(data), "secret remove", "secret sync", "secret readback", "secret close"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("error leaked %q: %v", secret, err)
+		}
+	}
+}
+
 func TestRemoveIfMatches(t *testing.T) {
 	tests := []struct {
 		name       string

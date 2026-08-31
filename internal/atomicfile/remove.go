@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/refactor-ia/cortex/internal/safepath"
@@ -253,6 +254,108 @@ func rootedEvidenceLstat(operations rootedExactEvidenceOperations, root *os.Root
 		return operations.lstat(root, name)
 	}
 	return root.Lstat(name)
+}
+
+var (
+	errRootedExactRemoveUnsupported = errors.New("atomic rooted exact remove: unsupported platform")
+	errRootedExactRemoveFailed      = errors.New("atomic rooted exact remove: remove failed")
+	errRootedExactRemoveSyncFailed  = errors.New("atomic rooted exact remove: parent directory sync failed")
+	errRootedExactRemoveAbsent      = errors.New("atomic rooted exact remove: absence verification failed")
+	errRootedExactRemoveCloseFailed = errors.New("atomic rooted exact remove: parent close failed")
+)
+
+type rootedExactRemovalOperations struct {
+	rootedExactEvidenceOperations
+	remove   func(*os.Root, string) error
+	sync     func(*os.Root) error
+	readback func(*os.Root, string) (fs.FileInfo, error)
+	close    func(*os.Root) error
+}
+
+// RemoveIfExactRoot durably removes a regular file only when exact evidence
+// matches it beneath root. Before Remove is invoked, an error proves that no
+// intended publication occurred. Once Remove is invoked, callers must treat
+// every result as potentially published and compensate from the exact evidence.
+// Portable primitives leave a residual same-parent race between final evidence and removal.
+func RemoveIfExactRoot(root *os.Root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode) error {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		return errRootedExactRemoveUnsupported
+	}
+	return removeIfExactRoot(root, relativePath, expectedBytes, expectedMode, rootedExactRemovalOperations{})
+}
+
+func removeIfExactRoot(root *os.Root, relativePath string, expectedBytes []byte, expectedMode fs.FileMode, operations rootedExactRemovalOperations) error {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		return errRootedExactRemoveUnsupported
+	}
+	evidence, err := observeRootedExact(root, relativePath, expectedBytes, expectedMode, operations.rootedExactEvidenceOperations)
+	if err != nil {
+		return err
+	}
+	parent := evidence.parents[len(evidence.parents)-1]
+	parentRoot, err := root.OpenRoot(parent.path)
+	if err != nil {
+		return errors.New("atomic rooted exact remove: parent drifted")
+	}
+	parentInfo, parentErr := parentRoot.Lstat(".")
+	if parentErr != nil || parentInfo.Mode() != parent.info.Mode() || !os.SameFile(parentInfo, parent.info) {
+		_ = closeRootedExactRemoval(parentRoot, operations)
+		return errors.New("atomic rooted exact remove: parent drifted")
+	}
+	basename := relativePath[strings.LastIndex(relativePath, "/")+1:]
+	leaf, leafErr := rootedEvidenceLeaf(parentRoot, basename, expectedBytes, expectedMode, operations.rootedExactEvidenceOperations)
+	if leafErr != nil || leaf.Mode() != evidence.leaf.Mode() || !os.SameFile(leaf, evidence.leaf) {
+		_ = closeRootedExactRemoval(parentRoot, operations)
+		return errors.New("atomic rooted exact remove: destination drifted")
+	}
+
+	var failures []error
+	if operations.remove != nil {
+		err = operations.remove(parentRoot, basename)
+	} else {
+		err = parentRoot.Remove(basename)
+	}
+	if err != nil {
+		failures = append(failures, errRootedExactRemoveFailed)
+	}
+	if err := syncRootedExactRemoval(parentRoot, operations); err != nil {
+		failures = append(failures, errRootedExactRemoveSyncFailed)
+	}
+	info, readbackErr := readbackRootedExactRemoval(parentRoot, basename, operations)
+	if info != nil || !errors.Is(readbackErr, fs.ErrNotExist) {
+		failures = append(failures, errRootedExactRemoveAbsent)
+	}
+	if err := closeRootedExactRemoval(parentRoot, operations); err != nil {
+		failures = append(failures, errRootedExactRemoveCloseFailed)
+	}
+	return errors.Join(failures...)
+}
+
+func syncRootedExactRemoval(root *os.Root, operations rootedExactRemovalOperations) error {
+	if operations.sync != nil {
+		return operations.sync(root)
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
+func readbackRootedExactRemoval(root *os.Root, basename string, operations rootedExactRemovalOperations) (fs.FileInfo, error) {
+	if operations.readback != nil {
+		return operations.readback(root, basename)
+	}
+	return root.Lstat(basename)
+}
+
+func closeRootedExactRemoval(root *os.Root, operations rootedExactRemovalOperations) error {
+	if operations.close != nil {
+		return operations.close(root)
+	}
+	return root.Close()
 }
 
 func exactRemovalMatches(destination string, expectedBytes []byte, expectedMode fs.FileMode, operations exactRemovalOperations) error {

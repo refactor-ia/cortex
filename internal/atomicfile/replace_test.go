@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestReplace(t *testing.T) {
@@ -622,7 +624,241 @@ func TestCreateIfAbsentPreservesConcurrentAppearance(t *testing.T) {
 	}
 	assertNoTemporaryFiles(t, root)
 }
+func TestStageRootedCreate(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted staging is unsupported")
+	}
+	if !rootedCreateModeOK(0o666, 0o600, true) || !rootedCreateModeOK(0o444, 0o000, true) || rootedCreateModeOK(0o666, 0o000, true) || rootedCreateModeOK(0o666, 0o600, false) || !rootedCreateModeOK(0o600, 0o600, false) {
+		t.Fatal("rooted create mode matching is incorrect")
+	}
+	for _, tt := range []struct {
+		name, relative string
+		data           []byte
+		mode           fs.FileMode
+	}{
+		{"top level empty mode", "config", nil, 0o000},
+		{"nested content", "safe/config", []byte("staged data"), 0o600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(path, filepath.Dir(tt.relative)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			stage, err := stageRootedCreate(root, tt.relative, tt.data, tt.mode, rootedCreateStagingOperations{random: bytes.NewReader(make([]byte, 16))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stage.parent == root || stage.basename != "config" || !stage.info.Mode().IsRegular() || !rootedCreateModeOK(stage.info.Mode(), tt.mode, runtime.GOOS == "windows") || !bytes.Equal(stage.data, tt.data) {
+				t.Fatalf("stage = %+v", stage)
+			}
+			if info, err := stage.parent.Lstat(stage.temporary); err != nil || !os.SameFile(stage.info, info) {
+				t.Fatalf("staged inode = %v, error = %v", info, err)
+			}
+			if tt.mode != 0 {
+				file, err := stage.parent.Open(stage.temporary)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := io.ReadAll(file)
+				closeErr := file.Close()
+				if err != nil || closeErr != nil || !bytes.Equal(got, tt.data) {
+					t.Fatalf("staged content = %q, errors = %v, %v", got, err, closeErr)
+				}
+			}
+			if err := discardRootedCreateStage(&stage, rootedCreateStagingOperations{}); err != nil || stage.parent != nil || stage.temporary != "" || stage.data != nil {
+				t.Fatalf("discard error = %v, stage = %+v", err, stage)
+			}
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+func TestStageRootedCreateRetriesAndUsesRetainedParent(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted staging is unsupported")
+	}
+	path := t.TempDir()
+	if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	attempts, removes := 0, []string(nil)
+	collision := &rootedCreateTestFile{}
+	stage, err := stageRootedCreate(root, "safe/config", []byte("data"), 0o600, rootedCreateStagingOperations{
+		random: bytes.NewReader(append(make([]byte, 16), append([]byte{1}, make([]byte, 15)...)...)),
+		openFile: func(parent *os.Root, name string, flag int, mode fs.FileMode) (rootedCreateStageFile, error) {
+			attempts++
+			if attempts == 1 {
+				return collision, fs.ErrExist
+			}
+			if err := os.Rename(filepath.Join(path, "safe"), filepath.Join(path, "old")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return parent.OpenFile(name, flag, mode)
+		},
+		remove: func(parent *os.Root, name string) error { removes = append(removes, name); return parent.Remove(name) },
+	})
+	if err != nil || attempts != 2 || collision.closes != 1 || len(removes) != 0 {
+		t.Fatalf("stage error = %v, attempts/closes/removes = %d/%d/%d", err, attempts, collision.closes, len(removes))
+	}
+	if _, err := os.Stat(filepath.Join(path, "old", stage.temporary)); err != nil {
+		t.Fatalf("temporary was not created under retained parent: %v", err)
+	}
+	temporary := stage.temporary
+	if err := discardRootedCreateStage(&stage, rootedCreateStagingOperations{remove: func(parent *os.Root, name string) error { removes = append(removes, name); return parent.Remove(name) }}); err != nil {
+		t.Fatal(err)
+	}
+	if len(removes) != 1 || removes[0] != temporary {
+		t.Fatalf("removed = %v, want owned temporary", removes)
+	}
+	root, err = os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	attempts = 0
+	_, err = stageRootedCreate(root, "safe/config", nil, 0o600, rootedCreateStagingOperations{
+		random: bytes.NewReader(make([]byte, 16*128)),
+		openFile: func(*os.Root, string, int, fs.FileMode) (rootedCreateStageFile, error) {
+			attempts++
+			return nil, fs.ErrExist
+		},
+	})
+	if err == nil || attempts != 128 || strings.Contains(err.Error(), "exist") {
+		t.Fatalf("error = %v, attempts = %d", err, attempts)
+	}
+}
+func TestStageRootedCreateStopsBeforeTemporary(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted staging is unsupported")
+	}
+	for _, tt := range []struct {
+		name      string
+		random    io.Reader
+		collision bool
+	}{
+		{"entropy", strings.NewReader(""), false},
+		{"open", bytes.NewReader(make([]byte, 16)), false},
+		{"collision close", bytes.NewReader(make([]byte, 16)), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			attempts, removes, syncs, closes := 0, 0, 0, 0
+			private := errors.New("private cause/name/data")
+			collision := &rootedCreateTestFile{closeErr: private}
+			ops := rootedCreateStagingOperations{random: tt.random, remove: func(*os.Root, string) error { removes++; return nil }, syncParent: func(*os.Root) error { syncs++; return nil }, closeParent: func(*os.Root) error { closes++; return nil }}
+			ops.openFile = func(*os.Root, string, int, fs.FileMode) (rootedCreateStageFile, error) {
+				attempts++
+				if tt.collision {
+					return collision, fs.ErrExist
+				}
+				return nil, private
+			}
+			_, err = stageRootedCreate(root, "config", nil, 0o600, ops)
+			if err == nil || strings.Contains(err.Error(), "private") || syncs != 0 || closes != 1 {
+				t.Fatalf("error = %v, cleanup = %d/%d/%d", err, removes, syncs, closes)
+			}
+			_, rootErr := root.Lstat(".")
+			if tt.collision && (attempts != 1 || removes != 0 || collision.closes != 1 || rootErr != nil || !strings.Contains(err.Error(), "close temporary failed")) {
+				t.Fatalf("error/root = %v/%v, attempts/removes/file closes = %d/%d/%d", err, rootErr, attempts, removes, collision.closes)
+			}
+		})
+	}
+}
+func TestStageRootedCreateFailureCleanupAndDiscard(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted staging is unsupported")
+	}
+	for _, tt := range []struct {
+		name string
+		file rootedCreateStageFile
+	}{
+		{"chmod", &rootedCreateTestFile{chmodErr: errors.New("private")}},
+		{"write", &rootedCreateTestFile{writeErr: errors.New("private")}},
+		{"zero progress", &rootedCreateTestFile{zeroWrite: true}},
+		{"sync", &rootedCreateTestFile{syncErr: errors.New("private")}},
+		{"stat", &rootedCreateTestFile{statErr: errors.New("private")}},
+		{"invalid stat", &rootedCreateTestFile{info: rootedCreateTestInfo{mode: fs.ModeDir | 0o600}}},
+		{"close", &rootedCreateTestFile{info: rootedCreateTestInfo{mode: 0o600}, closeErr: errors.New("private")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			removes, syncs, closes := 0, 0, 0
+			_, err = stageRootedCreate(root, "config", []byte("x"), 0o600, rootedCreateStagingOperations{random: bytes.NewReader(make([]byte, 16)), openFile: func(*os.Root, string, int, fs.FileMode) (rootedCreateStageFile, error) { return tt.file, nil }, remove: func(*os.Root, string) error { removes++; return errors.New("private") }, syncParent: func(*os.Root) error { syncs++; return errors.New("private") }, closeParent: func(*os.Root) error { closes++; return errors.New("private") }})
+			if err == nil || strings.Contains(err.Error(), "private") || removes != 1 || syncs != 1 || closes != 1 || tt.file.(*rootedCreateTestFile).closes != 1 {
+				t.Fatalf("error = %v, cleanup = %d/%d/%d, file closes = %d", err, removes, syncs, closes, tt.file.(*rootedCreateTestFile).closes)
+			}
+		})
+	}
+	path := t.TempDir()
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	stage := rootedCreateStage{parent: root, temporary: ".cortex-create-test", data: []byte("owned")}
+	file, err := root.OpenFile(stage.temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil || file.Close() != nil {
+		t.Fatal(err)
+	}
+	removes, syncs, closes := 0, 0, 0
+	err = discardRootedCreateStage(&stage, rootedCreateStagingOperations{remove: func(root *os.Root, name string) error { removes++; _ = root.Remove(name); return errors.New("private") }, syncParent: func(*os.Root) error { syncs++; return errors.New("private") }, closeParent: func(*os.Root) error { closes++; return errors.New("private") }})
+	if err == nil || strings.Contains(err.Error(), "private") || removes != 1 || syncs != 1 || closes != 1 || stage.parent != nil || stage.temporary != "" || stage.data != nil {
+		t.Fatalf("discard = %v, counts = %d/%d/%d, stage = %+v", err, removes, syncs, closes, stage)
+	}
+	if _, err := root.Lstat(".cortex-create-test"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temporary residue error = %v", err)
+	}
+	if err := discardRootedCreateStage(&stage, rootedCreateStagingOperations{}); err != nil {
+		t.Fatalf("reused discard = %v", err)
+	}
+}
 
+type rootedCreateTestFile struct {
+	chmodErr, writeErr, syncErr, statErr, closeErr error
+	zeroWrite                                      bool
+	info                                           rootedCreateTestInfo
+	closes                                         int
+}
+
+func (f *rootedCreateTestFile) Chmod(fs.FileMode) error { return f.chmodErr }
+func (f *rootedCreateTestFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil || f.zeroWrite {
+		return 0, f.writeErr
+	}
+	return len(data), nil
+}
+func (f *rootedCreateTestFile) Sync() error                { return f.syncErr }
+func (f *rootedCreateTestFile) Stat() (fs.FileInfo, error) { return f.info, f.statErr }
+func (f *rootedCreateTestFile) Close() error               { f.closes++; return f.closeErr }
+
+type rootedCreateTestInfo struct{ mode fs.FileMode }
+
+func (i rootedCreateTestInfo) Name() string       { return "temporary" }
+func (i rootedCreateTestInfo) Size() int64        { return 0 }
+func (i rootedCreateTestInfo) Mode() fs.FileMode  { return i.mode }
+func (i rootedCreateTestInfo) ModTime() time.Time { return time.Time{} }
+func (i rootedCreateTestInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i rootedCreateTestInfo) Sys() any           { return nil }
 func assertFile(t *testing.T, path string, wantData []byte, wantMode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -634,7 +870,6 @@ func assertFile(t *testing.T, path string, wantData []byte, wantMode fs.FileMode
 		t.Fatalf("file mode = %v, error %v, want %v", info.Mode(), err, wantMode)
 	}
 }
-
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -644,7 +879,6 @@ func writeFile(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 }
-
 func assertNoTemporaryFiles(t *testing.T, root string) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {

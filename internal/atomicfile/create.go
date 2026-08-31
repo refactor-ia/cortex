@@ -1,6 +1,8 @@
 package atomicfile
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -188,6 +190,165 @@ func closeRootedAbsent(root **os.Root, operations rootedAbsentEvidenceOperations
 	return owned.Close()
 }
 
+type rootedCreateStage struct {
+	parent              *os.Root
+	basename, temporary string
+	info                fs.FileInfo
+	mode                fs.FileMode
+	data                []byte
+}
+type rootedCreateStageFile interface {
+	Chmod(fs.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+type rootedCreateStagingOperations struct {
+	rootedAbsentEvidenceOperations
+	random      io.Reader
+	openFile    func(*os.Root, string, int, fs.FileMode) (rootedCreateStageFile, error)
+	remove      func(*os.Root, string) error
+	syncParent  func(*os.Root) error
+	closeParent func(*os.Root) error
+}
+
+func rootedCreateModeOK(a, b fs.FileMode, windows bool) bool {
+	return !windows && a == b || windows && a&0o200 == b&0o200
+}
+func stageRootedCreate(root *os.Root, relativePath string, data []byte, mode fs.FileMode, operations rootedCreateStagingOperations) (stage rootedCreateStage, resultErr error) {
+	evidence, err := observeRootedAbsent(root, relativePath, mode, operations.rootedAbsentEvidenceOperations)
+	if err != nil {
+		return stage, errors.New("atomic rooted create: absent evidence failed")
+	}
+	stage.parent, stage.basename, stage.mode = evidence.parent, evidence.basename, evidence.mode
+	var file rootedCreateStageFile
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if err := closeRootedCreateFile(&file); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+		if err := discardRootedCreateStage(&stage, operations); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	reader := operations.random
+	if reader == nil {
+		reader = rand.Reader
+	}
+	for attempts := 0; attempts < 128; attempts++ {
+		entropy := make([]byte, 16)
+		if _, err := io.ReadFull(reader, entropy); err != nil {
+			return stage, errors.New("atomic rooted create: temporary entropy failed")
+		}
+		temporary := ".cortex-create-" + hex.EncodeToString(entropy)
+		file, err = rootedCreateOpenFile(operations, stage.parent, temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			if err := closeRootedCreateFile(&file); err != nil {
+				return stage, err
+			}
+			continue
+		}
+		if err != nil || file == nil {
+			return stage, errors.New("atomic rooted create: open temporary failed")
+		}
+		stage.temporary = temporary
+		break
+	}
+	if file == nil {
+		return stage, errors.New("atomic rooted create: temporary collision limit reached")
+	}
+	if err := file.Chmod(mode.Perm()); err != nil {
+		return stage, errors.New("atomic rooted create: set temporary mode failed")
+	}
+	for remaining := data; len(remaining) > 0; {
+		written, err := file.Write(remaining)
+		if written < 0 || written > len(remaining) || (written == 0 && err == nil) {
+			return stage, errors.New("atomic rooted create: write temporary failed")
+		}
+		remaining = remaining[written:]
+		if err != nil {
+			return stage, errors.New("atomic rooted create: write temporary failed")
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return stage, errors.New("atomic rooted create: sync temporary failed")
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || !rootedCreateModeOK(info.Mode(), mode, runtime.GOOS == "windows") {
+		return stage, errors.New("atomic rooted create: validate temporary failed")
+	}
+	if err := closeRootedCreateFile(&file); err != nil {
+		return stage, err
+	}
+	stage.info, stage.data = info, append([]byte(nil), data...)
+	return stage, nil
+}
+func discardRootedCreateStage(stage *rootedCreateStage, operations rootedCreateStagingOperations) error {
+	if stage == nil {
+		return nil
+	}
+	parent, temporary := stage.parent, stage.temporary
+	*stage = rootedCreateStage{}
+	var result error
+	if temporary != "" {
+		if err := rootedCreateRemove(operations, parent, temporary); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted create: remove temporary failed"))
+		}
+		if err := rootedCreateSyncParent(operations, parent); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted create: sync parent failed"))
+		}
+	}
+	if err := rootedCreateCloseParent(operations, parent); err != nil {
+		result = errors.Join(result, errors.New("atomic rooted create: close parent failed"))
+	}
+	return result
+}
+func closeRootedCreateFile(file *rootedCreateStageFile) error {
+	if *file == nil {
+		return nil
+	}
+	owned := *file
+	*file = nil
+	if err := owned.Close(); err != nil {
+		return errors.New("atomic rooted create: close temporary failed")
+	}
+	return nil
+}
+func rootedCreateOpenFile(operations rootedCreateStagingOperations, parent *os.Root, name string, flag int, mode fs.FileMode) (rootedCreateStageFile, error) {
+	if operations.openFile != nil {
+		return operations.openFile(parent, name, flag, mode)
+	}
+	return parent.OpenFile(name, flag, mode)
+}
+func rootedCreateRemove(operations rootedCreateStagingOperations, parent *os.Root, name string) error {
+	if operations.remove != nil {
+		return operations.remove(parent, name)
+	}
+	return parent.Remove(name)
+}
+func rootedCreateSyncParent(operations rootedCreateStagingOperations, parent *os.Root) error {
+	if operations.syncParent != nil {
+		return operations.syncParent(parent)
+	}
+	file, err := parent.Open(".")
+	if err != nil {
+		return err
+	}
+	syncErr, closeErr := file.Sync(), file.Close()
+	return errors.Join(syncErr, closeErr)
+}
+func rootedCreateCloseParent(operations rootedCreateStagingOperations, parent *os.Root) error {
+	if parent == nil {
+		return nil
+	}
+	if operations.closeParent != nil {
+		return operations.closeParent(parent)
+	}
+	return parent.Close()
+}
 func destinationAbsent(destination string) error {
 	info, err := os.Lstat(destination)
 	if os.IsNotExist(err) {

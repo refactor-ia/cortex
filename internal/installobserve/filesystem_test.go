@@ -7,9 +7,19 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/refactor-ia/cortex/internal/adapterplan"
+	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
+	"github.com/refactor-ia/cortex/internal/projection"
+	"github.com/refactor-ia/cortex/internal/qaactor"
+	"github.com/refactor-ia/cortex/internal/runtimematrix"
+	"github.com/refactor-ia/cortex/internal/skillartifact"
+	"github.com/refactor-ia/cortex/internal/skilldest"
+	"github.com/refactor-ia/cortex/internal/skillprojection"
+	"github.com/refactor-ia/cortex/internal/skillrender"
+	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
 func TestObserveReadsOnlyCanonicalStateAndSlots(t *testing.T) {
@@ -221,4 +231,266 @@ func writeCandidateFiles(t *testing.T, candidate interface{ Files() []installpla
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestObserveActorAwareV2CanonicalEvidence(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	writeCandidateFiles(t, candidate)
+
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := observed.PriorState()
+	if prior == nil || prior.Manifest.SchemaVersion() != 2 || !reflect.DeepEqual(prior.Manifest, candidate.InstalledState()) {
+		t.Fatalf("PriorState() = %#v", prior)
+	}
+	files := candidate.Files()
+	if !observed.MatchesCandidate(candidate) || observed.MatchesCandidate(makeActorAwareCandidate(t)) || len(observed.Slots()) != len(files)-1 {
+		t.Fatal("actor-aware observation did not retain only its exact candidate and all asset slots")
+	}
+	for _, file := range files {
+		if file.Role() == "state" {
+			continue
+		}
+		exact, found := observed.Exact(file.LogicalID())
+		if !found || !bytes.Equal(exact.Bytes(), file.Content()) || exact.Mode() != installplan.CanonicalFileMode {
+			t.Fatalf("Exact(%q) did not retain canonical actor-aware evidence", file.LogicalID())
+		}
+	}
+	state, found := observed.Exact("state/install-state")
+	if !found || !bytes.Equal(state.Bytes(), candidate.StateJSON()) || state.Mode() != installplan.CanonicalFileMode {
+		t.Fatal("state exact evidence did not retain canonical bytes and mode")
+	}
+	for index, slot := range observed.Slots() {
+		if !slot.Present || slot.LogicalID == "" || (index > 0 && observed.Slots()[index-1].LogicalID >= slot.LogicalID) {
+			t.Fatalf("Slots() = %#v, want present logical-ID order", observed.Slots())
+		}
+	}
+}
+
+func TestObserveActorAwareV2ReadsOnlyDesiredPathsWhenFresh(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(candidate.RootPath(), "unrelated")
+	if err := os.Symlink("missing", unrelated); err != nil {
+		t.Fatal(err)
+	}
+
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil || observed.PriorState() != nil || len(observed.Slots()) != len(candidate.Files())-1 {
+		t.Fatalf("Observe() = (%#v, %v)", observed, err)
+	}
+	for _, file := range candidate.Files() {
+		if _, err := os.Lstat(file.AbsolutePath()); !os.IsNotExist(err) {
+			t.Fatalf("Observe() wrote %q: %v", file.AbsolutePath(), err)
+		}
+	}
+}
+
+func TestObserveActorAwareV2IncludesPriorV1Paths(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	inputs := make([]installstate.ArtifactInput, 0)
+	for _, artifact := range candidate.InstalledState().Artifacts() {
+		if artifact.Kind() == installstate.KindSkill {
+			inputs = append(inputs, installstate.ArtifactInput{LogicalID: artifact.LogicalID(), RelativePath: artifact.RelativePath(), SHA256: artifact.SHA256()})
+		}
+	}
+	prior, err := installstate.New(candidate.RuntimeID(), candidate.RootKind(), candidate.SnapshotFingerprint(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := installstate.Encode(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(candidate.RootPath(), ".cortex", "install-state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil || observed.PriorState() == nil || observed.PriorState().Manifest.SchemaVersion() != 1 || len(observed.Slots()) != len(candidate.Files())-1 {
+		t.Fatalf("Observe() = (%#v, %v), want prior skills plus desired actors", observed, err)
+	}
+}
+
+func TestObserveActorAwareV2AcceptsPriorDifferentInstallationID(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	prior := candidate.StateJSON()
+	oldID := []byte(candidate.InstalledState().InstallationID())
+	prior = bytes.ReplaceAll(prior, oldID, []byte("f0e1d2c3b4a5968778695a4b3c2d1e0f"))
+	statePath := filepath.Join(candidate.RootPath(), ".cortex", "install-state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, prior, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil || observed.PriorState() == nil || observed.PriorState().Manifest.InstallationID() == candidate.InstalledState().InstallationID() {
+		t.Fatalf("Observe() = (%#v, %v), want neutral different-ID v2 prior", observed, err)
+	}
+	if len(observed.Slots()) != len(candidate.Files())-1 {
+		t.Fatalf("Slots() = %#v, want desired skills and actors", observed.Slots())
+	}
+}
+
+func TestObserveActorAwareV2RejectsUnsafeOrMalformedInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, candidate installplan.Plan)
+	}{
+		{
+			name: "actor symlink",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				actor := actorFile(t, candidate)
+				if err := os.MkdirAll(filepath.Dir(actor.AbsolutePath()), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("other", actor.AbsolutePath()); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "actor directory",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				if err := os.MkdirAll(actorFile(t, candidate).AbsolutePath(), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "oversize actor",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				actor := actorFile(t, candidate)
+				if err := os.MkdirAll(filepath.Dir(actor.AbsolutePath()), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(actor.AbsolutePath(), []byte("too large"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "same ID actor path mismatch",
+			setup: func(t *testing.T, candidate installplan.Plan) {
+				statePath := filepath.Join(candidate.RootPath(), ".cortex", "install-state.json")
+				state := bytes.Replace(candidate.StateJSON(), []byte("agents/cortex-adversarial-tester.md"), []byte("agents/cortex-test-designer.md"), 1)
+				if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(statePath, state, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := makeActorAwareCandidate(t)
+			tc.setup(t, candidate)
+			options := installobserve.DefaultOptions()
+			if tc.name == "oversize actor" {
+				options.MaxFileBytes = 1
+			}
+			if _, err := installobserve.Observe(candidate, options); err == nil {
+				t.Fatal("Observe() accepted unsafe or malformed v2 evidence")
+			}
+		})
+	}
+}
+
+func actorFile(t *testing.T, candidate installplan.Plan) installplan.File {
+	t.Helper()
+	for _, file := range candidate.Files() {
+		if file.Role() == "actor" {
+			return file
+		}
+	}
+	t.Fatal("missing actor file")
+	return installplan.File{}
+}
+
+// makeActorAwareCandidate builds a real-catalog Pi v2 plan for observation tests.
+func makeActorAwareCandidate(t *testing.T) installplan.Plan {
+	t.Helper()
+	catalogRoot := filepath.Join("..", "..", "catalog")
+	snapshot, err := catalog.BuildCatalogSnapshot(catalogRoot, "catalog.json", catalog.AdmissionPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := skillrender.Render(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := skillprojection.Build(runtimematrix.RuntimePi, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessments := make([]projection.Assessment, 0, 3)
+	observations := make([]runtimematrix.Observation, 0, 3)
+	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+		assessment, err := skillprojection.Build(runtimeID, sources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assessments = append(assessments, assessment.Assessment())
+		observations = append(observations, runtimematrix.Observation{ID: runtimeID, Present: true, Version: "test", Compatibility: runtimematrix.Compatible})
+	}
+	base, err := adapterplan.Build(snapshot.Fingerprint(), observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := projection.BuildPlan(base, assessments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := skillartifact.Build(projected, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, found := binding.Bundle()
+	if !found {
+		t.Fatal("missing skill bundle")
+	}
+	destinations, err := skilldest.Build(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := installplan.BuildWithBundle(resolved, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorSources, err := qaactor.Sources(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := qaactor.Render(actorSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actors, err := qaactor.ProjectPi(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorBinding, err := qaactor.Bind(actors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := installplan.BuildActorAware(skills, actorBinding, "000102030405060708090a0b0c0d0e0f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return candidate
 }

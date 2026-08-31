@@ -104,10 +104,7 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 	}
 
 	current := candidate.InstalledState()
-	paths := make(map[string]string, len(current.Artifacts()))
-	for _, artifact := range current.Artifacts() {
-		paths[artifact.LogicalID()] = artifact.RelativePath()
-	}
+	paths := manifestPaths(current)
 
 	state, stateMode, present, err := readRegular(candidate.RootPath(), ".cortex/install-state.json", options.MaxStateBytes)
 	if err != nil {
@@ -117,7 +114,8 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 	var prior *PriorState
 	if present {
 		manifest, err := installstate.Decode(state)
-		if err != nil || len(manifest.Artifacts()) > options.MaxEntries || manifest.RuntimeID() != candidate.RuntimeID() || manifest.RootKind() != candidate.RootKind() {
+		encoded, encodeErr := installstate.Encode(manifest)
+		if err != nil || encodeErr != nil || !bytes.Equal(encoded, state) || len(manifest.Artifacts()) > options.MaxEntries || manifest.RuntimeID() != candidate.RuntimeID() || manifest.RootKind() != candidate.RootKind() {
 			return FilesystemObservation{}, filesystemInvalid()
 		}
 		for _, artifact := range manifest.Artifacts() {
@@ -161,21 +159,75 @@ func validOptions(options Options) bool {
 func validFilesystemCandidate(candidate installplan.Plan, maxEntries int) bool {
 	manifest, state := candidate.InstalledState(), candidate.StateJSON()
 	encoded, err := installstate.Encode(manifest)
-	if err != nil || !bytes.Equal(encoded, state) || candidate.RootPath() == "" || !filepath.IsAbs(candidate.RootPath()) || filepath.Clean(candidate.RootPath()) != candidate.RootPath() || len(manifest.Artifacts()) == 0 || len(manifest.Artifacts()) > maxEntries {
+	if err != nil || !bytes.Equal(encoded, state) || manifest.RuntimeID() != candidate.RuntimeID() ||
+		manifest.RootKind() != candidate.RootKind() || manifest.SnapshotFingerprint() != candidate.SnapshotFingerprint() ||
+		candidate.RootPath() == "" || !filepath.IsAbs(candidate.RootPath()) || filepath.Clean(candidate.RootPath()) != candidate.RootPath() ||
+		len(manifest.Artifacts()) == 0 || len(manifest.Artifacts()) > maxEntries {
 		return false
 	}
+
 	files := candidate.Files()
 	if len(files) != len(manifest.Artifacts())+1 {
 		return false
 	}
-	for index, artifact := range manifest.Artifacts() {
-		file := files[index]
-		if file.Role() != "skill" || file.LogicalID() != artifact.LogicalID() || file.RelativePath() != artifact.RelativePath() || file.SHA256() != artifact.SHA256() || file.DesiredMode() != installplan.CanonicalFileMode || file.AbsolutePath() != filepath.Join(candidate.RootPath(), filepath.FromSlash(artifact.RelativePath())) || hash(file.Content()) != file.SHA256() {
+	artifacts := make(map[string]installstate.Artifact, len(manifest.Artifacts()))
+	for _, artifact := range manifest.Artifacts() {
+		if _, found := artifacts[artifact.LogicalID()]; found {
+			return false
+		}
+		artifacts[artifact.LogicalID()] = artifact
+	}
+	seenIDs, seenPaths := make(map[string]bool, len(artifacts)), make(map[string]bool, len(artifacts))
+	actors := 0
+	for index, file := range files[:len(files)-1] {
+		artifact, found := artifacts[file.LogicalID()]
+		if !found || seenIDs[file.LogicalID()] || seenPaths[file.RelativePath()] ||
+			file.RelativePath() != artifact.RelativePath() || file.SHA256() != artifact.SHA256() ||
+			file.DesiredMode() != installplan.CanonicalFileMode ||
+			file.AbsolutePath() != filepath.Join(candidate.RootPath(), filepath.FromSlash(artifact.RelativePath())) ||
+			hash(file.Content()) != file.SHA256() {
+			return false
+		}
+		if manifest.SchemaVersion() == 1 {
+			if file.Role() != "skill" {
+				return false
+			}
+		} else {
+			switch artifact.Kind() {
+			case installstate.KindSkill:
+				if file.Role() != "skill" || actors != 0 {
+					return false
+				}
+			case installstate.KindPiActor:
+				if file.Role() != "actor" {
+					return false
+				}
+				actors++
+			default:
+				return false
+			}
+		}
+		seenIDs[file.LogicalID()], seenPaths[file.RelativePath()] = true, true
+		if index > 0 && manifest.SchemaVersion() == 1 && files[index-1].LogicalID() >= file.LogicalID() {
 			return false
 		}
 	}
+	if len(seenIDs) != len(artifacts) || (manifest.SchemaVersion() == 1 && actors != 0) {
+		return false
+	}
 	stateFile := files[len(files)-1]
-	return stateFile.Role() == "state" && stateFile.LogicalID() == "state/install-state" && stateFile.RelativePath() == ".cortex/install-state.json" && stateFile.DesiredMode() == installplan.CanonicalFileMode && stateFile.AbsolutePath() == filepath.Join(candidate.RootPath(), ".cortex", "install-state.json") && stateFile.SHA256() == hash(state) && bytes.Equal(stateFile.Content(), state)
+	return stateFile.Role() == "state" && stateFile.LogicalID() == "state/install-state" &&
+		stateFile.RelativePath() == ".cortex/install-state.json" && stateFile.DesiredMode() == installplan.CanonicalFileMode &&
+		stateFile.AbsolutePath() == filepath.Join(candidate.RootPath(), ".cortex", "install-state.json") &&
+		stateFile.SHA256() == hash(state) && bytes.Equal(stateFile.Content(), state)
+}
+
+func manifestPaths(manifest installstate.Manifest) map[string]string {
+	paths := make(map[string]string, len(manifest.Artifacts()))
+	for _, artifact := range manifest.Artifacts() {
+		paths[artifact.LogicalID()] = artifact.RelativePath()
+	}
+	return paths
 }
 
 func candidateBinding(candidate installplan.Plan) ([sha256.Size]byte, bool) {

@@ -70,11 +70,12 @@ func (evidence RemovalEvidence) clone() RemovalEvidence {
 
 // UninstallObservation is detached, bounded evidence from canonical prior state.
 type UninstallObservation struct {
-	rootPath string
-	records  []UninstallRecord
-	exact    map[string]ExactFile
-	removals map[string]RemovalEvidence
-	ready    bool
+	runtimeID runtimematrix.RuntimeID
+	rootPath  string
+	records   []UninstallRecord
+	exact     map[string]ExactFile
+	removals  map[string]RemovalEvidence
+	ready     bool
 }
 
 // Records returns detached logical records in canonical prior-state order, with the
@@ -89,6 +90,11 @@ func (observation UninstallObservation) Ready() bool { return observation.ready 
 // MatchesRoot reports whether this observation is bound to the given trusted root.
 func (observation UninstallObservation) MatchesRoot(root string) bool {
 	return root != "" && root == observation.rootPath
+}
+
+// MatchesRuntime reports whether this observation is bound to the given runtime.
+func (observation UninstallObservation) MatchesRuntime(runtimeID runtimematrix.RuntimeID) bool {
+	return runtimeID != "" && runtimeID == observation.runtimeID
 }
 
 // RemovalCandidates returns detached records whose removal is supported by exact
@@ -142,7 +148,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 		return UninstallObservation{}, uninstallInvalid()
 	}
 	if !present {
-		return UninstallObservation{rootPath: root.rootPath, records: []UninstallRecord{}, exact: map[string]ExactFile{}, removals: map[string]RemovalEvidence{}, ready: true}, nil
+		return UninstallObservation{runtimeID: root.runtimeID, rootPath: root.rootPath, records: []UninstallRecord{}, exact: map[string]ExactFile{}, removals: map[string]RemovalEvidence{}, ready: true}, nil
 	}
 	manifest, err := decodeCanonicalUninstallState(state, root, options.MaxEntries)
 	if err != nil {
@@ -177,7 +183,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	exact["state/install-state"] = ExactFile{bytes: append([]byte{}, state...), mode: stateMode}
 	removals["state/install-state"] = RemovalEvidence{destination: ".cortex/install-state.json", exact: exact["state/install-state"]}
 	records = append(records, UninstallRecord{LogicalID: "state/install-state", Status: UninstallRemove, SHA256: stateHash})
-	return UninstallObservation{rootPath: root.rootPath, records: records, exact: exact, removals: removals, ready: !conflict}, nil
+	return UninstallObservation{runtimeID: root.runtimeID, rootPath: root.rootPath, records: records, exact: exact, removals: removals, ready: !conflict}, nil
 }
 
 func validUninstallRoot(root UninstallRoot) bool {

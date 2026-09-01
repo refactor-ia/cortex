@@ -1283,6 +1283,7 @@ type rootedCreateReadbackTestFile struct {
 	first, second               []byte
 	statAt                      int
 	firstErr, seekErr, closeErr error
+	seekOffset                  int64
 	stats, seeks, closes        int
 }
 
@@ -1305,7 +1306,7 @@ func (f *rootedCreateReadbackTestFile) Read(p []byte) (int, error) {
 }
 func (f *rootedCreateReadbackTestFile) Seek(int64, int) (int64, error) {
 	f.seeks++
-	return 0, f.seekErr
+	return f.seekOffset, f.seekErr
 }
 func (f *rootedCreateReadbackTestFile) Close() error { f.closes++; return f.closeErr }
 
@@ -1368,5 +1369,187 @@ func assertNoTemporaryFiles(t *testing.T, root string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestObserveRootedReplaceEvidence(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path, data := t.TempDir(), []byte{}
+	writeMode(t, filepath.Join(path, "config"), data, 0o400)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	evidence, err := observeRootedReplaceEvidence(root, "config", data, 0o400, rootedReplaceEvidenceOperations{})
+	if err != nil || evidence.parent == root || evidence.basename != "config" || !bytes.Equal(evidence.expected, data) {
+		t.Fatalf("observe = %+v, %v", evidence, err)
+	}
+	if _, err := root.Lstat("."); err != nil {
+		t.Fatalf("caller root was closed: %v", err)
+	}
+	if err := recheckRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{}); err != nil {
+		t.Fatal(err)
+	}
+	closes := 0
+	if err := discardRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{close: func(r *os.Root) error { closes++; return r.Close() }}); err != nil || closes != 1 || evidence.parent != nil {
+		t.Fatalf("discard = %v, closes = %d", err, closes)
+	}
+}
+
+func TestObserveRootedReplaceEvidenceRejectsInvalidAndDrift(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path, data := t.TempDir(), []byte("expected")
+	writeMode(t, filepath.Join(path, "safe/config"), data, 0o600)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	if _, err := observeRootedReplaceEvidence(nil, "safe/config", data, 0o600, rootedReplaceEvidenceOperations{}); err == nil {
+		t.Fatal("nil root was accepted")
+	}
+	for _, tt := range []struct {
+		relative string
+		data     []byte
+		mode     fs.FileMode
+	}{
+		{"safe/config", nil, 0o600}, {"safe/config", make([]byte, removeExactMaxEvidenceBytes+1), 0o600}, {"", data, 0o600}, {"/config", data, 0o600}, {"safe/./config", data, 0o600}, {"safe//config", data, 0o600}, {"safe/config/", data, 0o600}, {`safe\config`, data, 0o600}, {"safe/config", data, 0o200}, {"safe/config", data, fs.ModeDir | 0o600},
+	} {
+		if _, err := observeRootedReplaceEvidence(root, tt.relative, tt.data, tt.mode, rootedReplaceEvidenceOperations{}); err == nil {
+			t.Fatalf("invalid input = %+v", tt)
+		}
+	}
+}
+
+func TestRootedReplaceEvidenceRetainsDescriptorAndDetachedBytes(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path, data := t.TempDir(), []byte("expected")
+	writeMode(t, filepath.Join(path, "safe/config"), data, 0o600)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	moved, dots := path+"-moved", 0
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	evidence, err := observeRootedReplaceEvidence(root, "safe/config", data, 0o600, rootedReplaceEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+		info, err := r.Lstat(name)
+		data[0] = 'X'
+		if name == "." {
+			dots++
+			if dots == 2 {
+				if err := os.Rename(path, moved); err != nil {
+					t.Fatal(err)
+				}
+				writeMode(t, filepath.Join(path, "safe/config"), []byte("decoy"), 0o600)
+			}
+		}
+		return info, err
+	}})
+	if err != nil || !bytes.Equal(evidence.expected, []byte("expected")) {
+		t.Fatalf("observe = %+v, %v", evidence, err)
+	}
+	if err := recheckRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{}); err != nil {
+		t.Fatal(err)
+	}
+	writeMode(t, filepath.Join(moved, "safe/config"), []byte("changed"), 0o600)
+	if err := recheckRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{}); err == nil {
+		t.Fatal("same-inode rewrite was accepted")
+	}
+	if err := discardRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRootedReplaceEvidenceFailureCleanup(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path, data := t.TempDir(), []byte("expected")
+	writeMode(t, filepath.Join(path, "safe/config"), data, 0o600)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	private := errors.New("private")
+	for _, tt := range []struct {
+		name, target string
+		want         int
+	}{{"initial root", ".", 1}, {"component root", "safe", 2}, {"prior close", "", 2}} {
+		closes := 0
+		err := func() error {
+			_, err := observeRootedReplaceEvidence(root, "safe/config", data, 0o600, rootedReplaceEvidenceOperations{openRoot: func(r *os.Root, name string) (*os.Root, error) {
+				opened, err := r.OpenRoot(name)
+				if name == tt.target {
+					return opened, private
+				}
+				return opened, err
+			}, close: func(r *os.Root) error { closes++; _ = r.Close(); return private }})
+			return err
+		}()
+		categories := []string{"parent close failed"}
+		if tt.target != "" {
+			categories = append(categories, "open parent failed")
+		}
+		assertRootedReplaceCategories(t, err, categories...)
+		if closes != tt.want {
+			t.Fatalf("closes = %d, want %d", closes, tt.want)
+		}
+	}
+	for _, tt := range []struct {
+		name, causal string
+		open         bool
+	}{{"open read", "open destination failed", true}, {"read", "read destination failed", false}} {
+		evidence := rootedReplaceTestEvidence(t, root, data)
+		info, err := evidence.parent.Lstat(evidence.basename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := &rootedCreateReadbackTestFile{info: info, first: data, second: data, closeErr: private}
+		if !tt.open {
+			file.firstErr = private
+		}
+		_, err = rootedReplaceLeaf(evidence.parent, evidence.basename, evidence.expected, evidence.mode, rootedReplaceEvidenceOperations{openRead: func(*os.Root, string) (rootedReplaceReadFile, error) {
+			if tt.open {
+				return file, private
+			}
+			return file, nil
+		}})
+		assertRootedReplaceCategories(t, err, tt.causal, "destination close failed")
+		if file.closes != 1 {
+			t.Fatalf("closes = %d", file.closes)
+		}
+	}
+	evidence := rootedReplaceTestEvidence(t, root, data)
+	info, err := evidence.parent.Lstat(evidence.basename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &rootedCreateReadbackTestFile{info: info, first: data, second: data, seekOffset: 1}
+	_, err = rootedReplaceLeaf(evidence.parent, evidence.basename, evidence.expected, evidence.mode, rootedReplaceEvidenceOperations{openRead: func(*os.Root, string) (rootedReplaceReadFile, error) { return file, nil }})
+	assertRootedReplaceCategories(t, err, "destination drifted")
+	if file.closes != 1 {
+		t.Fatalf("closes = %d", file.closes)
+	}
+}
+
+func rootedReplaceTestEvidence(t *testing.T, root *os.Root, data []byte) *rootedReplaceEvidence {
+	t.Helper()
+	evidence, err := observeRootedReplaceEvidence(root, "safe/config", data, 0o600, rootedReplaceEvidenceOperations{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if evidence.parent != nil {
+			_ = discardRootedReplaceEvidence(&evidence, rootedReplaceEvidenceOperations{})
+		}
+	})
+	return &evidence
+}
+
+func assertRootedReplaceCategories(t *testing.T, err error, categories ...string) {
+	t.Helper()
+	if err == nil || strings.Contains(err.Error(), "private") {
+		t.Fatalf("error = %v", err)
+	}
+	for _, category := range categories {
+		if !strings.Contains(err.Error(), category) {
+			t.Fatalf("error = %v, want %q", err, category)
+		}
+	}
+}
+
+func skipRootedReplaceEvidence(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted replace evidence is unsupported")
 	}
 }

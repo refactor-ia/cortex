@@ -3,6 +3,8 @@ package atomicfile
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -240,6 +242,208 @@ func discardRootedReplaceEvidence(evidence *rootedReplaceEvidence, operations ro
 		return errors.New("atomic rooted replace evidence: parent close failed")
 	}
 	return nil
+}
+
+type rootedReplaceStage struct {
+	parent              *os.Root
+	basename, temporary string
+	leaf, info          fs.FileInfo
+	expected, data      []byte
+	expectedMode, mode  fs.FileMode
+}
+
+type rootedReplaceStageFile interface {
+	Chmod(fs.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+type rootedReplaceStagingOperations struct {
+	random      io.Reader
+	openFile    func(*os.Root, string, int, fs.FileMode) (rootedReplaceStageFile, error)
+	remove      func(*os.Root, string) error
+	syncParent  func(*os.Root) error
+	closeParent func(*os.Root) error
+}
+
+// stageRootedReplace consumes descriptor-anchored replacement evidence and creates a
+// private, durable replacement inode. Publication remains the caller's responsibility.
+func stageRootedReplace(evidence *rootedReplaceEvidence, replacement []byte, replacementMode fs.FileMode, operations rootedReplaceStagingOperations) (stage rootedReplaceStage, resultErr error) {
+	if !validRootedReplaceStageEvidence(evidence) || replacement == nil || len(replacement) > removeExactMaxEvidenceBytes || replacementMode&^fs.FileMode(0o777) != 0 || replacementMode&0o400 == 0 {
+		return stage, errors.New("atomic rooted replace: invalid staging input")
+	}
+	detached := make([]byte, len(replacement))
+	copy(detached, replacement)
+	stage = rootedReplaceStage{parent: evidence.parent, basename: evidence.basename, leaf: evidence.leaf, expected: evidence.expected, expectedMode: evidence.mode, data: detached, mode: replacementMode}
+	*evidence = rootedReplaceEvidence{}
+	var (
+		file rootedReplaceStageFile
+		err  error
+	)
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if err := closeRootedReplaceStageFile(&file); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+		if err := cleanupRootedReplaceStage(&stage, operations); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	reader := operations.random
+	if reader == nil {
+		reader = rand.Reader
+	}
+	for attempts := 0; attempts < 128; attempts++ {
+		entropy := make([]byte, 16)
+		if _, err := io.ReadFull(reader, entropy); err != nil {
+			return stage, errors.New("atomic rooted replace: temporary entropy failed")
+		}
+		temporary := ".cortex-replace-" + hex.EncodeToString(entropy)
+		file, err = rootedReplaceOpenStageFile(operations, stage.parent, temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			if err := closeRootedReplaceStageFile(&file); err != nil {
+				return stage, err
+			}
+			continue
+		}
+		if err != nil || file == nil {
+			openErr := error(errors.New("atomic rooted replace: open temporary failed"))
+			if closeErr := closeRootedReplaceStageFile(&file); closeErr != nil {
+				openErr = errors.Join(openErr, closeErr)
+			}
+			return stage, openErr
+		}
+		stage.temporary = temporary
+		break
+	}
+	if file == nil {
+		return stage, errors.New("atomic rooted replace: temporary collision limit reached")
+	}
+	if err := file.Chmod(replacementMode.Perm()); err != nil {
+		return stage, errors.New("atomic rooted replace: set temporary mode failed")
+	}
+	for remaining := stage.data; len(remaining) > 0; {
+		written, err := file.Write(remaining)
+		if written < 0 || written > len(remaining) || written == 0 && err == nil {
+			return stage, errors.New("atomic rooted replace: write temporary failed")
+		}
+		remaining = remaining[written:]
+		if err != nil {
+			return stage, errors.New("atomic rooted replace: write temporary failed")
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return stage, errors.New("atomic rooted replace: sync temporary failed")
+	}
+	info, err := file.Stat()
+	if err != nil || info == nil || !info.Mode().IsRegular() || !rootedCreateModeOK(info.Mode(), replacementMode, runtime.GOOS == "windows") || info.Size() != int64(len(stage.data)) {
+		return stage, errors.New("atomic rooted replace: validate temporary failed")
+	}
+	if err := closeRootedReplaceStageFile(&file); err != nil {
+		return stage, err
+	}
+	stage.info = info
+	return stage, nil
+}
+
+func discardRootedReplaceStage(stage *rootedReplaceStage, operations rootedReplaceStagingOperations) error {
+	if stage == nil {
+		return errors.New("atomic rooted replace: invalid stage")
+	}
+	owned := *stage
+	*stage = rootedReplaceStage{}
+	valid := owned.parent != nil && owned.basename != "" && owned.temporary != "" && owned.leaf != nil && owned.expected != nil && owned.data != nil && owned.info != nil
+	result := error(nil)
+	if !valid {
+		result = errors.New("atomic rooted replace: invalid stage")
+	} else {
+		if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted replace: remove temporary failed"))
+		}
+		if err := rootedReplaceSyncParent(operations, owned.parent); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted replace: sync parent failed"))
+		}
+	}
+	if err := rootedReplaceCloseParent(operations, owned.parent); err != nil {
+		result = errors.Join(result, errors.New("atomic rooted replace: close parent failed"))
+	}
+	return result
+}
+
+func validRootedReplaceStageEvidence(evidence *rootedReplaceEvidence) bool {
+	return evidence != nil && evidence.parent != nil && evidence.basename != "" && evidence.leaf != nil && evidence.expected != nil && evidence.mode&^fs.FileMode(0o777) == 0 && evidence.mode&0o400 != 0 && rootedReplaceFileOK(evidence.leaf, evidence.mode, len(evidence.expected))
+}
+
+func cleanupRootedReplaceStage(stage *rootedReplaceStage, operations rootedReplaceStagingOperations) error {
+	if stage == nil {
+		return nil
+	}
+	owned := *stage
+	*stage = rootedReplaceStage{}
+	result := error(nil)
+	if owned.temporary != "" {
+		if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted replace: remove temporary failed"))
+		}
+		if err := rootedReplaceSyncParent(operations, owned.parent); err != nil {
+			result = errors.Join(result, errors.New("atomic rooted replace: sync parent failed"))
+		}
+	}
+	if err := rootedReplaceCloseParent(operations, owned.parent); err != nil {
+		result = errors.Join(result, errors.New("atomic rooted replace: close parent failed"))
+	}
+	return result
+}
+
+func closeRootedReplaceStageFile(file *rootedReplaceStageFile) error {
+	if *file == nil {
+		return nil
+	}
+	owned := *file
+	*file = nil
+	if err := owned.Close(); err != nil {
+		return errors.New("atomic rooted replace: close temporary failed")
+	}
+	return nil
+}
+
+func rootedReplaceOpenStageFile(operations rootedReplaceStagingOperations, parent *os.Root, name string, flag int, mode fs.FileMode) (rootedReplaceStageFile, error) {
+	if operations.openFile != nil {
+		return operations.openFile(parent, name, flag, mode)
+	}
+	return parent.OpenFile(name, flag, mode)
+}
+
+func rootedReplaceRemove(operations rootedReplaceStagingOperations, parent *os.Root, name string) error {
+	if operations.remove != nil {
+		return operations.remove(parent, name)
+	}
+	return parent.Remove(name)
+}
+
+func rootedReplaceSyncParent(operations rootedReplaceStagingOperations, parent *os.Root) error {
+	if operations.syncParent != nil {
+		return operations.syncParent(parent)
+	}
+	file, err := parent.Open(".")
+	if err != nil {
+		return err
+	}
+	return errors.Join(file.Sync(), file.Close())
+}
+
+func rootedReplaceCloseParent(operations rootedReplaceStagingOperations, parent *os.Root) error {
+	if parent == nil {
+		return nil
+	}
+	if operations.closeParent != nil {
+		return operations.closeParent(parent)
+	}
+	return parent.Close()
 }
 
 func validRootedReplacePath(relativePath string) bool {

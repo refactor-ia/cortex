@@ -54,14 +54,15 @@ type Operation struct {
 }
 
 type applyDependencies struct {
-	capture          func(string, string, string, []string) (Snapshot, error)
-	verify           func(string, string) error
-	replace          func(string, string, []byte, fs.FileMode) error
-	createIfAbsent   func(string, string, []byte, fs.FileMode) error
-	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
-	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
-	removeIfExact    func(string, string, []byte, fs.FileMode) error
-	finalVerify      func() error
+	capture                  func(string, string, string, []string) (Snapshot, error)
+	captureDirectoryPreimage func(string, string, string, []string, []Directory) (Snapshot, error)
+	verify                   func(string, string) error
+	replace                  func(string, string, []byte, fs.FileMode) error
+	createIfAbsent           func(string, string, []byte, fs.FileMode) error
+	replaceIfMatches         func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
+	restoreIfAbsent          func(string, string, []byte, fs.FileMode) error
+	removeIfExact            func(string, string, []byte, fs.FileMode) error
+	finalVerify              func() error
 }
 
 type operation struct {
@@ -97,7 +98,7 @@ func ApplyOperationsWithDirectoriesAndVerify(sourceRoot, backupRoot, backupName 
 
 func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
-		capture: Capture, verify: Verify, replace: atomicfile.Replace,
+		capture: Capture, captureDirectoryPreimage: captureWithDirectoryPreimage, verify: Verify, replace: atomicfile.Replace,
 		createIfAbsent: atomicfile.CreateIfAbsent, replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
 		removeIfExact: atomicfile.RemoveIfExact,
 	}

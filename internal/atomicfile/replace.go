@@ -8,7 +8,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
@@ -129,6 +132,215 @@ func validateDestination(root, relativePath string) (string, error) {
 		return "", fmt.Errorf("atomic replace: destination is not a regular file")
 	}
 	return destination, nil
+}
+
+type rootedReplaceReadFile interface {
+	Stat() (fs.FileInfo, error)
+	Read([]byte) (int, error)
+	Seek(int64, int) (int64, error)
+	Close() error
+}
+
+type rootedReplaceEvidenceOperations struct {
+	lstat    func(*os.Root, string) (fs.FileInfo, error)
+	openRoot func(*os.Root, string) (*os.Root, error)
+	openRead func(*os.Root, string) (rootedReplaceReadFile, error)
+	close    func(*os.Root) error
+}
+
+var errRootedReplaceParentClose, errRootedReplaceDestinationClose = errors.New("atomic rooted replace evidence: parent close failed"), errors.New("atomic rooted replace evidence: destination close failed")
+
+// rootedReplaceEvidence retains only descriptor-anchored proof for a future
+// ReplaceIfMatchesRoot. It must be discarded after the immediate recheck.
+type rootedReplaceEvidence struct {
+	parent   *os.Root
+	basename string
+	leaf     fs.FileInfo
+	expected []byte
+	mode     fs.FileMode
+}
+
+func observeRootedReplaceEvidence(root *os.Root, relativePath string, expected []byte, mode fs.FileMode, operations rootedReplaceEvidenceOperations) (evidence rootedReplaceEvidence, resultErr error) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		return evidence, errors.New("atomic rooted replace evidence: unsupported platform")
+	}
+	if root == nil || !validRootedReplacePath(relativePath) || expected == nil || len(expected) > removeExactMaxEvidenceBytes || mode&^fs.FileMode(0o777) != 0 || mode&0o400 == 0 {
+		return evidence, errors.New("atomic rooted replace evidence: invalid input")
+	}
+	detached := make([]byte, len(expected))
+	copy(detached, expected)
+	expected = detached
+	rootInfo, err := rootedReplaceLstat(operations, root, ".")
+	if err != nil || rootInfo == nil || !rootInfo.IsDir() || rootInfo.Mode()&fs.ModeSymlink != 0 {
+		return evidence, errors.New("atomic rooted replace evidence: invalid root")
+	}
+	parent, err := rootedReplaceOpenRoot(operations, root, ".")
+	if err != nil || parent == nil {
+		return evidence, rootedReplaceJoinClose(errors.New("atomic rooted replace evidence: open parent failed"), closeRootedReplace(&parent, operations), errRootedReplaceParentClose)
+	}
+	defer func() {
+		if closeErr := closeRootedReplace(&parent, operations); closeErr != nil {
+			evidence = rootedReplaceEvidence{}
+			resultErr = rootedReplaceJoinClose(resultErr, closeErr, errRootedReplaceParentClose)
+		}
+	}()
+	anchored, err := rootedReplaceLstat(operations, parent, ".")
+	if err != nil || !sameRootedReplaceDirectory(anchored, rootInfo) {
+		return evidence, errors.New("atomic rooted replace evidence: parent drifted")
+	}
+	parts := strings.Split(relativePath, "/")
+	for _, component := range parts[:len(parts)-1] {
+		info, err := rootedReplaceLstat(operations, parent, component)
+		if err != nil || !sameRootedReplaceDirectory(info, info) {
+			return evidence, errors.New("atomic rooted replace evidence: parent is missing or invalid")
+		}
+		next, openErr := rootedReplaceOpenRoot(operations, parent, component)
+		if openErr != nil || next == nil {
+			return evidence, rootedReplaceJoinClose(errors.New("atomic rooted replace evidence: open parent failed"), closeRootedReplace(&next, operations), errRootedReplaceParentClose)
+		}
+		anchored, anchorErr := rootedReplaceLstat(operations, next, ".")
+		if anchorErr != nil || !sameRootedReplaceDirectory(anchored, info) {
+			return evidence, rootedReplaceJoinClose(errors.New("atomic rooted replace evidence: parent drifted"), closeRootedReplace(&next, operations), errRootedReplaceParentClose)
+		}
+		if closeRootedReplace(&parent, operations) != nil {
+			_ = closeRootedReplace(&next, operations)
+			return evidence, errRootedReplaceParentClose
+		}
+		parent = next
+	}
+	leaf, err := rootedReplaceLeaf(parent, parts[len(parts)-1], expected, mode, operations)
+	if err != nil {
+		return evidence, err
+	}
+	evidence = rootedReplaceEvidence{parent: parent, basename: parts[len(parts)-1], leaf: leaf, expected: expected, mode: mode}
+	parent = nil
+	return evidence, nil
+}
+
+func recheckRootedReplaceEvidence(evidence *rootedReplaceEvidence, operations rootedReplaceEvidenceOperations) error {
+	if evidence == nil || evidence.parent == nil || evidence.basename == "" || evidence.leaf == nil || evidence.expected == nil {
+		return errors.New("atomic rooted replace evidence: invalid evidence")
+	}
+	leaf, err := rootedReplaceLeaf(evidence.parent, evidence.basename, evidence.expected, evidence.mode, operations)
+	if err != nil || !os.SameFile(leaf, evidence.leaf) || !rootedCreateModeOK(leaf.Mode(), evidence.mode, runtime.GOOS == "windows") {
+		return errors.New("atomic rooted replace evidence: destination drifted")
+	}
+	// A replacement after the final Lstat, or a same-inode rewrite after the final
+	// byte/path check, remains a residual race for the future Rename caller.
+	return nil
+}
+
+func discardRootedReplaceEvidence(evidence *rootedReplaceEvidence, operations rootedReplaceEvidenceOperations) error {
+	if evidence == nil || evidence.parent == nil {
+		return errors.New("atomic rooted replace evidence: invalid evidence")
+	}
+	parent := evidence.parent
+	*evidence = rootedReplaceEvidence{}
+	if closeRootedReplace(&parent, operations) != nil {
+		return errors.New("atomic rooted replace evidence: parent close failed")
+	}
+	return nil
+}
+
+func validRootedReplacePath(relativePath string) bool {
+	return relativePath != "" && !path.IsAbs(relativePath) && !strings.Contains(relativePath, `\`) && path.Clean(relativePath) == relativePath && relativePath != "." && relativePath != ".." && !strings.HasPrefix(relativePath, "../")
+}
+
+func rootedReplaceLeaf(root *os.Root, basename string, expected []byte, mode fs.FileMode, operations rootedReplaceEvidenceOperations) (info fs.FileInfo, resultErr error) {
+	initial, err := rootedReplaceLstat(operations, root, basename)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, errors.New("atomic rooted replace evidence: destination is missing")
+	}
+	if err != nil || !rootedReplaceFileOK(initial, mode, len(expected)) {
+		return nil, errors.New("atomic rooted replace evidence: destination does not match")
+	}
+	file, err := rootedReplaceOpenRead(operations, root, basename)
+	if err != nil || file == nil {
+		resultErr = errors.New("atomic rooted replace evidence: open destination failed")
+		if file != nil && file.Close() != nil {
+			return nil, errors.Join(resultErr, errRootedReplaceDestinationClose)
+		}
+		return nil, resultErr
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			info = nil
+			resultErr = rootedReplaceJoinClose(resultErr, closeErr, errRootedReplaceDestinationClose)
+		}
+	}()
+	opened, err := file.Stat()
+	if err != nil || !rootedReplaceFileOK(opened, mode, len(expected)) || !os.SameFile(initial, opened) {
+		return nil, errors.New("atomic rooted replace evidence: destination drifted")
+	}
+	actual, err := io.ReadAll(io.LimitReader(file, int64(len(expected))+1))
+	if err != nil {
+		return nil, errors.New("atomic rooted replace evidence: read destination failed")
+	}
+	if !bytes.Equal(actual, expected) {
+		return nil, errors.New("atomic rooted replace evidence: destination bytes do not match")
+	}
+	late, err := rootedReplaceLstat(operations, root, basename)
+	if err != nil || !rootedReplaceFileOK(late, mode, len(expected)) || !os.SameFile(initial, late) || !os.SameFile(opened, late) {
+		return nil, errors.New("atomic rooted replace evidence: destination drifted")
+	}
+	if offset, err := file.Seek(0, io.SeekStart); err != nil || offset != 0 {
+		return nil, errors.New("atomic rooted replace evidence: destination drifted")
+	}
+	actual, err = io.ReadAll(io.LimitReader(file, int64(len(expected))+1))
+	final, statErr := file.Stat()
+	pathInfo, pathErr := rootedReplaceLstat(operations, root, basename)
+	if err != nil || statErr != nil || pathErr != nil || !bytes.Equal(actual, expected) || !rootedReplaceFileOK(final, mode, len(expected)) || !rootedReplaceFileOK(pathInfo, mode, len(expected)) || !os.SameFile(initial, final) || !os.SameFile(initial, pathInfo) || !os.SameFile(final, pathInfo) {
+		return nil, errors.New("atomic rooted replace evidence: destination drifted")
+	}
+	return final, nil
+}
+
+func rootedReplaceFileOK(info fs.FileInfo, mode fs.FileMode, size int) bool {
+	return info != nil && info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular() && rootedCreateModeOK(info.Mode(), mode, runtime.GOOS == "windows") && info.Size() == int64(size)
+}
+
+func sameRootedReplaceDirectory(a, b fs.FileInfo) bool {
+	return a != nil && b != nil && a.IsDir() && b.IsDir() && a.Mode()&fs.ModeSymlink == 0 && b.Mode()&fs.ModeSymlink == 0 && os.SameFile(a, b)
+}
+
+func rootedReplaceLstat(operations rootedReplaceEvidenceOperations, root *os.Root, name string) (fs.FileInfo, error) {
+	if operations.lstat != nil {
+		return operations.lstat(root, name)
+	}
+	return root.Lstat(name)
+}
+
+func rootedReplaceOpenRoot(operations rootedReplaceEvidenceOperations, root *os.Root, name string) (*os.Root, error) {
+	if operations.openRoot != nil {
+		return operations.openRoot(root, name)
+	}
+	return root.OpenRoot(name)
+}
+
+func rootedReplaceOpenRead(operations rootedReplaceEvidenceOperations, root *os.Root, name string) (rootedReplaceReadFile, error) {
+	if operations.openRead != nil {
+		return operations.openRead(root, name)
+	}
+	return root.Open(name)
+}
+
+func rootedReplaceJoinClose(result, closeErr, category error) error {
+	if closeErr != nil {
+		return errors.Join(result, category)
+	}
+	return result
+}
+
+func closeRootedReplace(root **os.Root, operations rootedReplaceEvidenceOperations) error {
+	if *root == nil {
+		return nil
+	}
+	owned := *root
+	*root = nil
+	if operations.close != nil {
+		return operations.close(owned)
+	}
+	return owned.Close()
 }
 
 func destinationMatches(destination string, expectedData []byte, expectedMode fs.FileMode) error {

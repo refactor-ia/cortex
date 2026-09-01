@@ -351,6 +351,75 @@ func rootedCreateCloseParent(operations rootedCreateStagingOperations, parent *o
 	return parent.Close()
 }
 
+// ErrCreateIfAbsentRootPublicationAttempted reports that CreateIfAbsentRoot invoked
+// its publication Link. A result with this marker but without
+// ErrCreateIfAbsentRootPublicationVerified is ambiguous or rival and must not be
+// compensated by a later executor.
+var ErrCreateIfAbsentRootPublicationAttempted = errors.New("atomic rooted create: publication attempted")
+
+// ErrCreateIfAbsentRootPublicationVerified reports that CreateIfAbsentRoot proved
+// the linked destination before returning. It is returned with
+// ErrCreateIfAbsentRootPublicationAttempted; this pair permits a future exact
+// removal rollback despite cleanup errors.
+var ErrCreateIfAbsentRootPublicationVerified = errors.New("atomic rooted create: publication verified")
+
+type rootedCreateOperations struct {
+	rootedCreateFinalizationOperations
+	link func(*os.Root, string, string) error
+}
+
+// CreateIfAbsentRoot durably creates a regular file at relativePath only if it is
+// absent beneath root. It retains descriptor-anchored parents and publishes with
+// Root.Link, never falling back to path-based publication. Modes must include
+// owner-read permission because final verification reads the staged file. An error
+// marked ErrCreateIfAbsentRootPublicationAttempted without
+// ErrCreateIfAbsentRootPublicationVerified is ambiguous or rival and must not be
+// compensated; both markers permit future exact-removal rollback.
+func CreateIfAbsentRoot(root *os.Root, relativePath string, data []byte, mode fs.FileMode) error {
+	return createIfAbsentRoot(root, relativePath, data, mode, rootedCreateOperations{})
+}
+
+func createIfAbsentRoot(root *os.Root, relativePath string, data []byte, mode fs.FileMode, operations rootedCreateOperations) error {
+	if mode&^fs.FileMode(0o777) != 0 || mode&0o400 == 0 {
+		return errors.New("atomic rooted create: invalid mode")
+	}
+	stage, err := stageRootedCreate(root, relativePath, data, mode, operations.rootedCreateFinalizationOperations.rootedCreateStagingOperations)
+	if err != nil {
+		return err
+	}
+	info, err := rootedCreateReadbackLstat(operations.rootedCreateFinalizationOperations, stage.parent, stage.basename)
+	if info != nil || !errors.Is(err, fs.ErrNotExist) {
+		return errors.Join(
+			errors.New("atomic rooted create: pre-publication failed"),
+			errors.New("atomic rooted create: final absence recheck failed"),
+			discardRootedCreateStage(&stage, operations.rootedCreateFinalizationOperations.rootedCreateStagingOperations),
+		)
+	}
+	linkErr := rootedCreateLink(operations, stage.parent, stage.temporary, stage.basename)
+	verified, finalizeErr := finalizeRootedCreateStage(&stage, operations.rootedCreateFinalizationOperations)
+	if linkErr == nil && verified && finalizeErr == nil {
+		return nil
+	}
+	result := error(ErrCreateIfAbsentRootPublicationAttempted)
+	if verified {
+		result = errors.Join(result, ErrCreateIfAbsentRootPublicationVerified)
+	}
+	if linkErr != nil {
+		result = errors.Join(result, errors.New("atomic rooted create: link failed"))
+	}
+	if finalizeErr != nil {
+		result = errors.Join(result, finalizeErr)
+	}
+	return result
+}
+
+func rootedCreateLink(operations rootedCreateOperations, parent *os.Root, temporary, basename string) error {
+	if operations.link != nil {
+		return operations.link(parent, temporary, basename)
+	}
+	return parent.Link(temporary, basename)
+}
+
 type rootedCreateReadbackFile interface {
 	Stat() (fs.FileInfo, error)
 	Read([]byte) (int, error)

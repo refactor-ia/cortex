@@ -79,7 +79,7 @@ func validateExactRemoval(root, relativePath string, expectedBytes []byte, expec
 			return errors.New("atomic remove exact: invalid relative path")
 		}
 	}
-	if len(expectedBytes) == 0 || len(expectedBytes) > removeExactMaxEvidenceBytes {
+	if expectedBytes == nil || len(expectedBytes) > removeExactMaxEvidenceBytes {
 		return errors.New("atomic remove exact: invalid expected bytes")
 	}
 	if expectedMode&^fs.FileMode(0o777) != 0 {

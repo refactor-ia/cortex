@@ -1610,11 +1610,26 @@ func TestStageRootedReplaceValidationAndFailureCleanup(t *testing.T) {
 			evidence := rootedReplaceTestEvidence(t, root, []byte("old"))
 			calls := []string{}
 			_, err := stageRootedReplace(evidence, []byte("new"), 0o600, rootedReplaceStagingOperations{random: bytes.NewReader(make([]byte, 16)), openFile: func(*os.Root, string, int, fs.FileMode) (rootedReplaceStageFile, error) { return tt.file, nil }, remove: func(*os.Root, string) error { calls = append(calls, "remove"); return errors.New("private") }, syncParent: func(*os.Root) error { calls = append(calls, "sync"); return errors.New("private") }, closeParent: func(*os.Root) error { calls = append(calls, "close"); return nil }})
-			if err == nil || strings.Contains(err.Error(), "private") || !strings.Contains(err.Error(), tt.want) || tt.file.closes != 1 || strings.Join(calls, ",") != "remove,sync,close" || evidence.parent != nil {
+			if err == nil || strings.Contains(err.Error(), "private") || !strings.Contains(err.Error(), tt.want) || tt.file.closes != 1 || strings.Join(calls, ",") != "sync,close" || evidence.parent != nil {
 				t.Fatalf("stage = %v, closes/calls/evidence = %d/%v/%+v", err, tt.file.closes, calls, evidence)
 			}
 		})
 	}
+	t.Run("chmod preserves cleanup rival", func(t *testing.T) {
+		evidence := rootedReplaceTestEvidence(t, root, []byte("old"))
+		file := &rootedCreateTestFile{chmodErr: errors.New("private"), info: rootedCreateTestInfo{mode: 0o600}}
+		lstats, syncs, closes, removes := 0, 0, 0, 0
+		stage, err := stageRootedReplace(evidence, []byte("new"), 0o600, rootedReplaceStagingOperations{rootedReplaceEvidenceOperations: rootedReplaceEvidenceOperations{lstat: func(p *os.Root, name string) (fs.FileInfo, error) {
+			lstats++
+			writeMode(t, filepath.Join(path, "safe", name), []byte("rival"), 0o600)
+			return p.Lstat(name)
+		}}, random: bytes.NewReader(make([]byte, 16)), openFile: func(*os.Root, string, int, fs.FileMode) (rootedReplaceStageFile, error) { return file, nil }, remove: func(*os.Root, string) error { removes++; return nil }, syncParent: func(*os.Root) error { syncs++; return nil }, closeParent: func(*os.Root) error { closes++; return nil }})
+		if err == nil || strings.Contains(err.Error(), "private") || errors.Is(err, ErrReplaceIfMatchesRootPublicationAttempted) || errors.Is(err, ErrReplaceIfMatchesRootPublicationVerified) || lstats != 1 || removes != 0 || syncs != 1 || closes != 1 || file.closes != 1 || stage.parent != nil || evidence.parent != nil {
+			t.Fatalf("stage = %v; lstat/remove/sync/close/file = %d/%d/%d/%d/%d", err, lstats, removes, syncs, closes, file.closes)
+		}
+		assertFile(t, filepath.Join(path, "safe/config"), []byte("old"), 0o600)
+		assertFile(t, filepath.Join(path, "safe", ".cortex-replace-"+strings.Repeat("0", 32)), []byte("rival"), 0o600)
+	})
 }
 
 func TestStageRootedReplaceOpenFailuresDoNotTouchRivals(t *testing.T) {
@@ -1656,7 +1671,7 @@ func TestStageRootedReplaceOpenFailuresDoNotTouchRivals(t *testing.T) {
 			if opened != nil {
 				fileCloses = opened.closes
 			}
-			if attempts != tt.attempts || fileCloses != tt.wantClose || removes != 0 || syncs != 0 || closes != 1 || evidence.parent != nil {
+			if attempts != tt.attempts || fileCloses != tt.wantClose || removes != 0 || syncs != 1 || closes != 1 || evidence.parent != nil {
 				t.Fatalf("counts/evidence = %d/%d/%d/%d/%d/%+v", attempts, fileCloses, removes, syncs, closes, evidence)
 			}
 		})
@@ -1739,5 +1754,232 @@ func skipRootedReplaceEvidence(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
 		t.Skip("rooted replace evidence is unsupported")
+	}
+}
+func TestReplaceIfMatchesRoot(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	for _, tt := range []struct {
+		name, relative   string
+		old, replacement []byte
+		oldMode, mode    fs.FileMode
+	}{
+		{"top level empty replacement", "config", []byte("old"), []byte{}, 0o400, 0o600},
+		{"top level empty expected", "config", []byte{}, []byte("new"), 0o400, 0o600},
+		{"nested replacement", "safe/config", []byte("old"), []byte("new"), 0o600, 0o640},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			writeMode(t, filepath.Join(path, tt.relative), tt.old, tt.oldMode)
+			root := openTestRoot(t, path)
+			defer root.Close()
+			old, err := root.Lstat(tt.relative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ReplaceIfMatchesRoot(root, tt.relative, tt.old, tt.oldMode, tt.replacement, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			info, err := root.Lstat(tt.relative)
+			if err != nil || os.SameFile(old, info) {
+				t.Fatalf("replacement inode = %v, error = %v", info, err)
+			}
+			assertFile(t, filepath.Join(path, tt.relative), tt.replacement, tt.mode)
+			if _, err := root.Lstat("."); err != nil {
+				t.Fatalf("caller root unusable: %v", err)
+			}
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+
+func TestReplaceIfMatchesRootRejectsNilDataWithoutPublication(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path := t.TempDir()
+	writeMode(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	err := ReplaceIfMatchesRoot(root, "config", nil, 0o600, []byte("new"), 0o600)
+	if err == nil || errors.Is(err, ErrReplaceIfMatchesRootPublicationAttempted) || errors.Is(err, ErrReplaceIfMatchesRootPublicationVerified) {
+		t.Fatalf("error = %v", err)
+	}
+	assertFile(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+}
+
+func TestReplaceIfMatchesRootPrePublicationDriftDoesNotRename(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	for _, tt := range []struct {
+		name       string
+		operations func(string, *int) rootedReplaceOperations
+		want       []byte
+	}{
+		{"original drift", func(path string, renames *int) rootedReplaceOperations {
+			return rootedReplaceOperations{rootedReplaceStagingOperations: rootedReplaceStagingOperations{openFile: func(p *os.Root, name string, flag int, mode fs.FileMode) (rootedReplaceStageFile, error) {
+				f, err := p.OpenFile(name, flag, mode)
+				if err == nil {
+					writeMode(t, filepath.Join(path, "config"), []byte("rival"), 0o600)
+				}
+				return f, err
+			}}, rename: func(*os.Root, string, string) error { *renames++; return nil }}
+		}, []byte("rival")},
+		{"staged temporary rival", func(path string, renames *int) rootedReplaceOperations {
+			return rootedReplaceOperations{rootedReplaceEvidenceOperations: rootedReplaceEvidenceOperations{lstat: func(p *os.Root, name string) (fs.FileInfo, error) {
+				if strings.HasPrefix(name, ".cortex-replace-") {
+					if err := p.Remove(name); err != nil {
+						t.Fatal(err)
+					}
+					f, err := p.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = f.Write([]byte("rival")); err != nil || f.Close() != nil {
+						t.Fatal(err)
+					}
+				}
+				return p.Lstat(name)
+			}}, rename: func(*os.Root, string, string) error { *renames++; return nil }}
+		}, []byte("old")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			writeMode(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+			root := openTestRoot(t, path)
+			defer root.Close()
+			renames := 0
+			err := replaceIfMatchesRoot(root, "config", []byte("old"), 0o600, []byte("new"), 0o600, tt.operations(path, &renames))
+			if err == nil || renames != 0 || errors.Is(err, ErrReplaceIfMatchesRootPublicationAttempted) || errors.Is(err, ErrReplaceIfMatchesRootPublicationVerified) {
+				t.Fatalf("error/renames = %v/%d", err, renames)
+			}
+			assertFile(t, filepath.Join(path, "config"), tt.want, 0o600)
+			if tt.name == "staged temporary rival" {
+				entries, readErr := os.ReadDir(path)
+				if readErr != nil || len(entries) != 2 {
+					t.Fatalf("entries/error = %v/%v", entries, readErr)
+				}
+			}
+		})
+	}
+}
+
+func TestReplaceIfMatchesRootPublicationMarkers(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	for _, tt := range []struct {
+		name     string
+		rename   func(*os.Root, string, string) error
+		verified bool
+	}{
+		{"rename failure", func(*os.Root, string, string) error { return errors.New("private") }, false},
+		{"rename completed with error", func(p *os.Root, temporary, basename string) error {
+			if err := p.Rename(temporary, basename); err != nil {
+				return err
+			}
+			return errors.New("private")
+		}, true},
+		{"post-rename rival temporary", func(p *os.Root, temporary, basename string) error {
+			if err := p.Rename(temporary, basename); err != nil {
+				return err
+			}
+			f, err := p.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err != nil {
+				return err
+			}
+			if _, err = f.Write([]byte("rival")); err != nil {
+				_ = f.Close()
+				return err
+			}
+			return f.Close()
+		}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			writeMode(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+			root := openTestRoot(t, path)
+			defer root.Close()
+			temporary := ""
+			err := replaceIfMatchesRoot(root, "config", []byte("old"), 0o600, []byte("new"), 0o600, rootedReplaceOperations{rename: func(p *os.Root, old, new string) error {
+				temporary = old
+				return tt.rename(p, old, new)
+			}})
+			if err == nil || !errors.Is(err, ErrReplaceIfMatchesRootPublicationAttempted) || errors.Is(err, ErrReplaceIfMatchesRootPublicationVerified) != tt.verified || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error = %v", err)
+			}
+			if tt.verified {
+				assertFile(t, filepath.Join(path, "config"), []byte("new"), 0o600)
+			} else {
+				assertFile(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+			}
+			if tt.name == "post-rename rival temporary" {
+				assertFile(t, filepath.Join(path, temporary), []byte("rival"), 0o600)
+			} else {
+				assertNoTemporaryFiles(t, path)
+			}
+		})
+	}
+}
+
+func TestReplaceIfMatchesRootFinalizationFaultsPreserveVerified(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	private := errors.New("private")
+	for _, tt := range []struct {
+		name  string
+		apply func(*rootedReplaceOperations)
+	}{
+		{"remove", func(ops *rootedReplaceOperations) {
+			ops.rename = func(p *os.Root, temporary, basename string) error {
+				if err := p.Rename(temporary, basename); err != nil {
+					return err
+				}
+				return p.Link(basename, temporary)
+			}
+			ops.remove = func(p *os.Root, name string) error { return errors.Join(p.Remove(name), private) }
+		}},
+		{"sync", func(ops *rootedReplaceOperations) {
+			ops.syncParent = func(p *os.Root) error {
+				return errors.Join(rootedReplaceSyncParent(rootedReplaceStagingOperations{}, p), private)
+			}
+		}},
+		{"close", func(ops *rootedReplaceOperations) {
+			ops.closeParent = func(p *os.Root) error { return errors.Join(p.Close(), private) }
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			writeMode(t, filepath.Join(path, "config"), []byte("old"), 0o600)
+			root := openTestRoot(t, path)
+			defer root.Close()
+			ops := rootedReplaceOperations{}
+			tt.apply(&ops)
+			err := replaceIfMatchesRoot(root, "config", []byte("old"), 0o600, []byte("new"), 0o600, ops)
+			if err == nil || !errors.Is(err, ErrReplaceIfMatchesRootPublicationAttempted) || !errors.Is(err, ErrReplaceIfMatchesRootPublicationVerified) || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error = %v", err)
+			}
+			assertFile(t, filepath.Join(path, "config"), []byte("new"), 0o600)
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+
+func TestReplaceIfMatchesRootRetainsMovedParent(t *testing.T) {
+	skipRootedReplaceEvidence(t)
+	path := t.TempDir()
+	writeMode(t, filepath.Join(path, "safe/config"), []byte("old"), 0o600)
+	root := openTestRoot(t, path)
+	defer root.Close()
+	moved := ""
+	err := replaceIfMatchesRoot(root, "safe/config", []byte("old"), 0o600, []byte("new"), 0o600, rootedReplaceOperations{rename: func(p *os.Root, temporary, basename string) error {
+		moved = filepath.Join(path, "old")
+		if err := os.Rename(filepath.Join(path, "safe"), moved); err != nil {
+			return err
+		}
+		if err := os.Mkdir(filepath.Join(path, "safe"), 0o755); err != nil {
+			return err
+		}
+		return p.Rename(temporary, basename)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(moved, "config"), []byte("new"), 0o600)
+	if _, err := os.Lstat(filepath.Join(path, "safe/config")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("decoy = %v", err)
 	}
 }

@@ -994,6 +994,263 @@ func TestFinalizeRootedCreateStageAttemptsCleanupAndPinsInvalidReuse(t *testing.
 	}
 }
 
+func TestCreateIfAbsentRoot(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	for _, tt := range []struct {
+		name, relative string
+		data           []byte
+		mode           fs.FileMode
+	}{
+		{"top-level empty", "config", nil, 0o600},
+		{"nested content", "safe/nested/config", []byte("created"), 0o640},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(path, filepath.Dir(tt.relative)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			if err := CreateIfAbsentRoot(root, tt.relative, tt.data, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			assertFile(t, filepath.Join(path, tt.relative), tt.data, tt.mode)
+			if _, err := root.Lstat("."); err != nil {
+				t.Fatalf("caller root unusable: %v", err)
+			}
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+
+func TestCreateIfAbsentRootRejectsUnreadableModeBeforeRootUse(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	err = CreateIfAbsentRoot(root, "config", nil, 0o200)
+	if err == nil || errors.Is(err, ErrCreateIfAbsentRootPublicationAttempted) || errors.Is(err, ErrCreateIfAbsentRootPublicationVerified) {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := root.Lstat("."); err != nil {
+		t.Fatalf("caller root changed: %v", err)
+	}
+}
+
+func TestCreateIfAbsentRootPrePublicationFailures(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	for _, tt := range []struct {
+		name  string
+		lstat func(*os.Root, string) (fs.FileInfo, error)
+	}{
+		{"appearance", func(r *os.Root, name string) (fs.FileInfo, error) { return r.Lstat(name) }},
+		{"info and error", func(r *os.Root, name string) (fs.FileInfo, error) {
+			info, _ := r.Lstat(name)
+			return info, errors.New("private")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			root, err := os.OpenRoot(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			leafChecks, links, removes, syncs, closes := 0, 0, 0, 0, 0
+			ops := rootedCreateOperations{rootedCreateFinalizationOperations: rootedCreateFinalizationOperations{rootedCreateStagingOperations: rootedCreateStagingOperations{rootedAbsentEvidenceOperations: rootedAbsentEvidenceOperations{lstat: func(r *os.Root, name string) (fs.FileInfo, error) {
+				if name == "config" {
+					leafChecks++
+					if leafChecks == 2 {
+						if err := os.WriteFile(filepath.Join(path, name), []byte("rival"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						return tt.lstat(r, name)
+					}
+				}
+				return r.Lstat(name)
+			}}, remove: func(r *os.Root, name string) error { removes++; return r.Remove(name) }, syncParent: func(r *os.Root) error { syncs++; return rootedCreateSyncParent(rootedCreateStagingOperations{}, r) }, closeParent: func(r *os.Root) error { closes++; return r.Close() }}}, link: func(*os.Root, string, string) error { links++; return nil }}
+			err = createIfAbsentRoot(root, "config", []byte("mine"), 0o600, ops)
+			if err == nil || links != 0 || removes != 1 || syncs != 1 || closes != 1 || errors.Is(err, ErrCreateIfAbsentRootPublicationAttempted) || errors.Is(err, ErrCreateIfAbsentRootPublicationVerified) || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error/cleanup = %v/%d/%d/%d/%d", err, links, removes, syncs, closes)
+			}
+			assertFile(t, filepath.Join(path, "config"), []byte("rival"), 0o600)
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+
+func TestCreateIfAbsentRootPublicationMarkers(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	for _, tt := range []struct {
+		name         string
+		link         func(*os.Root, string, string) error
+		operations   func(rootedCreateOperations) rootedCreateOperations
+		wantVerified bool
+		wantData     []byte
+	}{
+		{"rival at link", nil, nil, false, []byte("rival")},
+		{"successful link reports private error", func(p *os.Root, temporary, basename string) error {
+			if err := p.Link(temporary, basename); err != nil {
+				return err
+			}
+			return errors.New("private")
+		}, nil, true, []byte("mine")},
+		{"readback failure", func(p *os.Root, temporary, basename string) error { return p.Link(temporary, basename) }, func(ops rootedCreateOperations) rootedCreateOperations {
+			ops.openRead = func(*os.Root, string) (rootedCreateReadbackFile, error) { return nil, errors.New("private") }
+			return ops
+		}, false, []byte("mine")},
+		{"cleanup failure after proof", func(p *os.Root, temporary, basename string) error { return p.Link(temporary, basename) }, func(ops rootedCreateOperations) rootedCreateOperations {
+			ops.remove = func(p *os.Root, name string) error {
+				err := p.Remove(name)
+				return errors.Join(err, errors.New("private"))
+			}
+			return ops
+		}, true, []byte("mine")},
+		{"close failure after proof", func(p *os.Root, temporary, basename string) error { return p.Link(temporary, basename) }, func(ops rootedCreateOperations) rootedCreateOperations {
+			ops.closeParent = func(p *os.Root) error { err := p.Close(); return errors.Join(err, errors.New("private")) }
+			return ops
+		}, true, []byte("mine")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			root, err := os.OpenRoot(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			ops := rootedCreateOperations{link: tt.link}
+			if tt.operations != nil {
+				ops = tt.operations(ops)
+			}
+			if tt.name == "rival at link" {
+				ops.link = func(p *os.Root, temporary, basename string) error {
+					file, err := p.OpenFile(basename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err = file.Write([]byte("rival")); err != nil {
+						_ = file.Close()
+						return err
+					}
+					if err := file.Close(); err != nil {
+						return err
+					}
+					return p.Link(temporary, basename)
+				}
+			}
+			err = createIfAbsentRoot(root, "config", []byte("mine"), 0o600, ops)
+			if err == nil || !errors.Is(err, ErrCreateIfAbsentRootPublicationAttempted) || errors.Is(err, ErrCreateIfAbsentRootPublicationVerified) != tt.wantVerified || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error = %v", err)
+			}
+			assertFile(t, filepath.Join(path, "config"), tt.wantData, 0o600)
+			assertNoTemporaryFiles(t, path)
+		})
+	}
+}
+
+func TestCreateIfAbsentRootRetainsDescriptorAnchoredParent(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	for _, tt := range []struct{ name, relative, moved string }{{"root rename", "config", ""}, {"nested replacement", "safe/config", "safe"}} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(path, filepath.Dir(tt.relative)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			ops := rootedCreateOperations{link: func(p *os.Root, temporary, basename string) error {
+				moved := path + "-moved"
+				if tt.moved != "" {
+					moved = filepath.Join(path, "old")
+				}
+				if err := os.Rename(filepath.Join(path, tt.moved), moved); err != nil {
+					return err
+				}
+				if err := os.MkdirAll(filepath.Join(path, filepath.Dir(tt.relative)), 0o755); err != nil {
+					return err
+				}
+				return p.Link(temporary, basename)
+			}}
+			if err := createIfAbsentRoot(root, tt.relative, []byte("mine"), 0o600, ops); err != nil {
+				t.Fatal(err)
+			}
+			moved := path + "-moved"
+			if tt.moved != "" {
+				moved = filepath.Join(path, "old")
+			}
+			assertFile(t, filepath.Join(moved, filepath.Base(tt.relative)), []byte("mine"), 0o600)
+			if _, err := os.Lstat(filepath.Join(path, tt.relative)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("decoy = %v", err)
+			}
+			assertNoTemporaryFiles(t, path)
+			assertNoTemporaryFiles(t, moved)
+		})
+	}
+}
+
+func TestCreateIfAbsentRootConcurrentCallers(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("rooted create is unsupported")
+	}
+	path := t.TempDir()
+	rootA, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootA.Close()
+	rootB, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootB.Close()
+	var linked sync.WaitGroup
+	linked.Add(2)
+	release, results := make(chan struct{}), make(chan error, 2)
+	operations := rootedCreateOperations{link: func(parent *os.Root, temporary, basename string) error {
+		linked.Done()
+		<-release
+		return parent.Link(temporary, basename)
+	}}
+	go func() { results <- createIfAbsentRoot(rootA, "config", []byte("one"), 0o600, operations) }()
+	go func() { results <- createIfAbsentRoot(rootB, "config", []byte("two"), 0o600, operations) }()
+	linked.Wait()
+	close(release)
+	successes := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			successes++
+		} else if !errors.Is(err, ErrCreateIfAbsentRootPublicationAttempted) || errors.Is(err, ErrCreateIfAbsentRootPublicationVerified) {
+			t.Fatalf("loser error = %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successes = %d", successes)
+	}
+	data, err := os.ReadFile(filepath.Join(path, "config"))
+	if err != nil || (string(data) != "one" && string(data) != "two") {
+		t.Fatalf("data/error = %q/%v", data, err)
+	}
+	assertNoTemporaryFiles(t, path)
+}
+
 func rootedCreateStaged(t *testing.T, relative string, data []byte, mode fs.FileMode) (rootedCreateStage, string) {
 	t.Helper()
 	path := t.TempDir()

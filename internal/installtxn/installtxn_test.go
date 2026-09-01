@@ -2,6 +2,8 @@ package installtxn
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -15,6 +17,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/ownership"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/qaactor"
@@ -439,6 +442,44 @@ func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
 	}
 }
 
+func TestApplyVerifiedRestoresV1OriginOnFinalVerificationFailure(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	cwd := physicalTempDir(t)
+	oldState, oldSkills := writeV1Origin(t, candidate)
+
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, func() error {
+			for _, file := range candidate.Files() {
+				data, readErr := os.ReadFile(file.AbsolutePath())
+				if readErr != nil || !bytes.Equal(data, file.Content()) || mode(t, file.AbsolutePath()) != file.DesiredMode() {
+					t.Fatalf("candidate file %q = (%q, %#o, %v)", file.LogicalID(), data, mode(t, file.AbsolutePath()), readErr)
+				}
+			}
+			if verifyErr := verify(); verifyErr != nil {
+				return verifyErr
+			}
+			return errors.New("injected final verification failure")
+		})
+	})
+	if !errors.Is(err, ErrFailed) {
+		t.Fatalf("ApplyVerified() error = %v", err)
+	}
+
+	state := candidate.Files()[len(candidate.Files())-1]
+	assertExactBytesAndMode(t, state.AbsolutePath(), oldState, state.DesiredMode())
+	for _, file := range candidate.Files() {
+		switch file.Role() {
+		case "skill":
+			assertExactBytesAndMode(t, file.AbsolutePath(), oldSkills[file.LogicalID()], file.DesiredMode())
+		case "actor":
+			if _, statErr := os.Lstat(file.AbsolutePath()); !os.IsNotExist(statErr) {
+				t.Fatalf("actor %q remains after rollback: %v", file.LogicalID(), statErr)
+			}
+		}
+	}
+}
+
 func TestApplyVerifiedRejectsShadowBeforeMutation(t *testing.T) {
 	candidate := actorAwareCandidate(t)
 	mustMkdir(t, candidate.RootPath())
@@ -534,6 +575,41 @@ func actorAwareCandidate(t *testing.T) installplan.Plan {
 	candidate, err := installplan.BuildActorAware(skills, actorBinding, "000102030405060708090a0b0c0d0e0f")
 	must(t, err)
 	return candidate
+}
+
+func writeV1Origin(t *testing.T, candidate installplan.Plan) ([]byte, map[string][]byte) {
+	t.Helper()
+	inputs := make([]installstate.ArtifactInput, 0)
+	skills := make(map[string][]byte)
+	for _, file := range candidate.Files() {
+		if file.Role() != "skill" {
+			continue
+		}
+		data := []byte("v1-origin:" + file.LogicalID())
+		digest := sha256.Sum256(data)
+		inputs = append(inputs, installstate.ArtifactInput{
+			LogicalID: file.LogicalID(), RelativePath: file.RelativePath(), SHA256: hex.EncodeToString(digest[:]),
+		})
+		skills[file.LogicalID()] = data
+		mustMkdir(t, filepath.Dir(file.AbsolutePath()))
+		must(t, os.WriteFile(file.AbsolutePath(), data, file.DesiredMode()))
+	}
+	manifest, err := installstate.New(candidate.RuntimeID(), candidate.RootKind(), candidate.SnapshotFingerprint(), inputs)
+	must(t, err)
+	state, err := installstate.Encode(manifest)
+	must(t, err)
+	stateFile := candidate.Files()[len(candidate.Files())-1]
+	mustMkdir(t, filepath.Dir(stateFile.AbsolutePath()))
+	must(t, os.WriteFile(stateFile.AbsolutePath(), state, stateFile.DesiredMode()))
+	return state, skills
+}
+
+func assertExactBytesAndMode(t *testing.T, path string, want []byte, wantMode fs.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, want) || wantMode != mode(t, path) {
+		t.Fatalf("file %q = (%q, %#o, %v)", path, data, mode(t, path), err)
+	}
 }
 
 func physicalTempDir(t *testing.T) string {

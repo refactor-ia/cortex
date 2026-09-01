@@ -27,6 +27,22 @@ func TestRemoveIfExactRemovesMatchingRegularFile(t *testing.T) {
 	}
 }
 
+func TestRemoveIfExactRemovesMatchingEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "safe", "empty.txt")
+	writeFile(t, path, []byte{})
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveIfExact(root, "safe/empty.txt", []byte{}, fs.FileMode(0o600)); err != nil {
+		t.Fatalf("RemoveIfExact() error = %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed empty file stat error = %v, want not exist", err)
+	}
+}
+
 func TestRemoveIfExactFailsClosed(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -153,7 +169,7 @@ func TestRemoveIfExactRejectsInvalidInput(t *testing.T) {
 		{"traversal", t.TempDir(), "../outside.txt", []byte("evidence"), 0o600, "invalid relative path"},
 		{"dot", t.TempDir(), ".", []byte("evidence"), 0o600, "invalid relative path"},
 		{"backslash", t.TempDir(), `safe\config.txt`, []byte("evidence"), 0o600, "invalid relative path"},
-		{"empty evidence", t.TempDir(), "safe/config.txt", nil, 0o600, "invalid expected bytes"},
+		{"nil evidence", t.TempDir(), "safe/config.txt", nil, 0o600, "invalid expected bytes"},
 		{"oversized evidence", t.TempDir(), "safe/config.txt", make([]byte, removeExactMaxEvidenceBytes+1), 0o600, "invalid expected bytes"},
 		{"type bits", t.TempDir(), "safe/config.txt", []byte("evidence"), fs.ModeDir | 0o600, "invalid expected mode"},
 	}

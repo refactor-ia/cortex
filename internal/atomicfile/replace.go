@@ -261,6 +261,7 @@ type rootedReplaceStageFile interface {
 }
 
 type rootedReplaceStagingOperations struct {
+	rootedReplaceEvidenceOperations
 	random      io.Reader
 	openFile    func(*os.Root, string, int, fs.FileMode) (rootedReplaceStageFile, error)
 	remove      func(*os.Root, string) error
@@ -285,6 +286,11 @@ func stageRootedReplace(evidence *rootedReplaceEvidence, replacement []byte, rep
 	defer func() {
 		if resultErr == nil {
 			return
+		}
+		if file != nil && stage.info == nil {
+			if info, statErr := file.Stat(); statErr == nil && info != nil && info.Mode().IsRegular() {
+				stage.info = info
+			}
 		}
 		if err := closeRootedReplaceStageFile(&file); err != nil {
 			resultErr = errors.Join(resultErr, err)
@@ -343,10 +349,10 @@ func stageRootedReplace(evidence *rootedReplaceEvidence, replacement []byte, rep
 	if err != nil || info == nil || !info.Mode().IsRegular() || !rootedCreateModeOK(info.Mode(), replacementMode, runtime.GOOS == "windows") || info.Size() != int64(len(stage.data)) {
 		return stage, errors.New("atomic rooted replace: validate temporary failed")
 	}
+	stage.info = info
 	if err := closeRootedReplaceStageFile(&file); err != nil {
 		return stage, err
 	}
-	stage.info = info
 	return stage, nil
 }
 
@@ -361,7 +367,14 @@ func discardRootedReplaceStage(stage *rootedReplaceStage, operations rootedRepla
 	if !valid {
 		result = errors.New("atomic rooted replace: invalid stage")
 	} else {
-		if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
+		temporary, err := rootedReplaceLstat(operations.rootedReplaceEvidenceOperations, owned.parent, owned.temporary)
+		if errors.Is(err, fs.ErrNotExist) {
+			// The owned temporary was already removed.
+		} else if err != nil || !rootedReplaceFileOK(temporary, owned.mode, len(owned.data)) || !os.SameFile(temporary, owned.info) {
+			result = errors.Join(result, errors.New("atomic rooted replace: temporary residue failed"))
+		} else if proof, proofErr := rootedReplaceLeaf(owned.parent, owned.temporary, owned.data, owned.mode, operations.rootedReplaceEvidenceOperations); proofErr != nil || !os.SameFile(proof, owned.info) {
+			result = errors.Join(result, errors.New("atomic rooted replace: temporary residue failed"))
+		} else if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
 			result = errors.Join(result, errors.New("atomic rooted replace: remove temporary failed"))
 		}
 		if err := rootedReplaceSyncParent(operations, owned.parent); err != nil {
@@ -386,12 +399,18 @@ func cleanupRootedReplaceStage(stage *rootedReplaceStage, operations rootedRepla
 	*stage = rootedReplaceStage{}
 	result := error(nil)
 	if owned.temporary != "" {
-		if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
-			result = errors.Join(result, errors.New("atomic rooted replace: remove temporary failed"))
+		entry, err := rootedReplaceLstat(operations.rootedReplaceEvidenceOperations, owned.parent, owned.temporary)
+		if !errors.Is(err, fs.ErrNotExist) {
+			// A same-parent lstat/remove swap remains the portable removal precedent.
+			if err != nil || owned.info == nil || entry == nil || !entry.Mode().IsRegular() || !os.SameFile(entry, owned.info) {
+				result = errors.Join(result, errors.New("atomic rooted replace: temporary residue failed"))
+			} else if err := rootedReplaceRemove(operations, owned.parent, owned.temporary); err != nil {
+				result = errors.Join(result, errors.New("atomic rooted replace: remove temporary failed"))
+			}
 		}
-		if err := rootedReplaceSyncParent(operations, owned.parent); err != nil {
-			result = errors.Join(result, errors.New("atomic rooted replace: sync parent failed"))
-		}
+	}
+	if err := rootedReplaceSyncParent(operations, owned.parent); err != nil {
+		result = errors.Join(result, errors.New("atomic rooted replace: sync parent failed"))
 	}
 	if err := rootedReplaceCloseParent(operations, owned.parent); err != nil {
 		result = errors.Join(result, errors.New("atomic rooted replace: close parent failed"))
@@ -545,6 +564,126 @@ func closeRootedReplace(root **os.Root, operations rootedReplaceEvidenceOperatio
 		return operations.close(owned)
 	}
 	return owned.Close()
+}
+
+// ErrReplaceIfMatchesRootPublicationAttempted reports that ReplaceIfMatchesRoot
+// invoked its descriptor-rooted Rename boundary. The destination may be unknown.
+var ErrReplaceIfMatchesRootPublicationAttempted = errors.New("atomic rooted replace: publication attempted")
+
+// ErrReplaceIfMatchesRootPublicationVerified reports that ReplaceIfMatchesRoot
+// proved the staged replacement inode, bytes, and mode at its destination.
+var ErrReplaceIfMatchesRootPublicationVerified = errors.New("atomic rooted replace: publication verified")
+
+// ReplaceIfMatchesRoot replaces a rooted regular file only after its bytes and
+// permission mode match. It uses retained descriptor roots for its evidence and
+// publication, but is not a portable atomic compare-and-swap: concurrent writers
+// can both match the old image in the irreducible recheck-to-Rename race.
+//
+// Any non-nil result after Rename includes
+// ErrReplaceIfMatchesRootPublicationAttempted. A result also includes
+// ErrReplaceIfMatchesRootPublicationVerified when the replacement was proved at
+// the destination; callers may then make the exact inverse replacement. An
+// attempted result without verification is ambiguous and must not be compensated.
+func ReplaceIfMatchesRoot(root *os.Root, relativePath string, expectedData []byte, expectedMode fs.FileMode, replacementData []byte, replacementMode fs.FileMode) error {
+	return replaceIfMatchesRoot(root, relativePath, expectedData, expectedMode, replacementData, replacementMode, rootedReplaceOperations{})
+}
+
+type rootedReplaceOperations struct {
+	rootedReplaceEvidenceOperations
+	rootedReplaceStagingOperations
+	rename func(*os.Root, string, string) error
+}
+
+func replaceIfMatchesRoot(root *os.Root, relativePath string, expected []byte, expectedMode fs.FileMode, replacement []byte, replacementMode fs.FileMode, operations rootedReplaceOperations) error {
+	evidence, err := observeRootedReplaceEvidence(root, relativePath, expected, expectedMode, operations.rootedReplaceEvidenceOperations)
+	if err != nil {
+		return err
+	}
+	stage, err := stageRootedReplace(&evidence, replacement, replacementMode, operations.rootedReplaceStagingOperations)
+	if err != nil {
+		return err
+	}
+	prepublication := func(category string) error {
+		return errors.Join(errors.New(category), discardRootedReplaceStage(&stage, operations.rootedReplaceStagingOperations))
+	}
+	proof := rootedReplaceEvidence{parent: stage.parent, basename: stage.basename, leaf: stage.leaf, expected: stage.expected, mode: stage.expectedMode}
+	if err := recheckRootedReplaceEvidence(&proof, operations.rootedReplaceEvidenceOperations); err != nil {
+		return prepublication("atomic rooted replace: original recheck failed")
+	}
+	temporary, err := rootedReplaceLeaf(stage.parent, stage.temporary, stage.data, stage.mode, operations.rootedReplaceEvidenceOperations)
+	if err != nil || !os.SameFile(temporary, stage.info) {
+		return prepublication("atomic rooted replace: temporary recheck failed")
+	}
+
+	renameErr := rootedReplaceRename(operations, stage.parent, stage.temporary, stage.basename)
+	verified, finalizeErr := finalizeRootedReplaceStage(&stage, operations)
+	if renameErr == nil && finalizeErr == nil && verified {
+		return nil
+	}
+	result := errors.Join(renameErrCategory(renameErr), finalizeErr)
+	if verified {
+		result = errors.Join(result, ErrReplaceIfMatchesRootPublicationVerified)
+	}
+	return errors.Join(ErrReplaceIfMatchesRootPublicationAttempted, result)
+}
+
+func rootedReplaceRename(operations rootedReplaceOperations, parent *os.Root, temporary, basename string) error {
+	if operations.rename != nil {
+		if err := operations.rename(parent, temporary, basename); err != nil {
+			return errors.New("atomic rooted replace: rename failed")
+		}
+		return nil
+	}
+	if err := parent.Rename(temporary, basename); err != nil {
+		return errors.New("atomic rooted replace: rename failed")
+	}
+	return nil
+}
+
+func renameErrCategory(err error) error {
+	if err != nil {
+		return errors.New("atomic rooted replace: rename failed")
+	}
+	return nil
+}
+
+func finalizeRootedReplaceStage(stage *rootedReplaceStage, operations rootedReplaceOperations) (verified bool, resultErr error) {
+	if stage == nil {
+		return false, errors.New("atomic rooted replace: invalid stage")
+	}
+	owned := *stage
+	*stage = rootedReplaceStage{}
+	valid := owned.parent != nil && owned.basename != "" && owned.temporary != "" && owned.info != nil && owned.data != nil
+	if !valid {
+		if err := rootedReplaceCloseParent(operations.rootedReplaceStagingOperations, owned.parent); err != nil {
+			return false, errors.New("atomic rooted replace: close parent failed")
+		}
+		return false, errors.New("atomic rooted replace: invalid stage")
+	}
+
+	temporary, err := rootedReplaceLstat(operations.rootedReplaceEvidenceOperations, owned.parent, owned.temporary)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Rename consumed the temporary name.
+	} else if err != nil || !rootedReplaceFileOK(temporary, owned.mode, len(owned.data)) || !os.SameFile(temporary, owned.info) {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: temporary residue failed"))
+	} else if proof, proofErr := rootedReplaceLeaf(owned.parent, owned.temporary, owned.data, owned.mode, operations.rootedReplaceEvidenceOperations); proofErr != nil || !os.SameFile(proof, owned.info) {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: temporary residue failed"))
+	} else if err := rootedReplaceRemove(operations.rootedReplaceStagingOperations, owned.parent, owned.temporary); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: remove temporary failed"))
+	}
+	if err := rootedReplaceSyncParent(operations.rootedReplaceStagingOperations, owned.parent); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: sync parent failed"))
+	}
+	destination, err := rootedReplaceLeaf(owned.parent, owned.basename, owned.data, owned.mode, operations.rootedReplaceEvidenceOperations)
+	if err != nil || !os.SameFile(destination, owned.info) {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: destination readback failed"))
+	} else {
+		verified = true
+	}
+	if err := rootedReplaceCloseParent(operations.rootedReplaceStagingOperations, owned.parent); err != nil {
+		resultErr = errors.Join(resultErr, errors.New("atomic rooted replace: close parent failed"))
+	}
+	return verified, resultErr
 }
 
 func destinationMatches(destination string, expectedData []byte, expectedMode fs.FileMode) error {

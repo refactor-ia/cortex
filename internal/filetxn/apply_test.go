@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -637,5 +638,76 @@ func TestApplyOperationsFinalVerificationRollsBackInReverse(t *testing.T) {
 	assertFile(t, filepath.Join(root, "existing.txt"), "before", 0o640)
 	if _, err := os.Lstat(filepath.Join(root, "created.txt")); !os.IsNotExist(err) {
 		t.Fatalf("created target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsWithDirectoriesAndFinalize(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		finalVerify     func(t *testing.T, backups, path string) error
+		finalize        error
+		payload         bool
+		finalizeCalls   int
+		rollbackTargets bool
+		rollbackFile    string
+	}{
+		{name: "success", finalizeCalls: 1},
+		{name: "final verification failure", finalVerify: func(t *testing.T, _, _ string) error { return errors.New("final verify failed") }, rollbackTargets: true},
+		{name: "manifest tamper", finalVerify: func(t *testing.T, backups, _ string) error {
+			return os.WriteFile(filepath.Join(backups, "batch", manifestName), []byte("{"), 0o600)
+		}, rollbackTargets: true},
+		{name: "payload tamper", payload: true, finalVerify: func(t *testing.T, backups, path string) error {
+			return os.WriteFile(backupPayloadPath(filepath.Join(backups, "batch"), path), []byte("tampered"), 0o600)
+		}, rollbackTargets: true, rollbackFile: "original"},
+		{name: "finalize failure", finalize: errors.New("finalize failed"), finalizeCalls: 1, rollbackTargets: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, backups, path := t.TempDir(), t.TempDir(), "generated/file.txt"
+			operations := []Operation{{Write: &Write{Path: path, Data: []byte("created"), Mode: 0o600}}}
+			if tt.payload {
+				path = "existing.txt"
+				writeFile(t, filepath.Join(root, path), []byte("original"), 0o640)
+				operations = []Operation{{Write: &Write{Path: path, Data: []byte("created"), Mode: 0o600}}}
+			}
+			var calls int
+			var finalized Snapshot
+			snapshot, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+				[]Directory{{Path: "generated", Mode: 0o700}}, operations,
+				func() error {
+					assertFile(t, filepath.Join(root, path), "created", 0o600)
+					if tt.finalVerify != nil {
+						return tt.finalVerify(t, backups, path)
+					}
+					return nil
+				},
+				func(reloaded Snapshot) error {
+					calls++
+					finalized = reloaded
+					return tt.finalize
+				},
+			)
+			if tt.finalizeCalls == 1 && tt.finalize == nil {
+				reloaded, reloadErr := reloadAndVerify(backups, "batch")
+				if err != nil || reloadErr != nil || !reflect.DeepEqual(finalized, reloaded) || !reflect.DeepEqual(snapshot, reloaded) || finalized.Manifest.Version != manifestV2 || len(finalized.Manifest.AbsentDirectories) != 1 || finalized.Manifest.AbsentDirectories[0].Path != "generated" {
+					t.Fatalf("result = %#v, finalized = %#v, reloaded = %#v, errors = %v, %v", snapshot, finalized, reloaded, err, reloadErr)
+				}
+				return
+			}
+			if err == nil || calls != tt.finalizeCalls {
+				t.Fatalf("error = %v, finalize calls = %d", err, calls)
+			}
+			if tt.rollbackTargets {
+				if tt.rollbackFile == "" {
+					if _, statErr := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(statErr) {
+						t.Fatalf("created target remains: %v", statErr)
+					}
+				} else {
+					assertFile(t, filepath.Join(root, path), tt.rollbackFile, 0o640)
+				}
+				if _, statErr := os.Lstat(filepath.Join(root, "generated")); !os.IsNotExist(statErr) {
+					t.Fatalf("created directory remains: %v", statErr)
+				}
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package filetxn
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -53,7 +54,77 @@ func (snapshot Snapshot) Payload(path string) ([]byte, error) {
 	if err != nil || hex.EncodeToString(digest[:]) != entry.SHA256 {
 		return nil, errors.New("snapshot payload is unavailable")
 	}
-	return append([]byte(nil), data...), nil
+	return bytes.Clone(data), nil
+}
+
+type restartLeaf struct {
+	before After
+	after  After
+}
+
+type restartPlan struct {
+	snapshot Snapshot
+	leaves   []restartLeaf
+}
+
+func planRestartEvidence(snapshot Snapshot, after []After) (restartPlan, error) {
+	if validateManifest(snapshot.Manifest) != nil {
+		return restartPlan{}, errors.New("restart evidence is invalid")
+	}
+	snapshot = cloneRestartSnapshot(snapshot)
+	byPath := make(map[string]After, len(after))
+	for _, value := range after {
+		detached, err := NewAfter(value.Path(), value.Exists(), value.Data(), value.Mode())
+		if err != nil {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		if _, exists := byPath[detached.path]; exists {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		byPath[detached.path] = detached
+	}
+	if len(byPath) != len(snapshot.Manifest.Entries) {
+		return restartPlan{}, errors.New("restart evidence is invalid")
+	}
+	ordered := make([]After, len(snapshot.Manifest.Entries))
+	for index, entry := range snapshot.Manifest.Entries {
+		value, exists := byPath[entry.Path]
+		if !exists {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		ordered[index] = value
+	}
+	leaves := make([]restartLeaf, len(ordered))
+	for index, entry := range snapshot.Manifest.Entries {
+		before, err := restartBefore(snapshot, entry)
+		if err != nil || sameRestartEvidence(before, ordered[index]) {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		leaves[index] = restartLeaf{before: before, after: ordered[index]}
+	}
+	return restartPlan{snapshot: snapshot, leaves: leaves}, nil
+}
+
+func cloneRestartSnapshot(snapshot Snapshot) Snapshot {
+	manifest := snapshot.Manifest
+	manifest.Entries = append([]Entry{}, snapshot.Manifest.Entries...)
+	manifest.AbsentDirectories = append([]directoryEntry{}, snapshot.Manifest.AbsentDirectories...)
+	return Snapshot{Dir: snapshot.Dir, Manifest: manifest}
+}
+
+func restartBefore(snapshot Snapshot, entry Entry) (After, error) {
+	if !entry.Exists {
+		return NewAfter(entry.Path, false, nil, 0)
+	}
+	data, err := snapshot.Payload(entry.Path)
+	if err != nil {
+		return After{}, err
+	}
+	return NewAfter(entry.Path, true, data, os.FileMode(entry.Mode))
+}
+
+func sameRestartEvidence(before, after After) bool {
+	return before.exists == after.exists && before.mode == after.mode && bytes.Equal(before.data, after.data)
 }
 
 type After struct {
@@ -74,10 +145,10 @@ func NewAfter(path string, exists bool, data []byte, mode os.FileMode) (After, e
 	} else if data != nil || mode != 0 {
 		return After{}, errors.New("restart after evidence is invalid")
 	}
-	return After{path: path, exists: exists, data: append([]byte(nil), data...), mode: mode}, nil
+	return After{path: path, exists: exists, data: bytes.Clone(data), mode: mode}, nil
 }
 
 func (after After) Path() string      { return after.path }
 func (after After) Exists() bool      { return after.exists }
-func (after After) Data() []byte      { return append([]byte(nil), after.data...) }
+func (after After) Data() []byte      { return bytes.Clone(after.data) }
 func (after After) Mode() os.FileMode { return after.mode }

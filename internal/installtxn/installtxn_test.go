@@ -42,6 +42,106 @@ func TestApplyGroupRuntimeHarness(t *testing.T) {
 	}
 }
 
+func TestApplyGroupCreatesAbsentRoots(t *testing.T) {
+	home := t.TempDir()
+	plans := absentGroupCandidates(t, home, "one")
+	requests := groupRequests(t, plans...)
+	calls := 0
+	result, err := applyGroupWith(requests, home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+		calls++
+		state := false
+		for _, operation := range operations {
+			path := ""
+			if operation.Create != nil {
+				path = operation.Create.Path
+			}
+			if filepath.Base(path) == "install-state.json" {
+				state = true
+			} else if state {
+				t.Fatalf("skill operation followed state: %#v", operation)
+			}
+		}
+		mustCreate := map[string]bool{".pi": true, ".pi/agent": true, ".config": true, ".config/opencode": true, ".claude": true}
+		for _, directory := range directories {
+			if mustCreate[directory.Path] {
+				if !directory.MustCreate {
+					t.Fatalf("absent-root ancestor is not must-create: %#v", directory)
+				}
+				delete(mustCreate, directory.Path)
+			}
+		}
+		if len(mustCreate) != 0 {
+			t.Fatalf("missing must-create ancestors: %#v", mustCreate)
+		}
+		return filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directories, operations)
+	})
+	must(t, err)
+	if calls != 1 || result.Counts().Create != 9 {
+		t.Fatalf("ApplyGroup() = (%d, %#v)", calls, result.Counts())
+	}
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
+			assertFile(t, file, true)
+		}
+	}
+	if info, err := os.Lstat(filepath.Join(home, ".cortex-backup")); err != nil || !info.IsDir() {
+		t.Fatalf("backup = (%v, %v)", info, err)
+	}
+}
+
+func TestApplyGroupCreatesSingletonAndMixedAbsentRoots(t *testing.T) {
+	t.Run("singleton", func(t *testing.T) {
+		home := t.TempDir()
+		plan := absentGroupCandidates(t, home, "one")[0]
+		result, err := ApplyGroup(groupRequests(t, plan), home, ".cortex-backup")
+		must(t, err)
+		if got := result.RuntimeIDs(); len(got) != 1 || got[0] != plan.RuntimeID() {
+			t.Fatalf("RuntimeIDs() = %#v", got)
+		}
+		for _, file := range plan.Files() {
+			assertFile(t, file, true)
+		}
+	})
+	t.Run("mixed", func(t *testing.T) {
+		home := t.TempDir()
+		plans := absentGroupCandidates(t, home, "one")
+		mustMkdir(t, plans[1].RootPath())
+		_, err := ApplyGroup(groupRequests(t, plans...), home, ".cortex-backup")
+		must(t, err)
+	})
+}
+
+func TestApplyGroupRejectsAbsentRootChanges(t *testing.T) {
+	t.Run("before re-observation", func(t *testing.T) {
+		home := t.TempDir()
+		plan := absentGroupCandidates(t, home, "one")[0]
+		request := groupRequests(t, plan)[0]
+		mustMkdir(t, plan.RootPath())
+		called := false
+		_, err := applyGroupWith([]GroupRequest{request}, home, ".cortex-backup", func(string, string, string, []filetxn.Directory, []filetxn.Operation) (filetxn.Snapshot, error) {
+			called = true
+			return filetxn.Snapshot{}, nil
+		})
+		if !errors.Is(err, ErrInvalid) || called {
+			t.Fatalf("ApplyGroup() = (%v, %t)", err, called)
+		}
+	})
+	t.Run("after re-observation", func(t *testing.T) {
+		home := t.TempDir()
+		plan := absentGroupCandidates(t, home, "one")[0]
+		_, err := applyGroupWith(groupRequests(t, plan), home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+			mustMkdir(t, plan.RootPath())
+			return filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directories, operations)
+		})
+		if !errors.Is(err, ErrFailed) {
+			t.Fatalf("ApplyGroup() error = %v", err)
+		}
+		for _, file := range plan.Files() {
+			assertFile(t, file, false)
+		}
+	})
+}
+
 func TestApplyGroupRejectsConflictBeforeMutation(t *testing.T) {
 	home := t.TempDir()
 	plans := groupCandidates(t, home, "one")
@@ -265,11 +365,14 @@ func mustMkdir(t *testing.T, path string) {
 }
 
 func groupCandidates(t *testing.T, home, version string) []installplan.Plan {
-	plans := []installplan.Plan{candidateRuntime(t, home, runtimematrix.RuntimePi, version, "alpha", "beta"), candidateRuntime(t, home, runtimematrix.RuntimeOpenCode, version, "alpha", "beta"), candidateRuntime(t, home, runtimematrix.RuntimeClaudeCode, version, "alpha", "beta")}
+	plans := absentGroupCandidates(t, home, version)
 	for _, plan := range plans {
 		mustMkdir(t, plan.RootPath())
 	}
 	return plans
+}
+func absentGroupCandidates(t *testing.T, home, version string) []installplan.Plan {
+	return []installplan.Plan{candidateRuntime(t, home, runtimematrix.RuntimePi, version, "alpha", "beta"), candidateRuntime(t, home, runtimematrix.RuntimeOpenCode, version, "alpha", "beta"), candidateRuntime(t, home, runtimematrix.RuntimeClaudeCode, version, "alpha", "beta")}
 }
 func groupRequests(t *testing.T, plans ...installplan.Plan) []GroupRequest {
 	requests := make([]GroupRequest, len(plans))

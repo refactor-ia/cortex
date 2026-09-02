@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/refactor-ia/cortex/internal/builtinassets"
 	"github.com/refactor-ia/cortex/internal/catalog"
 )
 
@@ -92,11 +93,19 @@ func TestSourceResolvesOnlyExactPrivateEvidence(t *testing.T) {
 	}
 }
 
-func TestBuiltInSourceAdmitsNoSnapshots(t *testing.T) {
-	source := BuiltInSource()
-	if got := len(source.admissions); got != 0 {
-		t.Fatalf("BuiltInSource() admissions = %d, want 0", got)
+func TestBuiltInSourceResolvesEmbeddedSnapshot(t *testing.T) {
+	snapshot, err := builtinassets.Snapshot()
+	if err != nil {
+		t.Fatal(err)
 	}
+	resolution, err := BuiltInSource().ResolveSnapshot(snapshot)
+	if err != nil || resolution.ID() != "catalog.1.6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88" || resolution.CatalogVersion() != 1 || resolution.Fingerprint() != "6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88" {
+		t.Fatalf("BuiltInSource().ResolveSnapshot() = (%+v, %v)", resolution, err)
+	}
+}
+
+func TestBuiltInSourceRejectsUnboundSnapshots(t *testing.T) {
+	source := BuiltInSource()
 	if _, err := source.resolveEvidence(snapshotEvidence{id: identityFor(1, testFingerprint), catalogVersion: 1, fingerprint: testFingerprint}); err == nil {
 		t.Fatal("BuiltInSource().resolveEvidence() error = nil, want rejection")
 	}

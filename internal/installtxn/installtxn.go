@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
@@ -82,6 +83,14 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 	if !validGroupRequests(requests) {
 		return GroupResult{}, ErrInvalid
 	}
+	current := make([]installobserve.FilesystemObservation, len(requests))
+	for index, request := range requests {
+		observation, err := installobserve.Observe(request.Plan, installobserve.DefaultOptions())
+		if err != nil || !reflect.DeepEqual(request.Observation, observation) {
+			return GroupResult{}, ErrInvalid
+		}
+		current[index] = observation
+	}
 	root, ok := transactionRoot(requests)
 	if !ok {
 		return GroupResult{}, ErrInvalid
@@ -90,12 +99,8 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 	result := GroupResult{runtimeIDs: make([]runtimematrix.RuntimeID, 0, len(requests))}
 	skills, states := make([]filetxn.Operation, 0), make([]filetxn.Operation, 0)
 	directories := make(map[string]filetxn.Directory)
-	for _, request := range requests {
-		current, err := installobserve.Observe(request.Plan, installobserve.DefaultOptions())
-		if err != nil || !reflect.DeepEqual(request.Observation, current) {
-			return GroupResult{}, ErrInvalid
-		}
-		operations, single, err := prepare(request.Plan, current)
+	for index, request := range requests {
+		operations, single, err := prepare(request.Plan, current[index])
 		if err != nil {
 			if errors.Is(err, ErrConflict) {
 				return GroupResult{}, ErrConflict
@@ -104,11 +109,19 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 		}
 		result.runtimeIDs = append(result.runtimeIDs, request.Plan.RuntimeID())
 		result.counts = addCounts(result.counts, single)
-		prefix, err := filepath.Rel(root, request.Plan.RootPath())
-		if err != nil || prefix == "." {
+		prefix, err := rootRelative(root, request.Plan.RootPath())
+		if err != nil {
 			return GroupResult{}, ErrInvalid
 		}
-		prefix = filepath.ToSlash(prefix)
+		if current[index].MatchesAbsentRoot(request.Plan) {
+			created, ok := absentRootDirectories(root, prefix)
+			if !ok {
+				return GroupResult{}, ErrInvalid
+			}
+			for _, directory := range created {
+				mergeDirectory(directories, directory)
+			}
+		}
 		for _, operation := range operations {
 			operation, state, ok := rebaseOperation(operation, prefix)
 			if !ok {
@@ -122,7 +135,7 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 		}
 		for _, directory := range directoriesFor(request.Plan, operations) {
 			directory.Path = path.Join(prefix, directory.Path)
-			directories[directory.Path] = directory
+			mergeDirectory(directories, directory)
 		}
 	}
 	operations := append(skills, states...)
@@ -152,7 +165,8 @@ func validGroupRequests(requests []GroupRequest) bool {
 		plan, observation := request.Plan, request.Observation
 		rank := runtimeRank(plan.RuntimeID())
 		bundle, bound := plan.Bundle()
-		if rank < 0 || rank <= last || !validRoot(plan.RootPath()) || !bound || !observation.MatchesCandidate(plan) || bundle.Manifest().RuntimeID() != plan.RuntimeID() || bundle.Manifest().SnapshotFingerprint() != plan.SnapshotFingerprint() {
+		validObservation := validRoot(plan.RootPath()) && observation.MatchesCandidate(plan) || observation.MatchesAbsentRoot(plan)
+		if rank < 0 || rank <= last || !bound || !validObservation || bundle.Manifest().RuntimeID() != plan.RuntimeID() || bundle.Manifest().SnapshotFingerprint() != plan.SnapshotFingerprint() {
 			return false
 		}
 		if snapshot == "" {
@@ -190,7 +204,7 @@ func containsRoot(root, candidate string) bool {
 
 func transactionRoot(requests []GroupRequest) (string, bool) {
 	volume := filepath.VolumeName(requests[0].Plan.RootPath())
-	root := filepath.Dir(requests[0].Plan.RootPath())
+	root := requests[0].Plan.RootPath()
 	for _, request := range requests {
 		if filepath.VolumeName(request.Plan.RootPath()) != volume {
 			return "", false
@@ -203,10 +217,49 @@ func transactionRoot(requests []GroupRequest) (string, bool) {
 			root = parent
 		}
 	}
-	if !validRoot(root) {
-		return "", false
+	for !validRoot(root) {
+		parent := filepath.Dir(root)
+		if parent == root {
+			return "", false
+		}
+		root = parent
 	}
 	return root, true
+}
+
+func rootRelative(root, target string) (string, error) {
+	prefix, err := filepath.Rel(root, target)
+	if err != nil || prefix == ".." || strings.HasPrefix(prefix, ".."+string(filepath.Separator)) {
+		return "", errors.New("root is not an ancestor")
+	}
+	return filepath.ToSlash(prefix), nil
+}
+func absentRootDirectories(root, prefix string) ([]filetxn.Directory, bool) {
+	if prefix == "." || filepath.IsAbs(prefix) {
+		return nil, false
+	}
+	current, relative, missing := root, "", false
+	directories := make([]filetxn.Directory, 0, depth(prefix))
+	for _, part := range strings.Split(filepath.FromSlash(prefix), string(filepath.Separator)) {
+		current, relative = filepath.Join(current, part), filepath.Join(relative, part)
+		info, err := os.Lstat(current)
+		switch {
+		case err == nil && !missing && info.IsDir() && info.Mode()&os.ModeSymlink == 0:
+			continue
+		case os.IsNotExist(err):
+			missing = true
+			directories = append(directories, filetxn.Directory{Path: filepath.ToSlash(relative), Mode: 0o700, MustCreate: true})
+		default:
+			return nil, false
+		}
+	}
+	return directories, missing
+}
+func mergeDirectory(directories map[string]filetxn.Directory, directory filetxn.Directory) {
+	if previous, found := directories[directory.Path]; found {
+		directory.MustCreate = directory.MustCreate || previous.MustCreate
+	}
+	directories[directory.Path] = directory
 }
 
 func rebaseOperation(operation filetxn.Operation, prefix string) (filetxn.Operation, bool, bool) {

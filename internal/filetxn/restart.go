@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
@@ -125,6 +126,109 @@ func restartBefore(snapshot Snapshot, entry Entry) (After, error) {
 
 func sameRestartEvidence(before, after After) bool {
 	return before.exists == after.exists && before.mode == after.mode && bytes.Equal(before.data, after.data)
+}
+
+type restartStatus string
+
+const (
+	exactBefore         restartStatus = "exact-before"
+	exactAfter          restartStatus = "exact-after"
+	unresolvedDirectory restartStatus = "unresolved-directory"
+)
+
+func classifyRestartLeaves(sourceRoot string, plan restartPlan) (restartPlan, []restartStatus, error) {
+	if validateManifest(plan.snapshot.Manifest) != nil || len(plan.leaves) != len(plan.snapshot.Manifest.Entries) {
+		return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+	}
+	plan = cloneRestartPlan(plan)
+	statuses := make([]restartStatus, len(plan.leaves))
+	for index, leaf := range plan.leaves {
+		status, err := classifyRestartLeaf(sourceRoot, plan.snapshot, leaf)
+		if err != nil {
+			return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+		}
+		statuses[index] = status
+	}
+	return plan, statuses, nil
+}
+
+func cloneRestartPlan(plan restartPlan) restartPlan {
+	clone := restartPlan{snapshot: cloneRestartSnapshot(plan.snapshot), leaves: make([]restartLeaf, len(plan.leaves))}
+	for index, leaf := range plan.leaves {
+		clone.leaves[index] = restartLeaf{
+			before: After{path: leaf.before.path, exists: leaf.before.exists, data: bytes.Clone(leaf.before.data), mode: leaf.before.mode},
+			after:  After{path: leaf.after.path, exists: leaf.after.exists, data: bytes.Clone(leaf.after.data), mode: leaf.after.mode},
+		}
+	}
+	return clone
+}
+
+func classifyRestartLeaf(sourceRoot string, snapshot Snapshot, leaf restartLeaf) (restartStatus, error) {
+	source, err := safepath.Resolve(sourceRoot, leaf.before.Path())
+	if err != nil {
+		if !leaf.before.Exists() && declaredMissingParent(sourceRoot, snapshot, leaf.before.Path()) {
+			return unresolvedDirectory, nil
+		}
+		return "", err
+	}
+	info, err := os.Lstat(source)
+	if os.IsNotExist(err) {
+		return classifyRestartEvidence(leaf, After{path: leaf.before.Path()})
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("restart leaf is unsafe")
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return "", err
+	}
+	observed, err := NewAfter(leaf.before.Path(), true, data, info.Mode().Perm())
+	if err != nil {
+		return "", err
+	}
+	return classifyRestartEvidence(leaf, observed)
+}
+
+func classifyRestartEvidence(leaf restartLeaf, observed After) (restartStatus, error) {
+	if sameRestartEvidence(leaf.before, observed) {
+		return exactBefore, nil
+	}
+	if sameRestartEvidence(leaf.after, observed) {
+		return exactAfter, nil
+	}
+	return "", errors.New("restart leaf drifted")
+}
+
+func declaredMissingParent(sourceRoot string, snapshot Snapshot, leaf string) bool {
+	if snapshot.Manifest.Version != manifestV2 {
+		return false
+	}
+	parts := strings.Split(leaf, "/")
+	prefix := ""
+	for _, component := range parts[:len(parts)-1] {
+		if prefix == "" {
+			prefix = component
+		} else {
+			prefix += "/" + component
+		}
+		candidate, err := safepath.Resolve(sourceRoot, prefix)
+		if err != nil {
+			return false
+		}
+		info, err := os.Lstat(candidate)
+		if os.IsNotExist(err) {
+			for _, directory := range snapshot.Manifest.AbsentDirectories {
+				if directory.Path == prefix {
+					return true
+				}
+			}
+			return false
+		}
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return false
 }
 
 type After struct {

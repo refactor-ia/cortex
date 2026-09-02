@@ -147,6 +147,131 @@ func TestPlanRestartEvidenceCreatesDetachedCanonicalLeaves(t *testing.T) {
 	}
 }
 
+type restartFile struct {
+	path   string
+	exists bool
+	data   string
+	mode   os.FileMode
+}
+
+type restartCase struct {
+	name          string
+	before, after []restartFile
+	current       []restartFile
+	absent        []Directory
+	manualVersion int
+	unsafe        string
+	want          []restartStatus
+	wantErr       bool
+}
+
+func TestClassifyRestartLeaves(t *testing.T) {
+	for _, test := range []restartCase{
+		{"before", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "after", 0o600}}, nil, nil, 0, "", []restartStatus{exactBefore}, false},
+		{"after empty file", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "", 0o640}}, []restartFile{{"file.txt", true, "", 0o640}}, nil, 0, "", []restartStatus{exactAfter}, false},
+		{"mixed", []restartFile{{"keep.txt", true, "before", 0o600}, {"remove.txt", true, "remove", 0o600}}, []restartFile{{"create.txt", true, "create", 0o600}, {"keep.txt", true, "after", 0o600}, {"remove.txt", false, "", 0}}, []restartFile{{"create.txt", true, "create", 0o600}, {"remove.txt", false, "", 0}}, nil, 0, "", []restartStatus{exactAfter, exactBefore, exactAfter}, false},
+		{"bytes drift", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "after", 0o600}}, []restartFile{{"file.txt", true, "drift", 0o600}}, nil, 0, "", nil, true},
+		{"mode drift", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "after", 0o600}}, []restartFile{{"file.txt", true, "before", 0o640}}, nil, 0, "", nil, true},
+		{"symlink leaf", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "after", 0o600}}, nil, nil, 0, "symlink", nil, true},
+		{"nonregular leaf", []restartFile{{"file.txt", true, "before", 0o600}}, []restartFile{{"file.txt", true, "after", 0o600}}, nil, nil, 0, "directory", nil, true},
+		{"missing final leaf", nil, []restartFile{{"file.txt", true, "after", 0o600}}, nil, nil, 0, "", []restartStatus{exactBefore}, false},
+		{"v2 declared first missing parent", nil, []restartFile{{"missing/file.txt", true, "after", 0o600}}, nil, []Directory{{Path: "missing", Mode: 0o700}}, 0, "", []restartStatus{unresolvedDirectory}, false},
+		{"v1 missing parent", []restartFile{{"missing/file.txt", false, "", 0}}, []restartFile{{"missing/file.txt", true, "after", 0o600}}, nil, nil, manifestVersion, "", nil, true},
+		{"undeclared first missing parent", []restartFile{{"missing/file.txt", false, "", 0}}, []restartFile{{"missing/file.txt", true, "after", 0o600}}, nil, []Directory{{Path: "declared", Mode: 0o700}}, manifestV2, "", nil, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			writeRestartFiles(t, root, test.before)
+			plan := classifierPlan(t, root, backups, test)
+			writeRestartFiles(t, root, test.current)
+			if test.unsafe != "" {
+				must(t, os.Remove(filepath.Join(root, "file.txt")))
+				if test.unsafe == "symlink" {
+					must(t, os.Symlink("target", filepath.Join(root, "file.txt")))
+				} else {
+					must(t, os.Mkdir(filepath.Join(root, "file.txt"), 0o700))
+				}
+			}
+			got, statuses, err := classifyRestartLeaves(root, plan)
+			if test.wantErr {
+				if err == nil || len(got.leaves) != 0 || statuses != nil {
+					t.Fatalf("classifyRestartLeaves() = %#v, %#v, %v", got, statuses, err)
+				}
+				return
+			}
+			must(t, err)
+			for index, want := range test.want {
+				if statuses[index] != want {
+					t.Fatalf("status %d = %q, want %q", index, statuses[index], want)
+				}
+			}
+			if len(statuses) != len(test.want) || &got.leaves[0] == &plan.leaves[0] {
+				t.Fatalf("returned plan is not detached: %#v", got)
+			}
+		})
+	}
+}
+
+func classifierPlan(t *testing.T, root, backups string, test restartCase) restartPlan {
+	t.Helper()
+	after := restartAfters(t, test.after)
+	if test.manualVersion != 0 {
+		entries := make([]Entry, len(test.before))
+		for index, file := range test.before {
+			entries[index] = Entry{Path: file.path}
+		}
+		directories := make([]directoryEntry, len(test.absent))
+		for index, directory := range test.absent {
+			directories[index] = directoryEntry{Path: directory.Path, Mode: uint32(directory.Mode)}
+		}
+		plan, err := planRestartEvidence(Snapshot{Manifest: Manifest{Version: test.manualVersion, Entries: entries, AbsentDirectories: directories}}, after)
+		must(t, err)
+		return plan
+	}
+	paths := make([]string, len(test.after))
+	for index, file := range test.after {
+		paths[index] = file.path
+	}
+	var snapshot Snapshot
+	var err error
+	if test.absent == nil {
+		snapshot, err = Capture(root, backups, "backup", paths)
+	} else {
+		snapshot, err = captureWithDirectoryPreimage(root, backups, "backup", paths, test.absent)
+	}
+	must(t, err)
+	plan, err := planRestartEvidence(snapshot, after)
+	must(t, err)
+	return plan
+}
+
+func restartAfters(t *testing.T, files []restartFile) []After {
+	t.Helper()
+	after := make([]After, len(files))
+	for index, file := range files {
+		var data []byte
+		if file.exists {
+			data = []byte(file.data)
+		}
+		after[index], _ = NewAfter(file.path, file.exists, data, file.mode)
+	}
+	return after
+}
+
+func writeRestartFiles(t *testing.T, root string, files []restartFile) {
+	t.Helper()
+	for _, file := range files {
+		path := filepath.Join(root, file.path)
+		if !file.exists {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			continue
+		}
+		writeFile(t, path, []byte(file.data), file.mode)
+	}
+}
+
 func TestPlanRestartEvidenceRejectsMalformedCoverage(t *testing.T) {
 	root, backups := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(root, "file.txt"), []byte("before"), 0o600)

@@ -195,53 +195,58 @@ func isAbsentDescendant(candidate string, directories []directoryEntry) bool {
 
 // Verify reloads and verifies backup payloads; it does not cryptographically authenticate the manifest.
 func Verify(backupRoot, backupName string) error {
+	_, err := reloadAndVerify(backupRoot, backupName)
+	return err
+}
+
+func reloadAndVerify(backupRoot, backupName string) (Snapshot, error) {
 	backupDir, err := safepath.Resolve(backupRoot, backupName)
 	if err != nil {
-		return fmt.Errorf("snapshot backup directory: %w", err)
+		return Snapshot{}, fmt.Errorf("snapshot backup directory: %w", err)
 	}
 	if info, statErr := os.Lstat(backupDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("snapshot backup directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot backup directory is missing or invalid")
 	}
 	payloadDir, resolveErr := safepath.Resolve(backupDir, "payloads")
 	if resolveErr != nil {
-		return fmt.Errorf("snapshot payload directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot payload directory is missing or invalid")
 	}
 	if info, statErr := os.Lstat(payloadDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("snapshot payload directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot payload directory is missing or invalid")
 	}
 	manifest, err := readManifest(backupDir)
 	if err != nil {
-		return err
+		return Snapshot{}, err
 	}
 	seen := make(map[string]struct{}, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		if !validManifestPath(entry.Path) {
-			return fmt.Errorf("snapshot manifest has an invalid path")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has an invalid path")
 		}
 		if _, exists := seen[entry.Path]; exists {
-			return fmt.Errorf("snapshot manifest has duplicate paths")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has duplicate paths")
 		}
 		seen[entry.Path] = struct{}{}
 		if !entry.Exists {
 			if entry.Mode != 0 || entry.SHA256 != "" {
-				return fmt.Errorf("snapshot manifest has invalid absent entry")
+				return Snapshot{}, fmt.Errorf("snapshot manifest has invalid absent entry")
 			}
 			continue
 		}
 		if entry.SHA256 == "" {
-			return fmt.Errorf("snapshot manifest has missing checksum")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has missing checksum")
 		}
 		payload := backupPayloadPath(backupDir, entry.Path)
 		info, statErr := os.Lstat(payload)
 		if statErr != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("snapshot payload is missing or invalid: %s", entry.Path)
+			return Snapshot{}, fmt.Errorf("snapshot payload is missing or invalid: %s", entry.Path)
 		}
 		digest, hashErr := digestFile(payload)
 		if hashErr != nil || digest != entry.SHA256 {
-			return fmt.Errorf("snapshot payload checksum mismatch: %s", entry.Path)
+			return Snapshot{}, fmt.Errorf("snapshot payload checksum mismatch: %s", entry.Path)
 		}
 	}
-	return nil
+	return Snapshot{Dir: backupDir, Manifest: manifest}, nil
 }
 
 func validManifestPath(path string) bool {

@@ -90,6 +90,75 @@ func TestObserveTreatsMissingCanonicalStateAsNeutral(t *testing.T) {
 	}
 }
 
+func TestObserveAbsentRootReturnsBoundAllAbsentObservation(t *testing.T) {
+	candidate, _ := makeCandidate(t, "one", "alpha")
+	observed, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []installobserve.SlotObservation{{LogicalID: "skills/alpha"}}
+	if observed.PriorState() != nil || !observed.MatchesCandidate(candidate) || !observed.MatchesAbsentRoot(candidate) || !reflect.DeepEqual(observed.Slots(), want) {
+		t.Fatalf("Observe() = %#v", observed)
+	}
+	for _, id := range []string{"skills/alpha", "state/install-state"} {
+		if _, found := observed.Exact(id); found {
+			t.Fatalf("absent root retained exact evidence for %q", id)
+		}
+	}
+	other, _ := makeCandidate(t, "two", "alpha")
+	if observed.MatchesAbsentRoot(installplan.Plan{}) || observed.MatchesAbsentRoot(other) {
+		t.Fatal("MatchesAbsentRoot() accepted a different candidate")
+	}
+}
+
+func TestObserveExistingEmptyRootDoesNotQualifyAsAbsentRoot(t *testing.T) {
+	candidate, _ := makeCandidate(t, "one", "alpha")
+	absent, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(candidate.RootPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing.PriorState() != nil || existing.MatchesAbsentRoot(candidate) || reflect.DeepEqual(absent, existing) {
+		t.Fatalf("existing empty root observation = %#v", existing)
+	}
+}
+
+func TestObserveRejectsAbsentRootWithUnsafeImmediateAncestor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{"symlink ancestor", func(t *testing.T, path string) {
+			if err := os.Symlink(t.TempDir(), path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"non-directory ancestor", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, _ := makeCandidate(t, "one", "alpha")
+			parent := filepath.Dir(candidate.RootPath())
+			if _, err := os.Lstat(parent); !os.IsNotExist(err) {
+				t.Fatalf("candidate parent %q must be absent: %v", parent, err)
+			}
+			tc.setup(t, parent)
+			if _, err := installobserve.Observe(candidate, installobserve.DefaultOptions()); err == nil {
+				t.Fatal("Observe() accepted unsafe immediate ancestor")
+			}
+		})
+	}
+}
+
 func TestFilesystemObservationMatchesOnlyItsExactCandidate(t *testing.T) {
 	candidate, _ := makeCandidate(t, "one", "alpha")
 	writeCandidateFiles(t, candidate)

@@ -52,10 +52,13 @@ type source struct {
 	admissions []admission
 }
 
-var builtInAdmissions = []admission{}
+var builtInAdmissions = []admission{{
+	id:             "catalog.1.6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88",
+	catalogVersion: 1,
+	fingerprint:    "6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88",
+}}
 
-// BuiltInSource returns Cortex's compiled release catalog policy. No catalog
-// evidence has been approved yet, so no release snapshots are admitted.
+// BuiltInSource returns Cortex's compiled release catalog policy.
 func BuiltInSource() source {
 	builtInSource, err := newSource(builtInAdmissions)
 	if err != nil {

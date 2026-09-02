@@ -95,6 +95,33 @@ EXPECTED_FILES = {
         "internal/releasecatalog/source.go",
         "internal/releasecatalog/source_test.go",
         "internal/releasecatalog/source_external_test.go",
+        "internal/builtinassets/assets.go",
+        "internal/builtinassets/assets_test.go",
+        "internal/builtinassets/catalog/catalog.json",
+        "internal/builtinassets/catalog/capabilities/catalog-marker.json",
+        "internal/builtinassets/catalog/families/documentation.json",
+        "internal/builtinassets/catalog/families/execution.json",
+        "internal/builtinassets/catalog/families/memory-integration.json",
+        "internal/builtinassets/catalog/families/mobile.json",
+        "internal/builtinassets/catalog/families/model-intelligence.json",
+        "internal/builtinassets/catalog/families/pcsoft.json",
+        "internal/builtinassets/catalog/families/personal.json",
+        "internal/builtinassets/catalog/families/quality-assurance.json",
+        "internal/builtinassets/catalog/families/reasoning.json",
+        "internal/builtinassets/catalog/families/services.json",
+        "internal/builtinassets/catalog/families/web.json",
+        "internal/builtinassets/catalog/routers/documentation.md",
+        "internal/builtinassets/catalog/routers/execution.md",
+        "internal/builtinassets/catalog/routers/memory-integration.md",
+        "internal/builtinassets/catalog/routers/mobile.md",
+        "internal/builtinassets/catalog/routers/model-intelligence.md",
+        "internal/builtinassets/catalog/routers/pcsoft.md",
+        "internal/builtinassets/catalog/routers/personal.md",
+        "internal/builtinassets/catalog/routers/quality-assurance.md",
+        "internal/builtinassets/catalog/routers/reasoning.md",
+        "internal/builtinassets/catalog/routers/services.md",
+        "internal/builtinassets/catalog/routers/web.md",
+        "internal/builtinassets/catalog/sources/catalog-marker.md",
         "internal/catalog/load_test.go",
         "internal/cli/doctor.go",
         "internal/cli/doctor_test.go",
@@ -184,8 +211,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 133)
-                self.assertEqual(len(actual_files), 133)
+                self.assertEqual(len(EXPECTED_FILES), 160)
+                self.assertEqual(len(actual_files), 160)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

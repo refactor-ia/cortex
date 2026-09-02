@@ -384,13 +384,100 @@ func write(t *testing.T, root, path, value string) {
 	must(t, os.WriteFile(target, []byte(value), 0o600))
 }
 
+func TestTransactionIDParse(t *testing.T) {
+	const valid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct {
+		name  string
+		raw   string
+		valid bool
+	}{
+		{"canonical", valid, true},
+		{"zero", "0000000000000000000000000000000000000000000000000000000000000000", false},
+		{"uppercase", "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef", false},
+		{"short", valid[:63], false},
+		{"non-hex", valid[:63] + "g", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := ParseTransactionID(tc.raw)
+			want := ""
+			if tc.valid {
+				want = tc.raw
+			}
+			if (err == nil) != tc.valid || id.Valid() != tc.valid || id.String() != want {
+				t.Fatalf("ParseTransactionID(%q) = (%q, %v), valid = %t", tc.raw, id.String(), err, id.Valid())
+			}
+		})
+	}
+}
+
+func TestTransactionIDBindsCandidateAndSnapshot(t *testing.T) {
+	home := physicalTempDir(t)
+	candidate := actorAwareCandidateWith(t, home, "000102030405060708090a0b0c0d0e0f")
+	mustMkdir(t, candidate.RootPath())
+	snapshot := filetxn.Snapshot{Manifest: filetxn.Manifest{Version: 2, Entries: []filetxn.Entry{{Path: "agents/cortex-test.md", Exists: true, Mode: 0o600, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}}
+	baseline, err := transactionID(candidate, snapshot)
+	must(t, err)
+	if same, sameErr := transactionID(candidate, snapshot); sameErr != nil || same != baseline {
+		t.Fatalf("same transaction ID = (%q, %v), want %q", same.String(), sameErr, baseline.String())
+	}
+	changedManifest := snapshot
+	changedManifest.Manifest.Entries = append([]filetxn.Entry(nil), snapshot.Manifest.Entries...)
+	changedManifest.Manifest.Entries[0].Mode = 0o644
+	for _, tc := range []struct {
+		name      string
+		candidate installplan.Plan
+		snapshot  filetxn.Snapshot
+	}{
+		{"root", func() installplan.Plan {
+			candidate := actorAwareCandidate(t)
+			mustMkdir(t, candidate.RootPath())
+			return candidate
+		}(), snapshot},
+		{"candidate state", actorAwareCandidateWith(t, home, "111102030405060708090a0b0c0d0e0f"), snapshot},
+		{"before manifest", candidate, changedManifest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, computeErr := transactionID(tc.candidate, tc.snapshot)
+			if computeErr == nil && got == baseline {
+				t.Fatalf("transaction ID did not bind %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestResultDoesNotEncodePathsOrContent(t *testing.T) {
+	result := Result{actions: []Action{{LogicalID: "skill/example", Action: ownership.Create}}, transactionID: TransactionID{value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+	for index := 0; index < reflect.TypeOf(result).NumField(); index++ {
+		if reflect.TypeOf(result).Field(index).PkgPath == "" {
+			t.Fatalf("Result exposes field %q", reflect.TypeOf(result).Field(index).Name)
+		}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || string(encoded) != "{}" {
+		t.Fatalf("json.Marshal(Result) = (%s, %v)", encoded, err)
+	}
+}
+
+func TestTransactionIDRejectsSymlinkedCandidateRoot(t *testing.T) {
+	realHome, linkParent := physicalTempDir(t), physicalTempDir(t)
+	linkedHome := filepath.Join(linkParent, "home")
+	must(t, os.Symlink(realHome, linkedHome))
+	candidate := actorAwareCandidateWith(t, linkedHome, "000102030405060708090a0b0c0d0e0f")
+	mustMkdir(t, candidate.RootPath())
+
+	_, err := transactionID(candidate, filetxn.Snapshot{Manifest: filetxn.Manifest{Version: 2}})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("transactionID() error = %v", err)
+	}
+}
+
 func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
 	candidate := actorAwareCandidate(t)
 	mustMkdir(t, candidate.RootPath())
 	cwd := physicalTempDir(t)
 	var trace []string
 
-	result, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+	result, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 		for _, operation := range operations {
 			switch {
 			case operation.Create != nil:
@@ -401,9 +488,12 @@ func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
 				trace = append(trace, operation.Remove.Path)
 			}
 		}
-		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, verify)
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, verify, func(snapshot filetxn.Snapshot) error {
+			trace = append(trace, "finalize")
+			return finalize(snapshot)
+		})
 	})
-	if err != nil || len(result.Actions()) != len(candidate.Files()) {
+	if err != nil || len(result.Actions()) != len(candidate.Files()) || !result.TransactionID().Valid() {
 		t.Fatalf("ApplyVerified() = (%#v, %v)", result, err)
 	}
 	for _, file := range candidate.Files() {
@@ -420,7 +510,7 @@ func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
 			}
 		}
 	}
-	expected = append(expected, ".cortex/install-state.json")
+	expected = append(expected, ".cortex/install-state.json", "finalize")
 	if !reflect.DeepEqual(trace, expected) {
 		t.Fatalf("transaction trace = %v, want %v", trace, expected)
 	}
@@ -440,6 +530,10 @@ func TestApplyVerifiedMaterializesActorAwareCandidateStateLast(t *testing.T) {
 	if shadowErr != nil || !shadows.Clean() {
 		t.Fatalf("final shadows = (%#v, %v)", shadows, shadowErr)
 	}
+	noOp, noOpErr := ApplyVerified(candidate, cwd, t.TempDir(), "snapshot-noop")
+	if noOpErr != nil || noOp.TransactionID().Valid() {
+		t.Fatalf("no-op ApplyVerified() = (%#v, %v)", noOp, noOpErr)
+	}
 }
 
 func TestApplyVerifiedRestoresV1OriginOnFinalVerificationFailure(t *testing.T) {
@@ -448,8 +542,8 @@ func TestApplyVerifiedRestoresV1OriginOnFinalVerificationFailure(t *testing.T) {
 	cwd := physicalTempDir(t)
 	oldState, oldSkills := writeV1Origin(t, candidate)
 
-	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
-		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, func() error {
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, func() error {
 			for _, file := range candidate.Files() {
 				data, readErr := os.ReadFile(file.AbsolutePath())
 				if readErr != nil || !bytes.Equal(data, file.Content()) || mode(t, file.AbsolutePath()) != file.DesiredMode() {
@@ -460,7 +554,7 @@ func TestApplyVerifiedRestoresV1OriginOnFinalVerificationFailure(t *testing.T) {
 				return verifyErr
 			}
 			return errors.New("injected final verification failure")
-		})
+		}, finalize)
 	})
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("ApplyVerified() error = %v", err)
@@ -513,11 +607,11 @@ func TestApplyVerifiedRollsBackFinalReadbackFailure(t *testing.T) {
 	cwd := physicalTempDir(t)
 	state := candidate.Files()[len(candidate.Files())-1]
 
-	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
-		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, func() error {
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, func() error {
 			must(t, os.WriteFile(state.AbsolutePath(), []byte("drift"), state.DesiredMode()))
 			return verify()
-		})
+		}, finalize)
 	})
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("ApplyVerified() error = %v", err)
@@ -532,6 +626,10 @@ func TestApplyVerifiedRollsBackFinalReadbackFailure(t *testing.T) {
 }
 
 func actorAwareCandidate(t *testing.T) installplan.Plan {
+	return actorAwareCandidateWith(t, physicalTempDir(t), "000102030405060708090a0b0c0d0e0f")
+}
+
+func actorAwareCandidateWith(t *testing.T, home, installationID string) installplan.Plan {
 	t.Helper()
 	root := filepath.Join("..", "..", "catalog")
 	snapshot, err := catalog.BuildCatalogSnapshot(root, "catalog.json", catalog.AdmissionPolicy{})
@@ -560,7 +658,7 @@ func actorAwareCandidate(t *testing.T) installplan.Plan {
 	}
 	destinations, err := skilldest.Build(binding)
 	must(t, err)
-	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: physicalTempDir(t)})
+	resolved, err := skillroot.Resolve(destinations, skillroot.Inputs{Home: home})
 	must(t, err)
 	skills, err := installplan.BuildWithBundle(resolved, bundle)
 	must(t, err)
@@ -572,7 +670,7 @@ func actorAwareCandidate(t *testing.T) installplan.Plan {
 	must(t, err)
 	actorBinding, err := qaactor.Bind(actors)
 	must(t, err)
-	candidate, err := installplan.BuildActorAware(skills, actorBinding, "000102030405060708090a0b0c0d0e0f")
+	candidate, err := installplan.BuildActorAware(skills, actorBinding, installstate.InstallationID(installationID))
 	must(t, err)
 	return candidate
 }
@@ -625,10 +723,10 @@ func TestApplyVerifiedRejectsPreTransactionAssetRace(t *testing.T) {
 	cwd := physicalTempDir(t)
 	asset := candidate.Files()[0]
 
-	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error) (filetxn.Snapshot, error) {
+	_, err := applyVerifiedWith(candidate, cwd, t.TempDir(), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 		mustMkdir(t, filepath.Dir(asset.AbsolutePath()))
 		must(t, os.WriteFile(asset.AbsolutePath(), []byte("raced"), asset.DesiredMode()))
-		return filetxn.ApplyOperationsWithDirectoriesAndVerify(root, backupRoot, backupName, directories, operations, verify)
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, verify, finalize)
 	})
 	if !errors.Is(err, ErrFailed) {
 		t.Fatalf("ApplyVerified() error = %v", err)

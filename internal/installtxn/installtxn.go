@@ -2,6 +2,10 @@
 package installtxn
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -30,18 +34,90 @@ type Action struct {
 	Action    ownership.Action
 }
 
+// TransactionID is an opaque deterministic identity for one accepted transaction.
+type TransactionID struct{ value string }
+
+// ParseTransactionID accepts exactly one non-zero lowercase SHA-256 value.
+func ParseTransactionID(value string) (TransactionID, error) {
+	if len(value) != sha256.Size*2 {
+		return TransactionID{}, ErrInvalid
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return TransactionID{}, ErrInvalid
+	}
+	for _, byteValue := range decoded {
+		if byteValue != 0 {
+			return TransactionID{value: value}, nil
+		}
+	}
+	return TransactionID{}, ErrInvalid
+}
+
+// Valid reports whether the value is a canonical non-zero transaction identity.
+func (id TransactionID) Valid() bool {
+	_, err := ParseTransactionID(id.value)
+	return err == nil
+}
+
+// String returns the canonical transaction identity or an empty string for zero.
+func (id TransactionID) String() string { return id.value }
+
 // Result contains detached neutral evidence and never includes filesystem paths.
-type Result struct{ actions []Action }
+type Result struct {
+	actions       []Action
+	transactionID TransactionID
+}
 
 // Actions returns the canonical logical artifact actions.
 func (result Result) Actions() []Action { return append([]Action(nil), result.actions...) }
 
-type applyVerifiedTransaction func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error) (filetxn.Snapshot, error)
+// TransactionID returns the opaque identity assigned after final readback.
+func (result Result) TransactionID() TransactionID { return result.transactionID }
+
+func transactionID(candidate installplan.Plan, snapshot filetxn.Snapshot) (TransactionID, error) {
+	root, err := filepath.EvalSymlinks(candidate.RootPath())
+	if err != nil || root != candidate.RootPath() {
+		return TransactionID{}, ErrInvalid
+	}
+	manifest, err := json.Marshal(snapshot.Manifest)
+	if err != nil {
+		return TransactionID{}, ErrInvalid
+	}
+	hash := sha256.New()
+	writeTransactionFrame(hash, []byte("cortex.installtxn.transaction-id.v1"))
+	writeTransactionFrame(hash, []byte(root))
+	writeTransactionFrame(hash, candidate.StateJSON())
+	for _, file := range candidate.Files() {
+		writeTransactionFrame(hash, []byte(file.Role()))
+		writeTransactionFrame(hash, []byte(file.LogicalID()))
+		writeTransactionFrame(hash, []byte(file.RelativePath()))
+		writeTransactionUint64(hash, uint64(file.DesiredMode()))
+		writeTransactionFrame(hash, []byte(file.SHA256()))
+	}
+	writeTransactionFrame(hash, manifest)
+	return ParseTransactionID(hex.EncodeToString(hash.Sum(nil)))
+}
+
+func writeTransactionUint64(hash interface{ Write([]byte) (int, error) }, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	writeTransactionFrame(hash, encoded[:])
+}
+
+func writeTransactionFrame(hash interface{ Write([]byte) (int, error) }, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write(value)
+}
+
+type applyVerifiedTransaction func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error, func(filetxn.Snapshot) error) (filetxn.Snapshot, error)
 
 // ApplyVerified materializes an actor-aware candidate only after a fresh
 // ownership and shadow preflight. It accepts state only after final readback.
 func ApplyVerified(candidate installplan.Plan, cwd, backupRoot, backupName string) (Result, error) {
-	return applyVerifiedWith(candidate, cwd, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndVerify)
+	return applyVerifiedWith(candidate, cwd, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndFinalize)
 }
 
 func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName string, apply applyVerifiedTransaction) (Result, error) {
@@ -71,9 +147,19 @@ func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName s
 		}
 		return result, nil
 	}
-	if _, err := apply(candidate.RootPath(), backupRoot, backupName, directoriesFor(candidate, operations), operations, verify); err != nil {
+	var id TransactionID
+	finalize := func(snapshot filetxn.Snapshot) error {
+		computed, err := transactionID(candidate, snapshot)
+		if err != nil {
+			return err
+		}
+		id = computed
+		return nil
+	}
+	if _, err := apply(candidate.RootPath(), backupRoot, backupName, directoriesFor(candidate, operations), operations, verify, finalize); err != nil || !id.Valid() {
 		return Result{}, ErrFailed
 	}
+	result.transactionID = id
 	return result, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -270,6 +271,110 @@ func writeRestartFiles(t *testing.T, root string, files []restartFile) {
 		}
 		writeFile(t, path, []byte(file.data), file.mode)
 	}
+}
+
+func TestClassifyRestartDirectories(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		version int
+		paths   []string
+		change  func(t *testing.T, root string)
+		want    []restartStatus
+		wantErr bool
+	}{
+		{"v3 all before", manifestV3, []string{"made"}, func(t *testing.T, root string) { must(t, os.Remove(filepath.Join(root, "made"))) }, []restartStatus{exactBefore}, false},
+		{"v3 all after", manifestV3, []string{"made"}, nil, []restartStatus{exactAfter}, false},
+		{"v3 parent after child before", manifestV3, []string{"made", "made/child"}, func(t *testing.T, root string) { must(t, os.Remove(filepath.Join(root, "made", "child"))) }, []restartStatus{exactAfter, exactBefore}, false},
+		{"v3 identity drift", manifestV3, []string{"made"}, func(t *testing.T, root string) {
+			must(t, os.Remove(filepath.Join(root, "made")))
+			must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+		}, nil, true},
+		{"v3 mode drift", manifestV3, []string{"made"}, func(t *testing.T, root string) { must(t, os.Chmod(filepath.Join(root, "made"), 0o755)) }, nil, true},
+		{"v3 wrong type", manifestV3, []string{"made"}, func(t *testing.T, root string) {
+			must(t, os.Remove(filepath.Join(root, "made")))
+			writeFile(t, filepath.Join(root, "made"), []byte("file"), 0o600)
+		}, nil, true},
+		{"v3 symlink", manifestV3, []string{"made"}, func(t *testing.T, root string) {
+			must(t, os.Remove(filepath.Join(root, "made")))
+			must(t, os.Symlink("target", filepath.Join(root, "made")))
+		}, nil, true},
+		{"v2 all absent", manifestV2, []string{"made"}, nil, []restartStatus{exactBefore}, false},
+		{"v2 present rejects", manifestV2, []string{"made"}, func(t *testing.T, root string) { must(t, os.Mkdir(filepath.Join(root, "made"), 0o700)) }, nil, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			plan := restartDirectoryPlan(t, root, test.version, test.paths)
+			if test.change != nil {
+				test.change(t, root)
+			}
+			got, _, err := classifyRestart(root, plan)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("classifyRestart() error = %v", err)
+			}
+			if test.wantErr {
+				return
+			}
+			for index, want := range test.want {
+				if got.directories[index].status != want {
+					t.Fatalf("directory status %d = %q, want %q", index, got.directories[index].status, want)
+				}
+			}
+		})
+	}
+}
+
+func TestClassifyRestartResolvesLeavesOnlyFromBeforeDirectories(t *testing.T) {
+	root := t.TempDir()
+	snapshot := Snapshot{Manifest: Manifest{
+		Version:             manifestV3,
+		Entries:             []Entry{{Path: "made/file.txt"}},
+		AbsentDirectories:   []directoryEntry{{Path: "made", Mode: 0o700}},
+		AcceptedDirectories: []AcceptedDirectory{{Path: "made", Inode: 1, Mode: 0o700}},
+	}}
+	after, err := NewAfter("made/file.txt", true, []byte("after"), 0o600)
+	must(t, err)
+	plan, err := planRestartEvidence(snapshot, []After{after})
+	must(t, err)
+	got, statuses, err := classifyRestart(root, plan)
+	must(t, err)
+	if statuses[0] != exactBefore || got.directories[0].status != exactBefore {
+		t.Fatalf("classification = %#v, %#v", statuses, got.directories)
+	}
+}
+
+func TestCloneRestartSnapshotClonesAcceptedDirectories(t *testing.T) {
+	snapshot := Snapshot{Manifest: Manifest{AcceptedDirectories: []AcceptedDirectory{{Path: "made", Device: 1, Inode: 2, Mode: 0o700}}}}
+	clone := cloneRestartSnapshot(snapshot)
+	snapshot.Manifest.AcceptedDirectories[0].Inode = 3
+	if clone.Manifest.AcceptedDirectories[0].Inode != 2 {
+		t.Fatalf("accepted directories were aliased: %#v", clone.Manifest.AcceptedDirectories)
+	}
+}
+
+func restartDirectoryPlan(t *testing.T, root string, version int, paths []string) restartPlan {
+	t.Helper()
+	absent := make([]directoryEntry, len(paths))
+	var accepted []AcceptedDirectory
+	if version == manifestV3 {
+		accepted = make([]AcceptedDirectory, len(paths))
+	}
+	for index, value := range paths {
+		absent[index] = directoryEntry{Path: value, Mode: 0o700}
+		if version != manifestV3 {
+			continue
+		}
+		must(t, os.Mkdir(filepath.Join(root, value), 0o700))
+		info, err := os.Lstat(filepath.Join(root, value))
+		must(t, err)
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino == 0 {
+			t.Fatal("directory identity is unavailable")
+		}
+		accepted[index] = AcceptedDirectory{Path: value, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+	}
+	plan, err := planRestartEvidence(Snapshot{Manifest: Manifest{Version: version, AbsentDirectories: absent, AcceptedDirectories: accepted}}, nil)
+	must(t, err)
+	return plan
 }
 
 func TestPlanRestartEvidenceRejectsMalformedCoverage(t *testing.T) {

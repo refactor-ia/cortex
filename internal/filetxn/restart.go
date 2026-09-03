@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
@@ -63,9 +64,16 @@ type restartLeaf struct {
 	after  After
 }
 
+type restartDirectory struct {
+	before directoryEntry
+	after  AcceptedDirectory
+	status restartStatus
+}
+
 type restartPlan struct {
-	snapshot Snapshot
-	leaves   []restartLeaf
+	snapshot    Snapshot
+	leaves      []restartLeaf
+	directories []restartDirectory
 }
 
 func planRestartEvidence(snapshot Snapshot, after []After) (restartPlan, error) {
@@ -103,14 +111,27 @@ func planRestartEvidence(snapshot Snapshot, after []After) (restartPlan, error) 
 		}
 		leaves[index] = restartLeaf{before: before, after: ordered[index]}
 	}
-	return restartPlan{snapshot: snapshot, leaves: leaves}, nil
+	directories := restartDirectories(snapshot.Manifest)
+	return restartPlan{snapshot: snapshot, leaves: leaves, directories: directories}, nil
 }
 
 func cloneRestartSnapshot(snapshot Snapshot) Snapshot {
 	manifest := snapshot.Manifest
 	manifest.Entries = append([]Entry{}, snapshot.Manifest.Entries...)
 	manifest.AbsentDirectories = append([]directoryEntry{}, snapshot.Manifest.AbsentDirectories...)
+	manifest.AcceptedDirectories = append([]AcceptedDirectory{}, snapshot.Manifest.AcceptedDirectories...)
 	return Snapshot{Dir: snapshot.Dir, Manifest: manifest}
+}
+
+func restartDirectories(manifest Manifest) []restartDirectory {
+	directories := make([]restartDirectory, len(manifest.AbsentDirectories))
+	for index, before := range manifest.AbsentDirectories {
+		directories[index].before = before
+		if manifest.Version == manifestV3 {
+			directories[index].after = manifest.AcceptedDirectories[index]
+		}
+	}
+	return directories
 }
 
 func restartBefore(snapshot Snapshot, entry Entry) (After, error) {
@@ -153,7 +174,11 @@ func classifyRestartLeaves(sourceRoot string, plan restartPlan) (restartPlan, []
 }
 
 func cloneRestartPlan(plan restartPlan) restartPlan {
-	clone := restartPlan{snapshot: cloneRestartSnapshot(plan.snapshot), leaves: make([]restartLeaf, len(plan.leaves))}
+	clone := restartPlan{
+		snapshot:    cloneRestartSnapshot(plan.snapshot),
+		leaves:      make([]restartLeaf, len(plan.leaves)),
+		directories: append([]restartDirectory{}, plan.directories...),
+	}
 	for index, leaf := range plan.leaves {
 		clone.leaves[index] = restartLeaf{
 			before: After{path: leaf.before.path, exists: leaf.before.exists, data: bytes.Clone(leaf.before.data), mode: leaf.before.mode},
@@ -199,8 +224,86 @@ func classifyRestartEvidence(leaf restartLeaf, observed After) (restartStatus, e
 	return "", errors.New("restart leaf drifted")
 }
 
+func classifyRestart(sourceRoot string, plan restartPlan) (restartPlan, []restartStatus, error) {
+	classified, statuses, err := classifyRestartLeaves(sourceRoot, plan)
+	if err != nil {
+		return restartPlan{}, nil, err
+	}
+	classified, err = classifyRestartDirectories(sourceRoot, classified)
+	if err != nil {
+		return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+	}
+	for index, status := range statuses {
+		if status != unresolvedDirectory {
+			continue
+		}
+		for _, directory := range classified.directories {
+			if strings.HasPrefix(classified.leaves[index].before.Path(), directory.before.Path+"/") && directory.status == exactBefore {
+				statuses[index] = exactBefore
+				break
+			}
+		}
+		if statuses[index] == unresolvedDirectory {
+			return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+		}
+	}
+	return classified, statuses, nil
+}
+
+func classifyRestartDirectories(sourceRoot string, plan restartPlan) (restartPlan, error) {
+	if validateManifest(plan.snapshot.Manifest) != nil || !validRestartDirectories(plan) {
+		return restartPlan{}, errors.New("restart directory evidence is invalid")
+	}
+	plan = cloneRestartPlan(plan)
+	for index := range plan.directories {
+		directory := &plan.directories[index]
+		for parent := 0; parent < index; parent++ {
+			if strings.HasPrefix(directory.before.Path, plan.directories[parent].before.Path+"/") && plan.directories[parent].status == exactBefore {
+				directory.status = exactBefore
+				break
+			}
+		}
+		if directory.status == exactBefore {
+			continue
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return restartPlan{}, err
+		}
+		info, err := os.Lstat(target)
+		if os.IsNotExist(err) {
+			directory.status = exactBefore
+			continue
+		}
+		if err != nil || !isRealDirectory(info) || plan.snapshot.Manifest.Version == manifestV2 {
+			return restartPlan{}, errors.New("restart directory is unsafe")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino == 0 || uint64(stat.Dev) != directory.after.Device || uint64(stat.Ino) != directory.after.Inode || uint32(info.Mode().Perm()) != directory.after.Mode {
+			return restartPlan{}, errors.New("restart directory drifted")
+		}
+		directory.status = exactAfter
+	}
+	return plan, nil
+}
+
+func validRestartDirectories(plan restartPlan) bool {
+	if len(plan.directories) != len(plan.snapshot.Manifest.AbsentDirectories) {
+		return false
+	}
+	for index, directory := range plan.directories {
+		if directory.before != plan.snapshot.Manifest.AbsentDirectories[index] {
+			return false
+		}
+		if plan.snapshot.Manifest.Version == manifestV3 && directory.after != plan.snapshot.Manifest.AcceptedDirectories[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func declaredMissingParent(sourceRoot string, snapshot Snapshot, leaf string) bool {
-	if snapshot.Manifest.Version != manifestV2 {
+	if snapshot.Manifest.Version != manifestV2 && snapshot.Manifest.Version != manifestV3 {
 		return false
 	}
 	parts := strings.Split(leaf, "/")

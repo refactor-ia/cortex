@@ -129,6 +129,7 @@ EXPECTED_FILES = {
         "internal/cli/install.go",
         "internal/cli/install_test.go",
         "internal/cli/pi_real_smoke_test.go",
+        "internal/cli/opencode_real_smoke_test.go",
         "internal/cli/uninstall_test.go",
         "internal/lifecycleharness/install_update_parity_test.go",
         "internal/lifecycleharness/uninstall_parity_test.go",

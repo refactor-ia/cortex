@@ -320,6 +320,68 @@ func writeManifest(backupDir string, manifest Manifest) error {
 	return nil
 }
 
+func rewriteManifestStrict(backupDir string, manifest Manifest) (resultErr error) {
+	if err := validateManifest(manifest); err != nil {
+		return fmt.Errorf("strict snapshot manifest is invalid: %w", err)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode strict snapshot manifest: %w", err)
+	}
+	temporary := filepath.Join(backupDir, ".manifest.json.strict.tmp")
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create strict snapshot manifest: %w", err)
+	}
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = file.Close()
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("protect strict snapshot manifest: %w", err)
+	}
+	data = append(data, '\n')
+	for len(data) > 0 {
+		written, err := file.Write(data)
+		if err != nil {
+			return fmt.Errorf("write strict snapshot manifest: %w", err)
+		}
+		if written == 0 {
+			return fmt.Errorf("write strict snapshot manifest: short write")
+		}
+		data = data[written:]
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync strict snapshot manifest: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close strict snapshot manifest: %w", err)
+	}
+	if err := os.Rename(temporary, filepath.Join(backupDir, manifestName)); err != nil {
+		return fmt.Errorf("store strict snapshot manifest: %w", err)
+	}
+	renamed = true
+	if err := syncDirectoryStrict(backupDir); err != nil {
+		return fmt.Errorf("sync strict snapshot directory: %w", err)
+	}
+	return nil
+}
+
+func syncDirectoryStrict(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
+}
+
 func readManifest(backupDir string) (Manifest, error) {
 	if info, err := os.Lstat(filepath.Join(backupDir, manifestName)); err != nil || !info.Mode().IsRegular() {
 		return Manifest{}, fmt.Errorf("snapshot manifest is missing or invalid")

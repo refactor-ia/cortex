@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -206,5 +207,91 @@ func TestApplyOperationsWithDirectoriesFinalVerificationRollbackPreservesReplace
 				t.Fatalf("replacement = %t, directory error = %v", replacement, statErr)
 			}
 		})
+	}
+}
+
+func TestApplyOperationsWithDirectoriesFinalizerReceivesAcceptedDirectories(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	var finalized Snapshot
+	_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+		[]Directory{{Path: "z-dir", Mode: 0o710}, {Path: "a-dir", Mode: 0o750}},
+		[]Operation{{Create: &Create{Path: "a-dir/file", Data: []byte("a"), Mode: 0o600}}, {Create: &Create{Path: "z-dir/file", Data: []byte("z"), Mode: 0o600}}},
+		func() error { return nil },
+		func(snapshot Snapshot) error { finalized = snapshot; return nil },
+	)
+	must(t, err)
+	if finalized.Manifest.Version != manifestV3 || len(finalized.Manifest.AcceptedDirectories) != 2 {
+		t.Fatalf("finalized manifest = %#v", finalized.Manifest)
+	}
+	for index, want := range []Directory{{Path: "a-dir", Mode: 0o750}, {Path: "z-dir", Mode: 0o710}} {
+		got := finalized.Manifest.AcceptedDirectories[index]
+		if got.Path != want.Path || got.Mode != uint32(want.Mode) || got.Inode == 0 {
+			t.Fatalf("accepted directory %d = %#v", index, got)
+		}
+	}
+}
+
+func TestApplyOperationsWithDirectoriesRejectsPostVerificationDirectoryDrift(t *testing.T) {
+	for _, drift := range []string{"replacement", "mode"} {
+		t.Run(drift, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			finalized := false
+			_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+				[]Directory{{Path: "owned", Mode: 0o700}, {Path: "owned/child", Mode: 0o700}},
+				[]Operation{{Create: &Create{Path: "outside", Data: []byte("new"), Mode: 0o600}}},
+				func() error {
+					if drift == "replacement" {
+						must(t, os.Remove(filepath.Join(root, "owned", "child")))
+						must(t, os.Remove(filepath.Join(root, "owned")))
+						return os.Mkdir(filepath.Join(root, "owned"), 0o700)
+					}
+					return os.Chmod(filepath.Join(root, "owned"), 0o755)
+				},
+				func(Snapshot) error { finalized = true; return nil },
+			)
+			if err == nil || finalized || !strings.Contains(err.Error(), "accepted directory") || !strings.Contains(err.Error(), "caller intervention required") {
+				t.Fatalf("error = %v, finalized = %t", err, finalized)
+			}
+			if _, statErr := os.Lstat(filepath.Join(root, "outside")); !os.IsNotExist(statErr) {
+				t.Fatalf("operation remains: %v", statErr)
+			}
+			if info, statErr := os.Lstat(filepath.Join(root, "owned")); statErr != nil || !isRealDirectory(info) {
+				t.Fatalf("drifted directory = %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRewriteManifestStrictPersistsV3(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	snapshot, err := captureWithDirectoryPreimage(root, backups, "batch", []string{"made/file"}, []Directory{{Path: "made", Mode: 0o700}})
+	must(t, err)
+	manifest := snapshot.Manifest
+	manifest.Version = manifestV3
+	manifest.AcceptedDirectories = []AcceptedDirectory{{Path: "made", Inode: 1, Mode: 0o700}}
+	must(t, rewriteManifestStrict(snapshot.Dir, manifest))
+	reloaded, err := reloadAndVerify(backups, "batch")
+	must(t, err)
+	if !reflect.DeepEqual(reloaded.Manifest, manifest) || fileMode(t, filepath.Join(snapshot.Dir, manifestName)) != 0o600 {
+		t.Fatalf("reloaded manifest = %#v", reloaded.Manifest)
+	}
+	if _, err := os.Lstat(filepath.Join(snapshot.Dir, ".manifest.json.strict.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("strict temporary remains: %v", err)
+	}
+}
+
+func TestApplyOperationsWithExistingDirectoriesFinalizerKeepsV1(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "existing"), 0o700))
+	var finalized Snapshot
+	_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+		[]Directory{{Path: "existing", Mode: 0o700}},
+		[]Operation{{Create: &Create{Path: "existing/file", Data: []byte("new"), Mode: 0o600}}},
+		func() error { return nil },
+		func(snapshot Snapshot) error { finalized = snapshot; return nil },
+	)
+	must(t, err)
+	if finalized.Manifest.Version != manifestVersion || len(finalized.Manifest.AcceptedDirectories) != 0 {
+		t.Fatalf("finalized manifest = %#v", finalized.Manifest)
 	}
 }

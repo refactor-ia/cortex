@@ -76,6 +76,28 @@ func applyOperationsWithDirectories(deps applyDependencies, sourceRoot, backupRo
 	if err := revalidateDirectories(existing); err != nil {
 		return snapshot, errors.Join(err, rollbackDirectories(created))
 	}
+	finalize := deps.finalize
+	var finalized Snapshot
+	if finalize != nil {
+		deps.finalize = func(snapshot Snapshot) error {
+			accepted, err := acceptCreatedDirectories(snapshot, created)
+			if err != nil {
+				return err
+			}
+			if err := rewriteManifestStrict(snapshot.Dir, accepted.Manifest); err != nil {
+				return err
+			}
+			reloaded, err := reloadAndVerify(backupRoot, backupName)
+			if err != nil {
+				return err
+			}
+			if err := finalize(reloaded); err != nil {
+				return err
+			}
+			finalized = reloaded
+			return nil
+		}
+	}
 	deps.capture = func(root, backup, name string, capturedPaths []string) (Snapshot, error) {
 		if root != sourceRoot || backup != backupRoot || name != backupName || !samePaths(capturedPaths, paths) {
 			return Snapshot{}, errors.New("apply directory snapshot does not match preimage")
@@ -85,6 +107,9 @@ func applyOperationsWithDirectories(deps applyDependencies, sourceRoot, backupRo
 	snapshot, err = applyOperations(deps, sourceRoot, backupRoot, backupName, rawOperations)
 	if err != nil {
 		return snapshot, errors.Join(err, rollbackDirectories(created))
+	}
+	if finalize != nil {
+		snapshot = finalized
 	}
 	return snapshot, nil
 }
@@ -194,6 +219,38 @@ func revalidateDirectories(directories []preparedDirectory) error {
 	}
 	return nil
 }
+func acceptCreatedDirectories(snapshot Snapshot, created []createdDirectory) (Snapshot, error) {
+	if snapshot.Manifest.Version != manifestV2 || len(snapshot.Manifest.AbsentDirectories) != len(created) {
+		return Snapshot{}, errors.New("accepted directory snapshot is invalid")
+	}
+	byPath := make(map[string]createdDirectory, len(created))
+	for _, directory := range created {
+		if _, exists := byPath[directory.path]; exists {
+			return Snapshot{}, errors.New("accepted directory is duplicated")
+		}
+		byPath[directory.path] = directory
+	}
+	accepted := make([]AcceptedDirectory, len(snapshot.Manifest.AbsentDirectories))
+	for index, absent := range snapshot.Manifest.AbsentDirectories {
+		directory, exists := byPath[absent.Path]
+		if !exists || uint32(directory.mode) != absent.Mode {
+			return Snapshot{}, fmt.Errorf("accepted directory is missing: %s", absent.Path)
+		}
+		info, err := os.Lstat(directory.target)
+		if err != nil || !isRealDirectory(info) || !os.SameFile(directory.createdInfo, info) || info.Mode().Perm() != directory.createdInfo.Mode().Perm() {
+			return Snapshot{}, fmt.Errorf("accepted directory changed: %s", directory.path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino == 0 {
+			return Snapshot{}, fmt.Errorf("accepted directory identity is unavailable: %s", directory.path)
+		}
+		accepted[index] = AcceptedDirectory{Path: absent.Path, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+	}
+	snapshot.Manifest.Version = manifestV3
+	snapshot.Manifest.AcceptedDirectories = accepted
+	return snapshot, nil
+}
+
 func rollbackDirectories(created []createdDirectory) error {
 	var rollbackErr error
 	for index := len(created) - 1; index >= 0; index-- {

@@ -688,7 +688,7 @@ func TestApplyOperationsWithDirectoriesAndFinalize(t *testing.T) {
 			)
 			if tt.finalizeCalls == 1 && tt.finalize == nil {
 				reloaded, reloadErr := reloadAndVerify(backups, "batch")
-				if err != nil || reloadErr != nil || !reflect.DeepEqual(finalized, reloaded) || !reflect.DeepEqual(snapshot, reloaded) || finalized.Manifest.Version != manifestV2 || len(finalized.Manifest.AbsentDirectories) != 1 || finalized.Manifest.AbsentDirectories[0].Path != "generated" {
+				if err != nil || reloadErr != nil || !reflect.DeepEqual(finalized, reloaded) || !reflect.DeepEqual(snapshot, reloaded) || finalized.Manifest.Version != manifestV3 || len(finalized.Manifest.AcceptedDirectories) != 1 || finalized.Manifest.AcceptedDirectories[0].Path != "generated" {
 					t.Fatalf("result = %#v, finalized = %#v, reloaded = %#v, errors = %v, %v", snapshot, finalized, reloaded, err, reloadErr)
 				}
 				return

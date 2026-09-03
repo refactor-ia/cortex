@@ -377,6 +377,121 @@ func restartDirectoryPlan(t *testing.T, root string, version int, paths []string
 	return plan
 }
 
+func TestRollbackRestartLeaves(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		current []restartFile
+		drift   bool
+		wantErr bool
+		want    []restartFile
+	}{
+		{
+			name: "restores exact after leaves and preserves exact before leaves",
+			current: []restartFile{
+				{"create.txt", true, "after create", 0o640},
+				{"remove.txt", false, "", 0},
+				{"replace.txt", true, "before replace", 0o600},
+			},
+			want: []restartFile{
+				{"create.txt", false, "", 0},
+				{"remove.txt", true, "before remove", 0o600},
+				{"replace.txt", true, "before replace", 0o600},
+			},
+		},
+		{
+			name: "late preflight drift leaves earlier exact after leaf untouched",
+			current: []restartFile{
+				{"create.txt", true, "after create", 0o640},
+				{"remove.txt", true, "drift", 0o600},
+				{"replace.txt", true, "after replace", 0o640},
+			},
+			drift:   true,
+			wantErr: true,
+			want: []restartFile{
+				{"create.txt", true, "after create", 0o640},
+				{"remove.txt", true, "drift", 0o600},
+				{"replace.txt", true, "after replace", 0o640},
+			},
+		},
+		{
+			name: "rerun converges after partial completion",
+			current: []restartFile{
+				{"create.txt", false, "", 0},
+				{"remove.txt", false, "", 0},
+				{"replace.txt", true, "after replace", 0o640},
+			},
+			want: []restartFile{
+				{"create.txt", false, "", 0},
+				{"remove.txt", true, "before remove", 0o600},
+				{"replace.txt", true, "before replace", 0o600},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			before := []restartFile{
+				{"remove.txt", true, "before remove", 0o600},
+				{"replace.txt", true, "before replace", 0o600},
+			}
+			writeRestartFiles(t, root, before)
+			must(t, os.Mkdir(filepath.Join(root, "untouched"), 0o700))
+			snapshot, err := Capture(root, backups, "backup", []string{"create.txt", "remove.txt", "replace.txt"})
+			must(t, err)
+			plan, err := planRestartEvidence(snapshot, restartAfters(t, []restartFile{
+				{"create.txt", true, "after create", 0o640},
+				{"remove.txt", false, "", 0},
+				{"replace.txt", true, "after replace", 0o640},
+			}))
+			must(t, err)
+			writeRestartFiles(t, root, test.current)
+			err = rollbackRestartLeaves(root, plan)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("rollbackRestartLeaves() error = %v", err)
+			}
+			for _, want := range test.want {
+				path := filepath.Join(root, want.path)
+				info, statErr := os.Lstat(path)
+				if !want.exists {
+					if !os.IsNotExist(statErr) {
+						t.Fatalf("%s exists after rollback: %v", want.path, statErr)
+					}
+					continue
+				}
+				must(t, statErr)
+				data, readErr := os.ReadFile(path)
+				must(t, readErr)
+				if !info.Mode().IsRegular() || string(data) != want.data || info.Mode().Perm() != want.mode {
+					t.Fatalf("%s = %q %#o, want %q %#o", want.path, data, info.Mode().Perm(), want.data, want.mode)
+				}
+			}
+			info, err := os.Lstat(filepath.Join(root, "untouched"))
+			if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+				t.Fatalf("directory changed: %v, %#v", err, info)
+			}
+		})
+	}
+}
+
+func TestRollbackRestartLeavesRestoresFromEmptyAfterEvidence(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "empty.txt"), []byte("before"), 0o600)
+	snapshot, err := Capture(root, backups, "backup", []string{"empty.txt"})
+	must(t, err)
+	after, err := NewAfter("empty.txt", true, []byte{}, 0o640)
+	must(t, err)
+	plan, err := planRestartEvidence(snapshot, []After{after})
+	must(t, err)
+	writeFile(t, filepath.Join(root, "empty.txt"), after.Data(), after.Mode())
+	must(t, rollbackRestartLeaves(root, plan))
+	info, err := os.Lstat(filepath.Join(root, "empty.txt"))
+	must(t, err)
+	data, err := os.ReadFile(filepath.Join(root, "empty.txt"))
+	must(t, err)
+	if string(data) != "before" || info.Mode().Perm() != 0o600 {
+		t.Fatalf("restored evidence = %q %#o", data, info.Mode().Perm())
+	}
+}
+
 func TestPlanRestartEvidenceRejectsMalformedCoverage(t *testing.T) {
 	root, backups := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(root, "file.txt"), []byte("before"), 0o600)

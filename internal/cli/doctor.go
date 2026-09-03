@@ -44,10 +44,14 @@ type uninstallPreflight struct {
 // Run executes one Cortex command with the supplied runtime probe seam.
 // A nil runner selects the constrained production system probe.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	return runWithUninstallDependencies(ctx, args, stdout, stderr, runner, defaultUninstallDependencies())
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), defaultUninstallDependencies())
 }
 
 func runWithUninstallDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, uninstall uninstallDependencies) int {
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), uninstall)
+}
+
+func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, install installDependencies, uninstall uninstallDependencies) int {
 	if len(args) != 1 {
 		writeError(stderr, "invalid_command")
 		return exitUsage
@@ -56,7 +60,7 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 	case "doctor":
 		return runDoctor(ctx, stdout, stderr, runner)
 	case "install", "update":
-		return runUncertifiedOperation(ctx, stdout, stderr, runner, args[0])
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:

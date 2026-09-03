@@ -225,3 +225,97 @@ func fileMode(t *testing.T, path string) os.FileMode {
 	must(t, err)
 	return info.Mode().Perm()
 }
+
+func TestVerifyAcceptsV3AcceptedDirectories(t *testing.T) {
+	root, backupRoot := t.TempDir(), t.TempDir()
+	snapshot, err := captureWithDirectoryPreimage(root, backupRoot, "backup", nil, []Directory{{Path: "absent", Mode: 0o700}, {Path: "other", Mode: 0o750}})
+	must(t, err)
+	manifest := snapshot.Manifest
+	manifest.Version = manifestV3
+	manifest.AcceptedDirectories = []AcceptedDirectory{
+		{Path: "absent", Device: 0, Inode: 42, Mode: 0o700},
+		{Path: "other", Device: 7, Inode: 43, Mode: 0o750},
+	}
+	must(t, writeManifest(snapshot.Dir, manifest))
+
+	got, err := reloadAndVerify(backupRoot, "backup")
+	must(t, err)
+	if !reflect.DeepEqual(got.Manifest, manifest) {
+		t.Fatalf("manifest = %#v, want %#v", got.Manifest, manifest)
+	}
+}
+
+func TestVerifyRejectsInvalidV3AcceptedDirectories(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{"empty", func(manifest *Manifest) { manifest.AcceptedDirectories = nil }},
+		{"mismatch", func(manifest *Manifest) {
+			manifest.AcceptedDirectories = manifest.AcceptedDirectories[:1]
+		}},
+		{"path mismatch", func(manifest *Manifest) { manifest.AcceptedDirectories[0].Path = "different" }},
+		{"mode mismatch", func(manifest *Manifest) { manifest.AcceptedDirectories[0].Mode = 0o755 }},
+		{"ordering", func(manifest *Manifest) {
+			manifest.AcceptedDirectories[0], manifest.AcceptedDirectories[1] = manifest.AcceptedDirectories[1], manifest.AcceptedDirectories[0]
+		}},
+		{"invalid mode", func(manifest *Manifest) { manifest.AcceptedDirectories[0].Mode = 0o1000 }},
+		{"zero inode", func(manifest *Manifest) { manifest.AcceptedDirectories[0].Inode = 0 }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root, backupRoot := t.TempDir(), t.TempDir()
+			snapshot, err := captureWithDirectoryPreimage(root, backupRoot, "backup", nil, []Directory{{Path: "absent", Mode: 0o700}, {Path: "other", Mode: 0o750}})
+			must(t, err)
+			manifest := snapshot.Manifest
+			manifest.Version = manifestV3
+			manifest.AcceptedDirectories = []AcceptedDirectory{
+				{Path: "absent", Device: 0, Inode: 42, Mode: 0o700},
+				{Path: "other", Device: 7, Inode: 43, Mode: 0o750},
+			}
+			test.mutate(&manifest)
+			must(t, writeManifest(snapshot.Dir, manifest))
+			if err := Verify(backupRoot, "backup"); err == nil {
+				t.Fatal("Verify() error = nil")
+			}
+		})
+	}
+}
+
+func TestVerifyRejectsAcceptedDirectoriesOutsideV3(t *testing.T) {
+	for _, version := range []int{manifestVersion, manifestV2} {
+		t.Run(string(rune('0'+version)), func(t *testing.T) {
+			root, backupRoot := t.TempDir(), t.TempDir()
+			snapshot, err := Capture(root, backupRoot, "backup", nil)
+			must(t, err)
+			manifest := snapshot.Manifest
+			if version == manifestV2 {
+				snapshot, err = captureWithDirectoryPreimage(root, backupRoot, "backup-v2", nil, []Directory{{Path: "absent", Mode: 0o700}})
+				must(t, err)
+				manifest = snapshot.Manifest
+			}
+			manifest.AcceptedDirectories = []AcceptedDirectory{{Path: "absent", Inode: 1, Mode: 0o700}}
+			must(t, writeManifest(snapshot.Dir, manifest))
+			if err := Verify(backupRoot, filepath.Base(snapshot.Dir)); err == nil {
+				t.Fatal("Verify() error = nil")
+			}
+		})
+	}
+}
+
+func TestVerifyRejectsUnknownOrTrailingV3AcceptedDirectoryData(t *testing.T) {
+	for _, manifest := range []string{
+		`{"version":3,"entries":[],"absentDirectories":[{"path":"absent","mode":448}],"acceptedDirectories":[{"path":"absent","device":0,"inode":1,"mode":448,"unknown":true}]}`,
+		`{"version":3,"entries":[],"absentDirectories":[{"path":"absent","mode":448}],"acceptedDirectories":[{"path":"absent","device":0,"inode":1,"mode":448}]} {}`,
+	} {
+		t.Run(manifest, func(t *testing.T) {
+			backupRoot, backup := t.TempDir(), "backup"
+			must(t, os.Mkdir(filepath.Join(backupRoot, backup), 0o700))
+			must(t, os.Mkdir(filepath.Join(backupRoot, backup, "payloads"), 0o700))
+			must(t, os.WriteFile(filepath.Join(backupRoot, backup, manifestName), []byte(manifest), 0o600))
+			if err := Verify(backupRoot, backup); err == nil {
+				t.Fatal("Verify() error = nil")
+			}
+		})
+	}
+}

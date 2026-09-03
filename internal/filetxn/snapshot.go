@@ -16,7 +16,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
 
-const manifestName, manifestVersion, manifestV2 = "manifest.json", 1, 2
+const manifestName, manifestVersion, manifestV2, manifestV3 = "manifest.json", 1, 2, 3
 
 // Entry describes one source-relative file captured by a snapshot.
 type Entry struct {
@@ -31,11 +31,20 @@ type directoryEntry struct {
 	Mode uint32 `json:"mode"`
 }
 
+// AcceptedDirectory records one accepted transaction-created directory.
+type AcceptedDirectory struct {
+	Path   string `json:"path"`
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+	Mode   uint32 `json:"mode"`
+}
+
 // Manifest is the deterministic, unauthenticated record of a snapshot.
 type Manifest struct {
-	Version           int              `json:"version"`
-	Entries           []Entry          `json:"entries"`
-	AbsentDirectories []directoryEntry `json:"absentDirectories,omitempty"`
+	Version             int                 `json:"version"`
+	Entries             []Entry             `json:"entries"`
+	AbsentDirectories   []directoryEntry    `json:"absentDirectories,omitempty"`
+	AcceptedDirectories []AcceptedDirectory `json:"acceptedDirectories,omitempty"`
 }
 
 // Snapshot identifies a captured backup directory and its manifest.
@@ -333,7 +342,7 @@ func readManifest(backupDir string) (Manifest, error) {
 }
 
 func validateManifest(manifest Manifest) error {
-	if manifest.Version != manifestVersion && manifest.Version != manifestV2 {
+	if manifest.Version != manifestVersion && manifest.Version != manifestV2 && manifest.Version != manifestV3 {
 		return fmt.Errorf("unsupported version")
 	}
 	if manifest.Version == manifestVersion && len(manifest.AbsentDirectories) != 0 {
@@ -341,6 +350,12 @@ func validateManifest(manifest Manifest) error {
 	}
 	if manifest.Version == manifestV2 && len(manifest.AbsentDirectories) == 0 {
 		return fmt.Errorf("v2 has no absent directories")
+	}
+	if manifest.Version != manifestV3 && len(manifest.AcceptedDirectories) != 0 {
+		return fmt.Errorf("pre-v3 has accepted directories")
+	}
+	if manifest.Version == manifestV3 && (len(manifest.AbsentDirectories) == 0 || len(manifest.AcceptedDirectories) == 0 || len(manifest.AbsentDirectories) != len(manifest.AcceptedDirectories)) {
+		return fmt.Errorf("v3 has invalid accepted directories")
 	}
 	previous := ""
 	for _, entry := range manifest.Entries {
@@ -356,7 +371,7 @@ func validateManifest(manifest Manifest) error {
 		}
 	}
 	previous = ""
-	for _, directory := range manifest.AbsentDirectories {
+	for index, directory := range manifest.AbsentDirectories {
 		if _, err := canonicalDirectoryPath(directory.Path); err != nil || directory.Path <= previous || directory.Mode&^0o777 != 0 {
 			return fmt.Errorf("invalid absent directory")
 		}
@@ -364,6 +379,12 @@ func validateManifest(manifest Manifest) error {
 		for _, entry := range manifest.Entries {
 			if entry.Path == directory.Path || (entry.Exists && strings.HasPrefix(entry.Path, directory.Path+"/")) {
 				return fmt.Errorf("directory conflicts with entry")
+			}
+		}
+		if manifest.Version == manifestV3 {
+			accepted := manifest.AcceptedDirectories[index]
+			if accepted.Path != directory.Path || accepted.Mode != directory.Mode || accepted.Mode&^0o777 != 0 || accepted.Inode == 0 {
+				return fmt.Errorf("invalid accepted directory")
 			}
 		}
 	}

@@ -323,6 +323,56 @@ func TestClassifyRestartDirectories(t *testing.T) {
 	}
 }
 
+func TestPreflightRestartDirectoryContents(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		dirs    []string
+		leaves  []restartFile
+		change  func(t *testing.T, root string)
+		wantErr bool
+	}{
+		{"exact tree", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, nil, false},
+		{"foreign file", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, func(t *testing.T, root string) {
+			writeFile(t, filepath.Join(root, "made", "foreign.txt"), []byte("foreign"), 0o600)
+		}, true},
+		{"foreign directory", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, func(t *testing.T, root string) { must(t, os.Mkdir(filepath.Join(root, "made", "foreign"), 0o700)) }, true},
+		{"foreign symlink", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, func(t *testing.T, root string) {
+			must(t, os.Symlink("file.txt", filepath.Join(root, "made", "foreign")))
+		}, true},
+		{"bounded overflow", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, func(t *testing.T, root string) {
+			writeFile(t, filepath.Join(root, "made", "foreign-one"), []byte("one"), 0o600)
+			writeFile(t, filepath.Join(root, "made", "foreign-two"), []byte("two"), 0o600)
+		}, true},
+		{"nested direct children", []string{"made", "made/nested"}, []restartFile{{"made/file.txt", true, "after", 0o600}, {"made/nested/deep.txt", true, "after", 0o600}}, nil, false},
+		{"partial missing planned leaf", []string{"made"}, []restartFile{{"made/file.txt", true, "after", 0o600}}, func(t *testing.T, root string) { must(t, os.Remove(filepath.Join(root, "made", "file.txt"))) }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			plan := restartDirectoryPlan(t, root, manifestV3, test.dirs)
+			plan.snapshot.Manifest.Entries = make([]Entry, len(test.leaves))
+			for index, leaf := range test.leaves {
+				plan.snapshot.Manifest.Entries[index] = Entry{Path: leaf.path}
+			}
+			plan, err := planRestartEvidence(plan.snapshot, restartAfters(t, test.leaves))
+			must(t, err)
+			writeRestartFiles(t, root, test.leaves)
+			classified, statuses, err := classifyRestart(root, plan)
+			must(t, err)
+			if test.change != nil {
+				test.change(t, root)
+			}
+			err = preflightRestartDirectoryContents(root, classified, statuses)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("preflightRestartDirectoryContents() error = %v", err)
+			}
+			data, readErr := os.ReadFile(filepath.Join(root, test.leaves[0].path))
+			if test.wantErr && (readErr != nil || string(data) != test.leaves[0].data) {
+				t.Fatalf("preflight mutated planned leaf: %q, %v", data, readErr)
+			}
+		})
+	}
+}
+
 func TestClassifyRestartResolvesLeavesOnlyFromBeforeDirectories(t *testing.T) {
 	root := t.TempDir()
 	snapshot := Snapshot{Manifest: Manifest{

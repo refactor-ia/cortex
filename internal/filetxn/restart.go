@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/refactor-ia/cortex/internal/atomicfile"
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
 
@@ -248,6 +249,36 @@ func classifyRestart(sourceRoot string, plan restartPlan) (restartPlan, []restar
 		}
 	}
 	return classified, statuses, nil
+}
+
+func rollbackRestartLeaves(sourceRoot string, plan restartPlan) error {
+	classified, statuses, err := classifyRestart(sourceRoot, plan)
+	if err != nil {
+		return errors.New("restart source evidence is invalid")
+	}
+	for index := len(classified.leaves) - 1; index >= 0; index-- {
+		if statuses[index] != exactAfter {
+			continue
+		}
+		leaf := classified.leaves[index]
+		if err := restoreRestartLeaf(sourceRoot, leaf); err != nil {
+			return errors.New("restart leaf restoration failed")
+		}
+	}
+	return nil
+}
+
+func restoreRestartLeaf(sourceRoot string, leaf restartLeaf) error {
+	switch {
+	case leaf.before.Exists() && leaf.after.Exists():
+		return atomicfile.ReplaceIfMatches(sourceRoot, leaf.before.Path(), leaf.after.Data(), leaf.after.Mode(), leaf.before.Data(), leaf.before.Mode())
+	case !leaf.before.Exists() && leaf.after.Exists():
+		return atomicfile.RemoveIfExact(sourceRoot, leaf.before.Path(), leaf.after.Data(), leaf.after.Mode())
+	case leaf.before.Exists() && !leaf.after.Exists():
+		return restoreIfAbsent(sourceRoot, leaf.before.Path(), leaf.before.Data(), leaf.before.Mode())
+	default:
+		return errors.New("restart leaf evidence is invalid")
+	}
 }
 
 func classifyRestartDirectories(sourceRoot string, plan restartPlan) (restartPlan, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -249,6 +250,92 @@ func classifyRestart(sourceRoot string, plan restartPlan) (restartPlan, []restar
 		}
 	}
 	return classified, statuses, nil
+}
+
+func preflightRestartDirectoryContents(sourceRoot string, plan restartPlan, statuses []restartStatus) error {
+	if plan.snapshot.Manifest.Version != manifestV3 {
+		return nil
+	}
+	if validateManifest(plan.snapshot.Manifest) != nil || !validRestartDirectories(plan) || len(statuses) != len(plan.leaves) {
+		return errors.New("restart directory contents are invalid")
+	}
+	for _, status := range statuses {
+		if status != exactBefore && status != exactAfter {
+			return errors.New("restart directory contents are invalid")
+		}
+	}
+	for _, directory := range plan.directories {
+		if directory.status != exactBefore && directory.status != exactAfter {
+			return errors.New("restart directory contents are invalid")
+		}
+		if directory.status != exactAfter {
+			continue
+		}
+		children, err := restartDirectoryChildren(plan, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		handle, err := os.Open(target)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		entries, readErr := handle.ReadDir(len(children) + 1)
+		closeErr := handle.Close()
+		if (readErr != nil && !errors.Is(readErr, io.EOF)) || closeErr != nil || len(entries) > len(children) {
+			return errors.New("restart directory contents are invalid")
+		}
+		for _, entry := range entries {
+			childDirectory, exists := children[entry.Name()]
+			if !exists || entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("restart directory contents are invalid")
+			}
+			if childDirectory && entry.Type()&os.ModeType != 0 && !entry.Type().IsDir() {
+				return errors.New("restart directory contents are invalid")
+			}
+			if !childDirectory && entry.Type()&os.ModeType != 0 {
+				return errors.New("restart directory contents are invalid")
+			}
+		}
+	}
+	return nil
+}
+
+func restartDirectoryChildren(plan restartPlan, parent string) (map[string]bool, error) {
+	children := make(map[string]bool)
+	add := func(candidate string, directory bool) error {
+		candidateParent, name := restartDirectParent(candidate)
+		if candidateParent != parent {
+			return nil
+		}
+		if existing, exists := children[name]; exists && existing != directory {
+			return errors.New("restart directory child is ambiguous")
+		}
+		children[name] = directory
+		return nil
+	}
+	for _, leaf := range plan.leaves {
+		if err := add(leaf.before.Path(), false); err != nil {
+			return nil, err
+		}
+	}
+	for _, directory := range plan.directories {
+		if err := add(directory.before.Path, true); err != nil {
+			return nil, err
+		}
+	}
+	return children, nil
+}
+
+func restartDirectParent(value string) (string, string) {
+	index := strings.LastIndex(value, "/")
+	if index < 0 {
+		return "", value
+	}
+	return value[:index], value[index+1:]
 }
 
 func rollbackRestartLeaves(sourceRoot string, plan restartPlan) error {

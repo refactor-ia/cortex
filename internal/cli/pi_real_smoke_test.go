@@ -35,22 +35,24 @@ const (
 	piSmokePrompt            = "/skill:cortex-catalog-marker\nRespond with exactly one minified JSON object containing the activated skill name and first Markdown heading."
 )
 
-var piCredentialAllowlist = map[string]bool{
-	"ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true, "OPENAI_API_KEY": true,
-	"GOOGLE_API_KEY": true, "GEMINI_API_KEY": true, "OPENROUTER_API_KEY": true, "XAI_API_KEY": true,
-}
-
 var realSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
 
 func TestPiRealSmoke(t *testing.T) {
-	if !realSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION"), piRealSmokeAuthorization) {
+	authorization := os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION")
+	if !realSmokeAuthorized(authorization, piRealSmokeAuthorization) {
 		t.Skip("Pi real smoke authorization is required")
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
 	if err != nil {
 		t.Fatal("real smoke temporary root unavailable")
 	}
-	evidence, runErr := runPiRealSmoke(root)
+	source, authorized := subscriptionAuthSourceAfterGate(authorization, piRealSmokeAuthorization, func() string {
+		return os.Getenv("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE")
+	})
+	if !authorized {
+		t.Fatal("real smoke authorization unavailable")
+	}
+	evidence, runErr := runPiRealSmoke(root, source)
 	cleanupErr := cleanupPiRealSmoke(root)
 	if evidence != "" {
 		t.Logf("%s cleanup=%t", evidence, cleanupErr == nil)
@@ -135,25 +137,6 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 			t.Fatalf("bounded output = %#v, %v", buffer, err)
 		}
 	})
-	t.Run("credential configuration is allowlisted and secret-safe", func(t *testing.T) {
-		lookup := func(name string) (string, bool) {
-			return map[string]string{"ANTHROPIC_API_KEY": "secret-value"}[name], name == "ANTHROPIC_API_KEY"
-		}
-		for _, tc := range []struct {
-			name, spec string
-			ok         bool
-		}{
-			{"allowed", "ANTHROPIC_API_KEY", true}, {"unknown", "PRIVATE_KEY", false}, {"forbidden", "AWS_SECRET_ACCESS_KEY", false},
-			{"missing", "OPENAI_API_KEY", false}, {"duplicate", "ANTHROPIC_API_KEY,ANTHROPIC_API_KEY", false},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				values, err := smokeCredentials(tc.spec, piCredentialAllowlist, lookup)
-				if (err == nil) != tc.ok || err != nil && strings.Contains(err.Error(), "secret-value") || (tc.ok && len(values) != 1) {
-					t.Fatalf("credential result = %q, %v", values, err)
-				}
-			})
-		}
-	})
 	t.Run("temporary root cleanup removes its target", func(t *testing.T) {
 		root := t.TempDir()
 		if err := cleanupPiRealSmoke(root); err != nil {
@@ -164,14 +147,10 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 		}
 	})
 }
-func runPiRealSmoke(home string) (string, error) {
+func runPiRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	sourceRevision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
-	if !validSmokeRevision(sourceRevision) {
+	if !validSmokeRevision(sourceRevision) || copySubscriptionAuth(subscriptionAuthSource, piSubscriptionAuthTarget(home)) != nil {
 		return "", realSmokeError()
-	}
-	credentials, err := smokeCredentials(os.Getenv("CORTEX_REAL_SMOKE_CREDENTIAL_ENV"), piCredentialAllowlist, os.LookupEnv)
-	if err != nil {
-		return "", err
 	}
 	piPath, err := exec.LookPath(piSmokeBinary)
 	if err != nil {
@@ -181,7 +160,7 @@ func runPiRealSmoke(home string) (string, error) {
 	if err != nil {
 		return "", realSmokeError()
 	}
-	env := piSmokeEnvironment(home, credentials)
+	env := piSmokeEnvironment(home)
 	runner := &piRealSmokeRunner{path: piPath, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].RuntimeID() != runtimematrix.RuntimePi || reports[0].Status() != runtimeprobe.VersionDetected || reports[1].Status() != runtimeprobe.Absent || reports[2].Status() != runtimeprobe.Absent {
@@ -233,24 +212,8 @@ func runPiRealSmoke(home string) (string, error) {
 func realSmokeAuthorized(value, authorization string) bool { return value == authorization }
 func cleanupPiRealSmoke(root string) error                 { return os.RemoveAll(root) }
 func realSmokeError() error                                { return errors.New("real smoke validation failed") }
-func smokeCredentials(spec string, allowlist map[string]bool, lookup func(string) (string, bool)) ([]string, error) {
-	if spec == "" {
-		return nil, nil
-	}
-	seen, values := map[string]bool{}, []string{}
-	for _, name := range strings.Split(spec, ",") {
-		value, ok := lookup(name)
-		if !allowlist[name] || seen[name] || !ok || value == "" {
-			return nil, realSmokeError()
-		}
-		seen[name] = true
-		values = append(values, name+"="+value)
-	}
-	return values, nil
-}
-func piSmokeEnvironment(home string, credentials []string) []string {
-	env := []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "PI_CODING_AGENT_DIR=" + filepath.Join(home, ".pi", "agent")}
-	return append(env, credentials...)
+func piSmokeEnvironment(home string) []string {
+	return []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "PI_CODING_AGENT_DIR=" + filepath.Join(home, ".pi", "agent")}
 }
 
 type piRealSmokeRunner struct {
@@ -387,7 +350,7 @@ func piSmokeInstallOutput() string {
 func piSmokeEvidence(sourceRevision, version, fingerprint string, marker []byte, durationMS int64) string {
 	command := append([]string{piSmokeBinary}, piSmokeCommandSpec()...)
 	markerSum, commandSum := sha256.Sum256(marker), sha256.Sum256([]byte(strings.Join(command, "\x00")))
-	return "real_smoke source_revision_input=" + sourceRevision + " runtime=pi version=" + version + " snapshot=" + fingerprint + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(durationMS, 10) + " timeout_ms=" + strconv.Itoa(piSmokeTimeoutMS) + " stdout_limit=" + strconv.Itoa(piSmokeOutputLimit) + " stderr_limit=" + strconv.Itoa(piSmokeOutputLimit) + " retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
+	return "real_smoke source_revision_input=" + sourceRevision + " runtime=pi auth=subscription_copy version=" + version + " snapshot=" + fingerprint + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(durationMS, 10) + " timeout_ms=" + strconv.Itoa(piSmokeTimeoutMS) + " stdout_limit=" + strconv.Itoa(piSmokeOutputLimit) + " stderr_limit=" + strconv.Itoa(piSmokeOutputLimit) + " retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
 }
 func piSmokeCommandSpec() []string {
 	return []string{"--no-session", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--no-tools", "-p", piSmokePrompt}

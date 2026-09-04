@@ -129,6 +129,7 @@ EXPECTED_FILES = {
         "internal/cli/install.go",
         "internal/cli/install_test.go",
         "internal/cli/pi_real_smoke_test.go",
+        "internal/cli/subscription_auth_test.go",
         "internal/cli/opencode_real_smoke_test.go",
         "internal/cli/claude_real_smoke_test.go",
         "internal/cli/uninstall_test.go",
@@ -235,6 +236,18 @@ class CommunityPolicyTests(unittest.TestCase):
                                 self.assertFalse(
                                         (REPO_ROOT / relative_path).is_symlink()
                                 )
+
+                pi = read_text("internal/cli/pi_real_smoke_test.go")
+                opencode = read_text("internal/cli/opencode_real_smoke_test.go")
+                claude = read_text("internal/cli/claude_real_smoke_test.go")
+                for source in (pi, opencode, claude):
+                        self.assertNotIn("CORTEX_REAL_SMOKE_CREDENTIAL_ENV", source)
+                        self.assertNotIn("smokeCredentials", source)
+                self.assertIn("auth=subscription_copy", pi)
+                self.assertIn("auth=subscription_copy", opencode)
+                self.assertIn("XDG_DATA_HOME=", opencode)
+                self.assertIn("auth=subscription_keychain", claude)
+                self.assertNotIn("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE", claude)
 
         def test_foundation_documents_state_clean_target_status(self) -> None:
                 readme = read_text("README.md")

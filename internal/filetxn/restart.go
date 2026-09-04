@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -338,6 +339,91 @@ func restartDirectParent(value string) (string, string) {
 	return value[:index], value[index+1:]
 }
 
+// RollbackRestart restores only files and directories that match accepted restart evidence.
+func RollbackRestart(sourceRoot string, snapshot Snapshot, after []After) error {
+	plan, err := planRestartEvidence(snapshot, after)
+	if err != nil {
+		return errors.New("restart rollback evidence is invalid")
+	}
+	classified, statuses, err := classifyRestart(sourceRoot, plan)
+	if err != nil {
+		return errors.New("restart rollback source evidence is invalid")
+	}
+	if err := preflightRestartDirectoryContents(sourceRoot, classified, statuses); err != nil {
+		return errors.New("restart rollback directory contents are invalid")
+	}
+	if err := rollbackRestartLeaves(sourceRoot, classified); err != nil {
+		return err
+	}
+	classified, _, err = classifyRestart(sourceRoot, classified)
+	if err != nil {
+		return errors.New("restart rollback source evidence is invalid")
+	}
+	if err := rollbackRestartDirectories(sourceRoot, classified); err != nil {
+		return err
+	}
+	classified, statuses, err = classifyRestart(sourceRoot, classified)
+	if err != nil || !restartIsBefore(classified, statuses) {
+		return errors.New("restart rollback did not restore before state")
+	}
+	return nil
+}
+
+func rollbackRestartDirectories(sourceRoot string, plan restartPlan) error {
+	if plan.snapshot.Manifest.Version != manifestV3 {
+		return nil
+	}
+	for index := len(plan.directories) - 1; index >= 0; index-- {
+		directory := plan.directories[index]
+		if directory.status == exactBefore {
+			continue
+		}
+		if directory.status != exactAfter {
+			return errors.New("restart directory evidence is invalid")
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory evidence is invalid")
+		}
+		info, err := os.Lstat(target)
+		if err != nil || !isRealDirectory(info) || !restartDirectoryMatchesAccepted(info, directory.after) {
+			return errors.New("restart directory changed")
+		}
+		if err := os.Remove(target); err != nil {
+			return errors.New("restart directory removal failed")
+		}
+		if err := syncDirectoryStrict(filepath.Dir(target)); err != nil {
+			return errors.New("restart directory parent sync failed")
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			return errors.New("restart directory remains")
+		}
+	}
+	return nil
+}
+
+func restartDirectoryMatchesAccepted(info os.FileInfo, accepted AcceptedDirectory) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Ino != 0 && uint64(stat.Dev) == accepted.Device && uint64(stat.Ino) == accepted.Inode && uint32(info.Mode().Perm()) == accepted.Mode
+}
+
+func restartIsBefore(plan restartPlan, statuses []restartStatus) bool {
+	if len(statuses) != len(plan.leaves) {
+		return false
+	}
+	for _, status := range statuses {
+		if status != exactBefore {
+			return false
+		}
+	}
+	for _, directory := range plan.directories {
+		if directory.status != exactBefore {
+			return false
+		}
+	}
+	return true
+}
+
 func rollbackRestartLeaves(sourceRoot string, plan restartPlan) error {
 	classified, statuses, err := classifyRestart(sourceRoot, plan)
 	if err != nil {
@@ -396,8 +482,7 @@ func classifyRestartDirectories(sourceRoot string, plan restartPlan) (restartPla
 		if err != nil || !isRealDirectory(info) || plan.snapshot.Manifest.Version == manifestV2 {
 			return restartPlan{}, errors.New("restart directory is unsafe")
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Ino == 0 || uint64(stat.Dev) != directory.after.Device || uint64(stat.Ino) != directory.after.Inode || uint32(info.Mode().Perm()) != directory.after.Mode {
+		if !restartDirectoryMatchesAccepted(info, directory.after) {
 			return restartPlan{}, errors.New("restart directory drifted")
 		}
 		directory.status = exactAfter

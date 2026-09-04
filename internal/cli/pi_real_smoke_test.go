@@ -40,10 +40,10 @@ var piCredentialAllowlist = map[string]bool{
 	"GOOGLE_API_KEY": true, "GEMINI_API_KEY": true, "OPENROUTER_API_KEY": true, "XAI_API_KEY": true,
 }
 
-var piSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
+var realSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
 
 func TestPiRealSmoke(t *testing.T) {
-	if !piRealSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION")) {
+	if !realSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION"), piRealSmokeAuthorization) {
 		t.Skip("Pi real smoke authorization is required")
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
@@ -65,7 +65,7 @@ func TestPiRealSmoke(t *testing.T) {
 func TestPiRealSmokeHelpers(t *testing.T) {
 	t.Run("gate requires exact authorization", func(t *testing.T) {
 		for value, want := range map[string]bool{piRealSmokeAuthorization: true, "": false, "issue-41-pi ": false} {
-			if got := piRealSmokeAuthorized(value); got != want {
+			if got := realSmokeAuthorized(value, piRealSmokeAuthorization); got != want {
 				t.Fatalf("authorization = %t, want %t", got, want)
 			}
 		}
@@ -87,7 +87,7 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 			{"trailing", `{} trailing`, false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				_, err := parsePiRealSmokeJSON([]byte(tc.body))
+				_, err := parseSmokeAcknowledgement([]byte(tc.body))
 				if (err == nil) != tc.ok {
 					t.Fatalf("parse error = %v", err)
 				}
@@ -109,7 +109,7 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 				expected = skill.Content()
 			}
 		}
-		marker, fingerprint, err := piSmokeMarker()
+		marker, fingerprint, err := smokeMarker()
 		if err != nil || !bytes.Equal(marker, expected) || fingerprint != snapshot.Fingerprint() {
 			t.Fatalf("marker = (%q, %q, %v), want rendered catalog marker", marker, fingerprint, err)
 		}
@@ -130,7 +130,7 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 		}
 	})
 	t.Run("bounded output records overflow", func(t *testing.T) {
-		buffer := &boundedPiSmokeOutput{limit: 3}
+		buffer := &boundedSmokeOutput{limit: 3}
 		if _, err := buffer.Write([]byte("abcd")); err != nil || string(buffer.bytes) != "abc" || !buffer.overflow {
 			t.Fatalf("bounded output = %#v, %v", buffer, err)
 		}
@@ -147,7 +147,7 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 			{"missing", "OPENAI_API_KEY", false}, {"duplicate", "ANTHROPIC_API_KEY,ANTHROPIC_API_KEY", false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				values, err := piSmokeCredentials(tc.spec, lookup)
+				values, err := smokeCredentials(tc.spec, piCredentialAllowlist, lookup)
 				if (err == nil) != tc.ok || err != nil && strings.Contains(err.Error(), "secret-value") || (tc.ok && len(values) != 1) {
 					t.Fatalf("credential result = %q, %v", values, err)
 				}
@@ -166,10 +166,10 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 }
 func runPiRealSmoke(home string) (string, error) {
 	sourceRevision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
-	if !validPiSmokeRevision(sourceRevision) {
+	if !validSmokeRevision(sourceRevision) {
 		return "", realSmokeError()
 	}
-	credentials, err := piSmokeCredentials(os.Getenv("CORTEX_REAL_SMOKE_CREDENTIAL_ENV"), os.LookupEnv)
+	credentials, err := smokeCredentials(os.Getenv("CORTEX_REAL_SMOKE_CREDENTIAL_ENV"), piCredentialAllowlist, os.LookupEnv)
 	if err != nil {
 		return "", err
 	}
@@ -201,7 +201,7 @@ func runPiRealSmoke(home string) (string, error) {
 	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, runner, deps); code != exitOK || stderr.Len() != 0 || stdout.String() != piSmokeInstallOutput() {
 		return "", realSmokeError()
 	}
-	marker, fingerprint, err := piSmokeMarker()
+	marker, fingerprint, err := smokeMarker()
 	if err != nil {
 		return "", err
 	}
@@ -224,23 +224,23 @@ func runPiRealSmoke(home string) (string, error) {
 	if err != nil || ctx.Err() != nil || execution.ExitCode != 0 || len(execution.Stderr) != 0 || execution.StdoutOverflow || execution.StderrOverflow {
 		return "", realSmokeError()
 	}
-	result, err := parsePiRealSmokeJSON(execution.Stdout)
+	result, err := parseSmokeAcknowledgement(execution.Stdout)
 	if err != nil || result.Name != "cortex-catalog-marker" || result.Heading != "Cortex Catalog Marker" {
 		return "", realSmokeError()
 	}
 	return piSmokeEvidence(sourceRevision, reports[0].DetectedVersion(), fingerprint, marker, durationMS), nil
 }
-func piRealSmokeAuthorized(value string) bool { return value == piRealSmokeAuthorization }
-func cleanupPiRealSmoke(root string) error    { return os.RemoveAll(root) }
-func realSmokeError() error                   { return errors.New("real smoke validation failed") }
-func piSmokeCredentials(spec string, lookup func(string) (string, bool)) ([]string, error) {
+func realSmokeAuthorized(value, authorization string) bool { return value == authorization }
+func cleanupPiRealSmoke(root string) error                 { return os.RemoveAll(root) }
+func realSmokeError() error                                { return errors.New("real smoke validation failed") }
+func smokeCredentials(spec string, allowlist map[string]bool, lookup func(string) (string, bool)) ([]string, error) {
 	if spec == "" {
 		return nil, nil
 	}
 	seen, values := map[string]bool{}, []string{}
 	for _, name := range strings.Split(spec, ",") {
 		value, ok := lookup(name)
-		if !piCredentialAllowlist[name] || seen[name] || !ok || value == "" {
+		if !allowlist[name] || seen[name] || !ok || value == "" {
 			return nil, realSmokeError()
 		}
 		seen[name] = true
@@ -279,13 +279,13 @@ func (runner *piRealSmokeRunner) Run(ctx context.Context, path string, args, _ [
 	return runner.run, runner.err
 }
 
-type boundedPiSmokeOutput struct {
+type boundedSmokeOutput struct {
 	bytes    []byte
 	limit    int
 	overflow bool
 }
 
-func (buffer *boundedPiSmokeOutput) Write(value []byte) (int, error) {
+func (buffer *boundedSmokeOutput) Write(value []byte) (int, error) {
 	remaining := buffer.limit - len(buffer.bytes)
 	if remaining > 0 {
 		if len(value) > remaining {
@@ -303,7 +303,7 @@ func runPiSmokeCommand(ctx context.Context, path, dir string, env []string) (run
 	return runPiCommand(ctx, path, piSmokeCommandSpec(), dir, env)
 }
 func runPiCommand(ctx context.Context, path string, args []string, dir string, env []string) (runtimeprobe.Execution, error) {
-	stdout, stderr := &boundedPiSmokeOutput{limit: piSmokeOutputLimit}, &boundedPiSmokeOutput{limit: piSmokeOutputLimit}
+	stdout, stderr := &boundedSmokeOutput{limit: piSmokeOutputLimit}, &boundedSmokeOutput{limit: piSmokeOutputLimit}
 	command := exec.CommandContext(ctx, path, args...)
 	command.Dir, command.Env, command.Stdout, command.Stderr = dir, env, stdout, stderr
 	err := command.Run()
@@ -322,30 +322,30 @@ func runPiCommand(ctx context.Context, path string, args []string, dir string, e
 	return execution, realSmokeError()
 }
 
-type piSmokeResponse struct{ Name, Heading string }
+type smokeAcknowledgement struct{ Name, Heading string }
 
-func parsePiRealSmokeJSON(data []byte) (piSmokeResponse, error) {
+func parseSmokeAcknowledgement(data []byte) (smokeAcknowledgement, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	token, err := decoder.Token()
 	if err != nil || token != json.Delim('{') {
-		return piSmokeResponse{}, realSmokeError()
+		return smokeAcknowledgement{}, realSmokeError()
 	}
 	seen := map[string]bool{}
-	var result piSmokeResponse
+	var result smokeAcknowledgement
 	for decoder.More() {
 		token, err := decoder.Token()
 		name, ok := token.(string)
 		if err != nil || !ok || seen[name] || (name != "name" && name != "heading") {
-			return piSmokeResponse{}, realSmokeError()
+			return smokeAcknowledgement{}, realSmokeError()
 		}
 		seen[name] = true
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil || len(raw) < 2 || raw[0] != '"' {
-			return piSmokeResponse{}, realSmokeError()
+			return smokeAcknowledgement{}, realSmokeError()
 		}
 		var value string
 		if err := json.Unmarshal(raw, &value); err != nil {
-			return piSmokeResponse{}, realSmokeError()
+			return smokeAcknowledgement{}, realSmokeError()
 		}
 		if name == "name" {
 			result.Name = value
@@ -355,14 +355,14 @@ func parsePiRealSmokeJSON(data []byte) (piSmokeResponse, error) {
 	}
 	token, err = decoder.Token()
 	if err != nil || token != json.Delim('}') || result.Name == "" || result.Heading == "" {
-		return piSmokeResponse{}, realSmokeError()
+		return smokeAcknowledgement{}, realSmokeError()
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return piSmokeResponse{}, realSmokeError()
+		return smokeAcknowledgement{}, realSmokeError()
 	}
 	return result, nil
 }
-func piSmokeMarker() ([]byte, string, error) {
+func smokeMarker() ([]byte, string, error) {
 	snapshot, err := builtinassets.Snapshot()
 	if err != nil {
 		return nil, "", realSmokeError()
@@ -392,4 +392,4 @@ func piSmokeEvidence(sourceRevision, version, fingerprint string, marker []byte,
 func piSmokeCommandSpec() []string {
 	return []string{"--no-session", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--no-tools", "-p", piSmokePrompt}
 }
-func validPiSmokeRevision(value string) bool { return piSmokeRevision.MatchString(value) }
+func validSmokeRevision(value string) bool { return realSmokeRevision.MatchString(value) }

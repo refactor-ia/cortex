@@ -32,12 +32,6 @@ const (
 	claudeSmokePrompt            = "/cortex-catalog-marker\nReturn one JSON object containing the loaded skill name and its first Markdown heading without the leading #."
 )
 
-var claudeCredentialAllowlist = map[string]bool{
-	"ANTHROPIC_API_KEY":       true,
-	"ANTHROPIC_AUTH_TOKEN":    true,
-	"CLAUDE_CODE_OAUTH_TOKEN": true,
-}
-
 func TestClaudeRealSmoke(t *testing.T) {
 	if !realSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION"), claudeRealSmokeAuthorization) {
 		t.Skip("Claude Code real smoke authorization is required")
@@ -114,31 +108,6 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 		}
 	})
 
-	t.Run("credentials are narrow and secret safe", func(t *testing.T) {
-		lookup := func(name string) (string, bool) {
-			return map[string]string{"ANTHROPIC_API_KEY": "secret-value"}[name], name == "ANTHROPIC_API_KEY"
-		}
-		cases := []struct {
-			name string
-			spec string
-			ok   bool
-		}{
-			{"allowed", "ANTHROPIC_API_KEY", true},
-			{"unknown", "PRIVATE_KEY", false},
-			{"missing", "ANTHROPIC_AUTH_TOKEN", false},
-			{"duplicate", "ANTHROPIC_API_KEY,ANTHROPIC_API_KEY", false},
-		}
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				values, err := smokeCredentials(tc.spec, claudeCredentialAllowlist, lookup)
-				secretLeaked := err != nil && strings.Contains(err.Error(), "secret-value")
-				if (err == nil) != tc.ok || secretLeaked || tc.ok && len(values) != 1 {
-					t.Fatalf("credentials = %q, %v", values, err)
-				}
-			})
-		}
-	})
-
 	t.Run("evidence uses the shared command specification", func(t *testing.T) {
 		evidence := claudeSmokeEvidence(strings.Repeat("a", 40), "1.2.3", "snapshot", []byte("marker"), 12)
 		command := append([]string{claudeSmokeBinary}, claudeSmokeCommandSpec()...)
@@ -176,10 +145,6 @@ func runClaudeRealSmoke(home string) (string, error) {
 	if !validSmokeRevision(revision) {
 		return "", realSmokeError()
 	}
-	credentials, err := smokeCredentials(os.Getenv("CORTEX_REAL_SMOKE_CREDENTIAL_ENV"), claudeCredentialAllowlist, os.LookupEnv)
-	if err != nil {
-		return "", err
-	}
 	path, err := exec.LookPath(claudeSmokeBinary)
 	if err != nil {
 		return "", realSmokeError()
@@ -189,7 +154,7 @@ func runClaudeRealSmoke(home string) (string, error) {
 		return "", realSmokeError()
 	}
 
-	env := claudeSmokeEnvironment(home, credentials)
+	env := claudeSmokeEnvironment(home)
 	runner := &claudeRealSmokeRunner{path: path, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].Status() != runtimeprobe.Absent || reports[1].Status() != runtimeprobe.Absent || reports[2].RuntimeID() != runtimematrix.RuntimeClaudeCode || reports[2].Status() != runtimeprobe.VersionDetected {
@@ -247,13 +212,12 @@ func runClaudeRealSmoke(home string) (string, error) {
 func cleanupClaudeRealSmoke(root string) error {
 	return os.RemoveAll(root)
 }
-func claudeSmokeEnvironment(home string, credentials []string) []string {
-	env := []string{
+func claudeSmokeEnvironment(home string) []string {
+	return []string{
 		"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home,
 		"CLAUDE_CONFIG_DIR=" + filepath.Join(home, ".claude"), "CLAUDE_CODE_SKIP_PROMPT_HISTORY=1", "DISABLE_AUTOUPDATER=1",
 		"DISABLE_TELEMETRY=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 	}
-	return append(env, credentials...)
 }
 
 type claudeRealSmokeRunner struct {
@@ -382,7 +346,7 @@ func claudeSmokeEvidence(revision, version, snapshot string, marker []byte, dura
 	command := append([]string{claudeSmokeBinary}, claudeSmokeCommandSpec()...)
 	commandSum := sha256.Sum256([]byte(strings.Join(command, "\x00")))
 	schemaSum := sha256.Sum256([]byte(claudeSmokeSchema))
-	return "real_smoke source_revision_input=" + revision + " runtime=claude-code version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " schema_spec=" + hex.EncodeToString(schemaSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(duration, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
+	return "real_smoke source_revision_input=" + revision + " runtime=claude-code auth=subscription_keychain version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " schema_spec=" + hex.EncodeToString(schemaSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(duration, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
 }
 
 func equalStrings(a, b []string) bool {

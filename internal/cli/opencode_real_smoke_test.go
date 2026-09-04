@@ -33,17 +33,22 @@ const (
 	opencodeSmokePrompt            = "Use the cortex-catalog-marker skill. Return exactly one minified JSON object with lowercase keys name and heading. Set name to the loaded skill's declared name and heading to its first Markdown heading without the leading #. No commentary."
 )
 
-var opencodeCredentialAllowlist = map[string]bool{"ANTHROPIC_API_KEY": true, "OPENAI_API_KEY": true, "GOOGLE_API_KEY": true, "GEMINI_API_KEY": true, "OPENROUTER_API_KEY": true, "XAI_API_KEY": true}
-
 func TestOpenCodeRealSmoke(t *testing.T) {
-	if !realSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION"), opencodeRealSmokeAuthorization) {
+	authorization := os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION")
+	if !realSmokeAuthorized(authorization, opencodeRealSmokeAuthorization) {
 		t.Skip("OpenCode real smoke authorization is required")
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
 	if err != nil {
 		t.Fatal("real smoke temporary root unavailable")
 	}
-	evidence, runErr := runOpenCodeRealSmoke(root)
+	source, authorized := subscriptionAuthSourceAfterGate(authorization, opencodeRealSmokeAuthorization, func() string {
+		return os.Getenv("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE")
+	})
+	if !authorized {
+		t.Fatal("real smoke authorization unavailable")
+	}
+	evidence, runErr := runOpenCodeRealSmoke(root, source)
 	cleanupErr := cleanupOpenCodeRealSmoke(root)
 	if evidence != "" {
 		t.Logf("%s cleanup=%t", evidence, cleanupErr == nil)
@@ -89,22 +94,6 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 			})
 		}
 	})
-	t.Run("credentials are allowlisted and secret-safe", func(t *testing.T) {
-		lookup := func(name string) (string, bool) {
-			return map[string]string{"OPENAI_API_KEY": "secret-value"}[name], name == "OPENAI_API_KEY"
-		}
-		for _, tc := range []struct {
-			name, spec string
-			ok         bool
-		}{{"allowed", "OPENAI_API_KEY", true}, {"unknown", "PRIVATE_KEY", false}, {"missing", "ANTHROPIC_API_KEY", false}, {"duplicate", "OPENAI_API_KEY,OPENAI_API_KEY", false}} {
-			t.Run(tc.name, func(t *testing.T) {
-				values, err := smokeCredentials(tc.spec, opencodeCredentialAllowlist, lookup)
-				if (err == nil) != tc.ok || err != nil && strings.Contains(err.Error(), "secret-value") || tc.ok && len(values) != 1 {
-					t.Fatalf("credential result = %q, %v", values, err)
-				}
-			})
-		}
-	})
 	t.Run("evidence is bounded and does not disclose configuration", func(t *testing.T) {
 		evidence := opencodeSmokeEvidence(strings.Repeat("a", 40), "1.2.3", "fingerprint", []byte("marker"), 12)
 		for _, field := range []string{"source_revision_input=" + strings.Repeat("a", 40), "runtime=opencode", "duration_ms=12", "config_spec=", "skill_tool_completed=true", "retries=0", "exit=0", "timeout=false", "stdout_overflow=false", "stderr_overflow=false"} {
@@ -131,14 +120,10 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 		}
 	})
 }
-func runOpenCodeRealSmoke(home string) (string, error) {
+func runOpenCodeRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	sourceRevision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
-	if !validSmokeRevision(sourceRevision) {
+	if !validSmokeRevision(sourceRevision) || copySubscriptionAuth(subscriptionAuthSource, opencodeSubscriptionAuthTarget(home)) != nil {
 		return "", realSmokeError()
-	}
-	credentials, err := smokeCredentials(os.Getenv("CORTEX_REAL_SMOKE_CREDENTIAL_ENV"), opencodeCredentialAllowlist, os.LookupEnv)
-	if err != nil {
-		return "", err
 	}
 	path, err := exec.LookPath(opencodeSmokeBinary)
 	if err != nil {
@@ -148,7 +133,7 @@ func runOpenCodeRealSmoke(home string) (string, error) {
 	if err != nil {
 		return "", realSmokeError()
 	}
-	env := opencodeSmokeEnvironment(home, credentials)
+	env := opencodeSmokeEnvironment(home)
 	runner := &opencodeRealSmokeRunner{path: path, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].Status() != runtimeprobe.Absent || reports[1].RuntimeID() != runtimematrix.RuntimeOpenCode || reports[1].Status() != runtimeprobe.VersionDetected || reports[2].Status() != runtimeprobe.Absent {
@@ -197,9 +182,8 @@ func runOpenCodeRealSmoke(home string) (string, error) {
 	return opencodeSmokeEvidence(sourceRevision, reports[1].DetectedVersion(), snapshot, marker, durationMS), nil
 }
 func cleanupOpenCodeRealSmoke(root string) error { return os.RemoveAll(root) }
-func opencodeSmokeEnvironment(home string, credentials []string) []string {
-	env := []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "OPENCODE_CONFIG_DIR=" + filepath.Join(home, ".config", "opencode"), "OPENCODE_CONFIG_CONTENT=" + opencodeSmokeConfig}
-	return append(env, credentials...)
+func opencodeSmokeEnvironment(home string) []string {
+	return []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"), "OPENCODE_CONFIG_DIR=" + filepath.Join(home, ".config", "opencode"), "OPENCODE_CONFIG_CONTENT=" + opencodeSmokeConfig}
 }
 
 type opencodeRealSmokeRunner struct {
@@ -312,5 +296,5 @@ func opencodeSmokeInstallOutput() string {
 }
 func opencodeSmokeEvidence(revision, version, snapshot string, marker []byte, durationMS int64) string {
 	markerSum, commandSum, configSum := sha256.Sum256(marker), sha256.Sum256([]byte(strings.Join(append([]string{opencodeSmokeBinary}, opencodeSmokeCommandSpec()...), "\x00"))), sha256.Sum256([]byte(opencodeSmokeConfig))
-	return "real_smoke source_revision_input=" + revision + " runtime=opencode version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " config_spec=" + hex.EncodeToString(configSum[:]) + " installed=true skill_tool_completed=true ack=true duration_ms=" + strconv.FormatInt(durationMS, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
+	return "real_smoke source_revision_input=" + revision + " runtime=opencode auth=subscription_copy version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " config_spec=" + hex.EncodeToString(configSum[:]) + " installed=true skill_tool_completed=true ack=true duration_ms=" + strconv.FormatInt(durationMS, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
 }

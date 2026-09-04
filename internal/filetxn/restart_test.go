@@ -542,6 +542,129 @@ func TestRollbackRestartLeavesRestoresFromEmptyAfterEvidence(t *testing.T) {
 	}
 }
 
+func TestRollbackRestartRestoresV3AndConverges(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "replace.txt"), []byte("before"), 0o600)
+	snapshot, err := captureWithDirectoryPreimage(root, backups, "backup", []string{"made/nested/create.txt", "replace.txt"}, []Directory{{Path: "made", Mode: 0o700}, {Path: "made/nested", Mode: 0o700}})
+	must(t, err)
+	must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+	must(t, os.Mkdir(filepath.Join(root, "made", "nested"), 0o700))
+	snapshot.Manifest.Version = manifestV3
+	snapshot.Manifest.AcceptedDirectories = acceptedRestartDirectories(t, root, snapshot.Manifest.AbsentDirectories)
+	writeRestartFiles(t, root, []restartFile{{"made/nested/create.txt", true, "after", 0o640}, {"replace.txt", true, "after", 0o640}})
+	after := restartAfters(t, []restartFile{{"made/nested/create.txt", true, "after", 0o640}, {"replace.txt", true, "after", 0o640}})
+	must(t, RollbackRestart(root, snapshot, after))
+	must(t, RollbackRestart(root, snapshot, after))
+	if _, err := os.Lstat(filepath.Join(root, "made")); !os.IsNotExist(err) {
+		t.Fatalf("created directories remain: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(root, "replace.txt"))
+	must(t, err)
+	data, err := os.ReadFile(filepath.Join(root, "replace.txt"))
+	must(t, err)
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || string(data) != "before" {
+		t.Fatalf("final leaf = %q %#o", data, info.Mode().Perm())
+	}
+}
+
+func acceptedRestartDirectories(t *testing.T, root string, absent []directoryEntry) []AcceptedDirectory {
+	t.Helper()
+	accepted := make([]AcceptedDirectory, len(absent))
+	for index, directory := range absent {
+		info, err := os.Lstat(filepath.Join(root, directory.Path))
+		must(t, err)
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino == 0 {
+			t.Fatal("directory identity is unavailable")
+		}
+		accepted[index] = AcceptedDirectory{Path: directory.Path, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+	}
+	return accepted
+}
+
+func TestRollbackRestartRejectsV3DirectoryDriftBeforeLeafMutation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(t *testing.T, root string)
+	}{
+		{"foreign content", func(t *testing.T, root string) {
+			writeFile(t, filepath.Join(root, "made", "foreign.txt"), []byte("foreign"), 0o600)
+		}},
+		{"identity drift", func(t *testing.T, root string) {
+			must(t, os.Remove(filepath.Join(root, "made")))
+			must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+		}},
+		{"mode drift", func(t *testing.T, root string) { must(t, os.Chmod(filepath.Join(root, "made"), 0o755)) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(root, "replace.txt"), []byte("before"), 0o600)
+			snapshot, err := captureWithDirectoryPreimage(root, backups, "backup", []string{"replace.txt"}, []Directory{{Path: "made", Mode: 0o700}})
+			must(t, err)
+			must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+			snapshot.Manifest.Version = manifestV3
+			snapshot.Manifest.AcceptedDirectories = acceptedRestartDirectories(t, root, snapshot.Manifest.AbsentDirectories)
+			writeFile(t, filepath.Join(root, "replace.txt"), []byte("after"), 0o640)
+			test.change(t, root)
+			after := restartAfters(t, []restartFile{{"replace.txt", true, "after", 0o640}})
+			if err := RollbackRestart(root, snapshot, after); err == nil {
+				t.Fatal("RollbackRestart() error = nil")
+			}
+			info, err := os.Lstat(filepath.Join(root, "replace.txt"))
+			must(t, err)
+			data, err := os.ReadFile(filepath.Join(root, "replace.txt"))
+			must(t, err)
+			if string(data) != "after" || info.Mode().Perm() != 0o640 {
+				t.Fatalf("leaf mutated on rejection: %q %#o", data, info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestRollbackRestartV2AndV1Compatibility(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		withDirectory bool
+		present       bool
+		wantErr       bool
+	}{
+		{"v2 present rejects", true, true, true},
+		{"v2 absent restores leaves", true, false, false},
+		{"v1 restores leaves", false, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(root, "replace.txt"), []byte("before"), 0o600)
+			var snapshot Snapshot
+			var err error
+			if test.withDirectory {
+				snapshot, err = captureWithDirectoryPreimage(root, backups, "backup", []string{"replace.txt"}, []Directory{{Path: "made", Mode: 0o700}})
+			} else {
+				snapshot, err = Capture(root, backups, "backup", []string{"replace.txt"})
+			}
+			must(t, err)
+			if test.present {
+				must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+			}
+			writeFile(t, filepath.Join(root, "replace.txt"), []byte("after"), 0o640)
+			after := restartAfters(t, []restartFile{{"replace.txt", true, "after", 0o640}})
+			err = RollbackRestart(root, snapshot, after)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("RollbackRestart() error = %v", err)
+			}
+			data, readErr := os.ReadFile(filepath.Join(root, "replace.txt"))
+			must(t, readErr)
+			want := "before"
+			if test.wantErr {
+				want = "after"
+			}
+			if string(data) != want {
+				t.Fatalf("leaf = %q, want %q", data, want)
+			}
+		})
+	}
+}
+
 func TestPlanRestartEvidenceRejectsMalformedCoverage(t *testing.T) {
 	root, backups := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(root, "file.txt"), []byte("before"), 0o600)

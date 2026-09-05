@@ -38,19 +38,15 @@ func TestClaudeRealSmoke(t *testing.T) {
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
 	if err != nil {
-		t.Fatal("real smoke temporary root unavailable")
+		t.Log("failure_code=internal")
+		t.Fatal("Claude Code real smoke failed")
 	}
 	evidence, runErr := runClaudeRealSmoke(root)
 	cleanupErr := cleanupClaudeRealSmoke(root)
-	if evidence != "" {
-		t.Logf("%s cleanup=%t", evidence, cleanupErr == nil)
+	if runErr == nil && cleanupErr == nil && evidence != "" {
+		t.Logf("%s cleanup=true", evidence)
 	}
-	if cleanupErr != nil {
-		t.Error("real smoke cleanup failed")
-	}
-	if runErr != nil {
-		t.Fatal("Claude Code real smoke failed")
-	}
+	logSmokeFailure(t, runErr, cleanupErr, "Claude Code real smoke failed")
 }
 
 func TestClaudeRealSmokeHelpers(t *testing.T) {
@@ -143,26 +139,26 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 func runClaudeRealSmoke(home string) (string, error) {
 	revision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
 	if !validSmokeRevision(revision) {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInvalidInput)
 	}
 	path, err := exec.LookPath(claudeSmokeBinary)
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureBinaryLookup)
 	}
 	workdir, err := os.MkdirTemp(home, "work-")
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 
 	env := claudeSmokeEnvironment(home)
 	runner := &claudeRealSmokeRunner{path: path, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].Status() != runtimeprobe.Absent || reports[1].Status() != runtimeprobe.Absent || reports[2].RuntimeID() != runtimematrix.RuntimeClaudeCode || reports[2].Status() != runtimeprobe.VersionDetected {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureProbe)
 	}
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{{ID: runtimematrix.RuntimePi}, {ID: runtimematrix.RuntimeOpenCode}, {ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{reports[2].DetectedVersion()}}})
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	deps := defaultInstallDependencies()
 	deps.policy = policy
@@ -175,23 +171,23 @@ func runClaudeRealSmoke(home string) (string, error) {
 	var stderr bytes.Buffer
 	code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, runner, deps)
 	if code != exitOK || stderr.Len() != 0 || stdout.String() != claudeSmokeInstallOutput() {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	marker, snapshot, err := smokeMarker()
 	if err != nil {
-		return "", err
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 	installedPath := filepath.Join(home, ".claude", "skills", "cortex-catalog-marker", "SKILL.md")
 	installed, err := os.ReadFile(installedPath)
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	info, err := os.Stat(installedPath)
 	if err != nil || info.Mode().Perm() != 0o600 {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude", ".cortex", "install-state.json")); err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), claudeSmokeTimeout)
@@ -199,12 +195,12 @@ func runClaudeRealSmoke(home string) (string, error) {
 	started := time.Now()
 	execution, err := runClaudeSmokeCommand(ctx, path, workdir, env)
 	duration := time.Since(started).Milliseconds()
-	if err != nil || ctx.Err() != nil || execution.ExitCode != 0 || len(execution.Stderr) != 0 || execution.StdoutOverflow || execution.StderrOverflow {
-		return "", realSmokeError()
+	if err := smokeInvocationFailure(ctx, execution, err); err != nil {
+		return "", err
 	}
 	result, err := parseClaudeSmokeResult(execution.Stdout)
-	if err != nil || result.Name != "cortex-catalog-marker" || result.Heading != "Cortex Catalog Marker" {
-		return "", realSmokeError()
+	if err := smokeResultFailure(result, err); err != nil {
+		return "", err
 	}
 	return claudeSmokeEvidence(revision, reports[2].DetectedVersion(), snapshot, marker, duration), nil
 }

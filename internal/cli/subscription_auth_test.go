@@ -11,33 +11,34 @@ import (
 const subscriptionAuthMaxBytes = 1 << 20
 
 func copySubscriptionAuth(source, target string) error {
+	failure := func() error { return newSmokeFailure(smokeFailureAuthCopy) }
 	if !filepath.IsAbs(source) || filepath.Clean(source) != source {
-		return realSmokeError()
+		return failure()
 	}
 	info, err := os.Lstat(source)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > subscriptionAuthMaxBytes {
-		return realSmokeError()
+		return failure()
 	}
 	contents, err := os.ReadFile(source)
 	if err != nil || len(contents) == 0 || len(contents) > subscriptionAuthMaxBytes {
-		return realSmokeError()
+		return failure()
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return realSmokeError()
+		return failure()
 	}
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return realSmokeError()
+		return failure()
 	}
 	writeErr := error(nil)
 	if written, err := file.Write(contents); err != nil || written != len(contents) {
-		writeErr = realSmokeError()
+		writeErr = failure()
 	}
 	if writeErr == nil && file.Sync() != nil {
-		writeErr = realSmokeError()
+		writeErr = failure()
 	}
 	if file.Close() != nil || writeErr != nil {
-		return realSmokeError()
+		return failure()
 	}
 	return nil
 }

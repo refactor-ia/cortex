@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -37,6 +38,123 @@ const (
 
 var realSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
 
+type smokeFailureCode string
+
+const (
+	smokeFailureInvalidInput   smokeFailureCode = "invalid_input"
+	smokeFailureAuthCopy       smokeFailureCode = "auth_copy"
+	smokeFailureBinaryLookup   smokeFailureCode = "binary_lookup"
+	smokeFailureProbe          smokeFailureCode = "probe"
+	smokeFailureInstall        smokeFailureCode = "install"
+	smokeFailureReadback       smokeFailureCode = "readback"
+	smokeFailureInvokeTimeout  smokeFailureCode = "invoke_timeout"
+	smokeFailureInvokeOverflow smokeFailureCode = "invoke_overflow"
+	smokeFailureInvokeExit     smokeFailureCode = "invoke_exit"
+	smokeFailureInvokeStderr   smokeFailureCode = "invoke_stderr"
+	smokeFailureResultParse    smokeFailureCode = "result_parse"
+	smokeFailureCleanup        smokeFailureCode = "cleanup"
+	smokeFailureInternal       smokeFailureCode = "internal"
+)
+
+type smokeFailure struct{ code smokeFailureCode }
+
+type smokeFailureReporter interface {
+	Helper()
+	Log(args ...any)
+	Fatal(args ...any)
+}
+
+type smokeFailureRecorder struct{ events []string }
+
+func (*smokeFailureRecorder) Helper() {}
+
+func (recorder *smokeFailureRecorder) Log(args ...any) {
+	recorder.events = append(recorder.events, fmt.Sprint(args...))
+}
+
+func (recorder *smokeFailureRecorder) Fatal(args ...any) {
+	recorder.events = append(recorder.events, "fatal="+fmt.Sprint(args...))
+}
+
+func (smokeFailure) Error() string { return "real smoke validation failed" }
+
+func validSmokeFailureCode(code smokeFailureCode) bool {
+	switch code {
+	case smokeFailureInvalidInput, smokeFailureAuthCopy, smokeFailureBinaryLookup, smokeFailureProbe,
+		smokeFailureInstall, smokeFailureReadback, smokeFailureInvokeTimeout, smokeFailureInvokeOverflow,
+		smokeFailureInvokeExit, smokeFailureInvokeStderr, smokeFailureResultParse, smokeFailureCleanup,
+		smokeFailureInternal:
+		return true
+	default:
+		return false
+	}
+}
+
+func newSmokeFailure(code smokeFailureCode) error {
+	if validSmokeFailureCode(code) {
+		return smokeFailure{code: code}
+	}
+	return smokeFailure{code: smokeFailureInternal}
+}
+
+func smokeFailureCodeOf(err error) smokeFailureCode {
+	if err == nil {
+		return ""
+	}
+	var failure smokeFailure
+	if errors.As(err, &failure) && validSmokeFailureCode(failure.code) {
+		return failure.code
+	}
+	return smokeFailureInternal
+}
+
+func smokeInvocationFailure(ctx context.Context, execution runtimeprobe.Execution, err error) error {
+	if (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)) || errors.Is(err, context.DeadlineExceeded) {
+		return newSmokeFailure(smokeFailureInvokeTimeout)
+	}
+	if execution.StdoutOverflow || execution.StderrOverflow {
+		return newSmokeFailure(smokeFailureInvokeOverflow)
+	}
+	if execution.ExitCode != 0 {
+		return newSmokeFailure(smokeFailureInvokeExit)
+	}
+	if len(execution.Stderr) != 0 {
+		return newSmokeFailure(smokeFailureInvokeStderr)
+	}
+	if err != nil {
+		return newSmokeFailure(smokeFailureInternal)
+	}
+	return nil
+}
+
+func smokeResultFailure(result smokeAcknowledgement, err error) error {
+	if err != nil || result.Name != "cortex-catalog-marker" || result.Heading != "Cortex Catalog Marker" {
+		return newSmokeFailure(smokeFailureResultParse)
+	}
+	return nil
+}
+
+func smokeFailureLines(runErr, cleanupErr error) []string {
+	lines := make([]string, 0, 2)
+	if cleanupErr != nil {
+		lines = append(lines, "failure_code="+string(smokeFailureCleanup))
+	}
+	if runErr != nil {
+		lines = append(lines, "failure_code="+string(smokeFailureCodeOf(runErr)))
+	}
+	return lines
+}
+
+func logSmokeFailure(t smokeFailureReporter, runErr, cleanupErr error, message string) {
+	t.Helper()
+	for _, line := range smokeFailureLines(runErr, cleanupErr) {
+		t.Log(line)
+	}
+	if runErr != nil || cleanupErr != nil {
+		t.Fatal(message)
+	}
+}
+
 func TestPiRealSmoke(t *testing.T) {
 	authorization := os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION")
 	if !realSmokeAuthorized(authorization, piRealSmokeAuthorization) {
@@ -44,7 +162,8 @@ func TestPiRealSmoke(t *testing.T) {
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
 	if err != nil {
-		t.Fatal("real smoke temporary root unavailable")
+		t.Log("failure_code=internal")
+		t.Fatal("Pi real smoke failed")
 	}
 	source, authorized := subscriptionAuthSourceAfterGate(authorization, piRealSmokeAuthorization, func() string {
 		return os.Getenv("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE")
@@ -54,16 +173,124 @@ func TestPiRealSmoke(t *testing.T) {
 	}
 	evidence, runErr := runPiRealSmoke(root, source)
 	cleanupErr := cleanupPiRealSmoke(root)
-	if evidence != "" {
-		t.Logf("%s cleanup=%t", evidence, cleanupErr == nil)
+	if runErr == nil && cleanupErr == nil && evidence != "" {
+		t.Logf("%s cleanup=true", evidence)
 	}
-	if cleanupErr != nil {
-		t.Error("real smoke cleanup failed")
-	}
-	if runErr != nil {
-		t.Fatal("Pi real smoke failed")
-	}
+	logSmokeFailure(t, runErr, cleanupErr, "Pi real smoke failed")
 }
+func TestSmokeFailureAttribution(t *testing.T) {
+	t.Run("allowlisted and unknown failures are safe", func(t *testing.T) {
+		codes := []smokeFailureCode{
+			smokeFailureInvalidInput, smokeFailureAuthCopy, smokeFailureBinaryLookup, smokeFailureProbe,
+			smokeFailureInstall, smokeFailureReadback, smokeFailureInvokeTimeout, smokeFailureInvokeOverflow,
+			smokeFailureInvokeExit, smokeFailureInvokeStderr, smokeFailureResultParse, smokeFailureCleanup,
+			smokeFailureInternal,
+		}
+		for _, code := range codes {
+			t.Run(string(code), func(t *testing.T) {
+				err := newSmokeFailure(code)
+				if err.Error() != "real smoke validation failed" || smokeFailureCodeOf(err) != code {
+					t.Fatalf("failure = %v, code = %q", err, smokeFailureCodeOf(err))
+				}
+			})
+		}
+		if got := smokeFailureCodeOf(errors.New("untrusted detail")); got != smokeFailureInternal {
+			t.Fatalf("unknown failure code = %q", got)
+		}
+		if got := smokeFailureCodeOf(newSmokeFailure("unknown")); got != smokeFailureInternal {
+			t.Fatalf("unknown typed code = %q", got)
+		}
+		for _, failure := range []smokeFailure{{}, {code: "unknown"}} {
+			if got := smokeFailureCodeOf(failure); got != smokeFailureInternal {
+				t.Fatalf("direct failure code = %q", got)
+			}
+		}
+	})
+	t.Run("invocation failures use safe precedence", func(t *testing.T) {
+		deadline, cancel := context.WithCancel(context.Background())
+		cancel()
+		cases := []struct {
+			name string
+			ctx  context.Context
+			exec runtimeprobe.Execution
+			err  error
+			want smokeFailureCode
+		}{
+			{"deadline context wins", contextDeadline(), runtimeprobe.Execution{StdoutOverflow: true, ExitCode: 1, Stderr: []byte("x")}, errors.New("x"), smokeFailureInvokeTimeout},
+			{"deadline error wins", context.Background(), runtimeprobe.Execution{StdoutOverflow: true, ExitCode: 1, Stderr: []byte("x")}, context.DeadlineExceeded, smokeFailureInvokeTimeout},
+			{"overflow wins", context.Background(), runtimeprobe.Execution{StdoutOverflow: true, ExitCode: 1, Stderr: []byte("x")}, nil, smokeFailureInvokeOverflow},
+			{"exit wins", context.Background(), runtimeprobe.Execution{ExitCode: 1, Stderr: []byte("x")}, nil, smokeFailureInvokeExit},
+			{"stderr wins", context.Background(), runtimeprobe.Execution{Stderr: []byte("x")}, nil, smokeFailureInvokeStderr},
+			{"unexpected error is internal", deadline, runtimeprobe.Execution{}, errors.New("x"), smokeFailureInternal},
+			{"success", context.Background(), runtimeprobe.Execution{}, nil, ""},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := smokeInvocationFailure(tc.ctx, tc.exec, tc.err); smokeFailureCodeOf(got) != tc.want {
+					t.Fatalf("code = %q, want %q", smokeFailureCodeOf(got), tc.want)
+				}
+			})
+		}
+	})
+	t.Run("failure lines follow cleanup-first order", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			run   error
+			clean error
+			want  []string
+		}{
+			{"run only", newSmokeFailure(smokeFailureProbe), nil, []string{"failure_code=probe"}},
+			{"cleanup only", nil, errors.New("x"), []string{"failure_code=cleanup"}},
+			{"both", newSmokeFailure(smokeFailureProbe), errors.New("x"), []string{"failure_code=cleanup", "failure_code=probe"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := smokeFailureLines(tc.run, tc.clean); !equalStrings(got, tc.want) {
+					t.Fatalf("lines = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("logs precede fatal in cleanup-first order", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			run   error
+			clean error
+			want  []string
+		}{
+			{"run only", newSmokeFailure(smokeFailureProbe), nil, []string{"failure_code=probe", "fatal=Pi real smoke failed"}},
+			{"cleanup only", nil, errors.New("x"), []string{"failure_code=cleanup", "fatal=Pi real smoke failed"}},
+			{"both", newSmokeFailure(smokeFailureProbe), errors.New("x"), []string{"failure_code=cleanup", "failure_code=probe", "fatal=Pi real smoke failed"}},
+			{"success", nil, nil, nil},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				recorder := &smokeFailureRecorder{}
+				logSmokeFailure(recorder, tc.run, tc.clean, "Pi real smoke failed")
+				if !equalStrings(recorder.events, tc.want) {
+					t.Fatalf("events = %q, want %q", recorder.events, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("auth copy and parser boundaries are classified", func(t *testing.T) {
+		if got := smokeFailureCodeOf(copySubscriptionAuth("relative", filepath.Join(t.TempDir(), "auth.json"))); got != smokeFailureAuthCopy {
+			t.Fatalf("auth copy code = %q", got)
+		}
+		result, err := parseSmokeAcknowledgement([]byte("{"))
+		if got := smokeFailureCodeOf(smokeResultFailure(result, err)); got != smokeFailureResultParse {
+			t.Fatalf("parser boundary code = %q", got)
+		}
+	})
+}
+
+func contextDeadline() context.Context {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	return ctx
+}
+
 func TestPiRealSmokeHelpers(t *testing.T) {
 	t.Run("gate requires exact authorization", func(t *testing.T) {
 		for value, want := range map[string]bool{piRealSmokeAuthorization: true, "": false, "issue-41-pi ": false} {
@@ -149,26 +376,29 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 }
 func runPiRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	sourceRevision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
-	if !validSmokeRevision(sourceRevision) || copySubscriptionAuth(subscriptionAuthSource, piSubscriptionAuthTarget(home)) != nil {
-		return "", realSmokeError()
+	if !validSmokeRevision(sourceRevision) {
+		return "", newSmokeFailure(smokeFailureInvalidInput)
+	}
+	if err := copySubscriptionAuth(subscriptionAuthSource, piSubscriptionAuthTarget(home)); err != nil {
+		return "", err
 	}
 	piPath, err := exec.LookPath(piSmokeBinary)
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureBinaryLookup)
 	}
 	workdir, err := os.MkdirTemp(home, "work-")
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 	env := piSmokeEnvironment(home)
 	runner := &piRealSmokeRunner{path: piPath, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].RuntimeID() != runtimematrix.RuntimePi || reports[0].Status() != runtimeprobe.VersionDetected || reports[1].Status() != runtimeprobe.Absent || reports[2].Status() != runtimeprobe.Absent {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureProbe)
 	}
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{reports[0].DetectedVersion()}}, {ID: runtimematrix.RuntimeOpenCode}, {ID: runtimematrix.RuntimeClaudeCode}})
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	deps := defaultInstallDependencies()
 	deps.policy = policy
@@ -178,40 +408,40 @@ func runPiRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	}
 	var stdout, stderr bytes.Buffer
 	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, runner, deps); code != exitOK || stderr.Len() != 0 || stdout.String() != piSmokeInstallOutput() {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	marker, fingerprint, err := smokeMarker()
 	if err != nil {
-		return "", err
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 	installed, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "skills", "cortex-catalog-marker", "SKILL.md"))
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	info, err := os.Stat(filepath.Join(home, ".pi", "agent", "skills", "cortex-catalog-marker", "SKILL.md"))
 	if err != nil || info.Mode().Perm() != 0o600 {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".pi", "agent", ".cortex", "install-state.json")); err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), piSmokeTimeout)
 	defer cancel()
 	startedAt := time.Now()
 	execution, err := runPiSmokeCommand(ctx, piPath, workdir, env)
 	durationMS := time.Since(startedAt).Milliseconds()
-	if err != nil || ctx.Err() != nil || execution.ExitCode != 0 || len(execution.Stderr) != 0 || execution.StdoutOverflow || execution.StderrOverflow {
-		return "", realSmokeError()
+	if err := smokeInvocationFailure(ctx, execution, err); err != nil {
+		return "", err
 	}
 	result, err := parseSmokeAcknowledgement(execution.Stdout)
-	if err != nil || result.Name != "cortex-catalog-marker" || result.Heading != "Cortex Catalog Marker" {
-		return "", realSmokeError()
+	if err := smokeResultFailure(result, err); err != nil {
+		return "", err
 	}
 	return piSmokeEvidence(sourceRevision, reports[0].DetectedVersion(), fingerprint, marker, durationMS), nil
 }
 func realSmokeAuthorized(value, authorization string) bool { return value == authorization }
 func cleanupPiRealSmoke(root string) error                 { return os.RemoveAll(root) }
-func realSmokeError() error                                { return errors.New("real smoke validation failed") }
+func realSmokeError() error                                { return newSmokeFailure(smokeFailureInternal) }
 func piSmokeEnvironment(home string) []string {
 	return []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "PI_CODING_AGENT_DIR=" + filepath.Join(home, ".pi", "agent")}
 }

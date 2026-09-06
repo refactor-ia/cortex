@@ -40,7 +40,8 @@ func TestOpenCodeRealSmoke(t *testing.T) {
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
 	if err != nil {
-		t.Fatal("real smoke temporary root unavailable")
+		t.Log("failure_code=internal")
+		t.Fatal("OpenCode real smoke failed")
 	}
 	source, authorized := subscriptionAuthSourceAfterGate(authorization, opencodeRealSmokeAuthorization, func() string {
 		return os.Getenv("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE")
@@ -50,15 +51,10 @@ func TestOpenCodeRealSmoke(t *testing.T) {
 	}
 	evidence, runErr := runOpenCodeRealSmoke(root, source)
 	cleanupErr := cleanupOpenCodeRealSmoke(root)
-	if evidence != "" {
-		t.Logf("%s cleanup=%t", evidence, cleanupErr == nil)
+	if runErr == nil && cleanupErr == nil && evidence != "" {
+		t.Logf("%s cleanup=true", evidence)
 	}
-	if cleanupErr != nil {
-		t.Error("real smoke cleanup failed")
-	}
-	if runErr != nil {
-		t.Fatal("OpenCode real smoke failed")
-	}
+	logSmokeFailure(t, runErr, cleanupErr, "OpenCode real smoke failed")
 }
 func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 	t.Run("gate requires exact authorization", func(t *testing.T) {
@@ -122,26 +118,29 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 }
 func runOpenCodeRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	sourceRevision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
-	if !validSmokeRevision(sourceRevision) || copySubscriptionAuth(subscriptionAuthSource, opencodeSubscriptionAuthTarget(home)) != nil {
-		return "", realSmokeError()
+	if !validSmokeRevision(sourceRevision) {
+		return "", newSmokeFailure(smokeFailureInvalidInput)
+	}
+	if err := copySubscriptionAuth(subscriptionAuthSource, opencodeSubscriptionAuthTarget(home)); err != nil {
+		return "", err
 	}
 	path, err := exec.LookPath(opencodeSmokeBinary)
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureBinaryLookup)
 	}
 	workdir, err := os.MkdirTemp(home, "work-")
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 	env := opencodeSmokeEnvironment(home)
 	runner := &opencodeRealSmokeRunner{path: path, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].Status() != runtimeprobe.Absent || reports[1].RuntimeID() != runtimematrix.RuntimeOpenCode || reports[1].Status() != runtimeprobe.VersionDetected || reports[2].Status() != runtimeprobe.Absent {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureProbe)
 	}
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{{ID: runtimematrix.RuntimePi}, {ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{reports[1].DetectedVersion()}}, {ID: runtimematrix.RuntimeClaudeCode}})
 	if err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	deps := defaultInstallDependencies()
 	deps.policy, deps.home = policy, func() (string, error) { return home, nil }
@@ -150,34 +149,34 @@ func runOpenCodeRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	}
 	var stdout, stderr bytes.Buffer
 	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, runner, deps); code != exitOK || stderr.Len() != 0 || stdout.String() != opencodeSmokeInstallOutput() {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureInstall)
 	}
 	marker, snapshot, err := smokeMarker()
 	if err != nil {
-		return "", err
+		return "", newSmokeFailure(smokeFailureInternal)
 	}
 	installedPath := filepath.Join(home, ".config", "opencode", "skills", "cortex-catalog-marker", "SKILL.md")
 	installed, err := os.ReadFile(installedPath)
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	info, err := os.Stat(installedPath)
 	if err != nil || info.Mode().Perm() != 0o600 {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", ".cortex", "install-state.json")); err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureReadback)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opencodeSmokeTimeout)
 	defer cancel()
 	startedAt := time.Now()
 	execution, err := runOpenCodeSmokeCommand(ctx, path, workdir, env)
 	durationMS := time.Since(startedAt).Milliseconds()
-	if err != nil || ctx.Err() != nil || execution.ExitCode != 0 || len(execution.Stderr) != 0 || execution.StdoutOverflow || execution.StderrOverflow {
-		return "", realSmokeError()
+	if err := smokeInvocationFailure(ctx, execution, err); err != nil {
+		return "", err
 	}
 	if _, err := parseOpenCodeSmokeJSONL(execution.Stdout); err != nil {
-		return "", realSmokeError()
+		return "", newSmokeFailure(smokeFailureResultParse)
 	}
 	return opencodeSmokeEvidence(sourceRevision, reports[1].DetectedVersion(), snapshot, marker, durationMS), nil
 }

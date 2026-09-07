@@ -26,8 +26,8 @@ const (
 	ProfileAnthropic Profile = "anthropic"
 )
 
-// ConversationalLevelMedium is the user-approved conversational level for primary models.
-const ConversationalLevelMedium = "medium"
+// ConversationalLevelLow is the user-approved conversational level for primary models.
+const ConversationalLevelLow = "low"
 
 // Errors reported when a lookup yields no resolvable model.
 var (
@@ -169,7 +169,7 @@ func ResolvePrimary(p Profile, r Runtime) (Primary, error) {
 	if s, err := get(p); err != nil {
 		return Primary{}, err
 	} else if id := models[s.primary][r]; id != "" {
-		return Primary{ModelID: id, ConversationalLevel: ConversationalLevelMedium}, nil
+		return Primary{ModelID: id, ConversationalLevel: ConversationalLevelLow}, nil
 	}
 	return Primary{}, fmt.Errorf("%w: primary of %q on %q", ErrUnrepresentable, p, r)
 }

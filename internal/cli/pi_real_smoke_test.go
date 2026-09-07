@@ -33,7 +33,7 @@ const (
 	piSmokeOutputLimit       = 8 * 1024
 	piSmokeTimeoutMS         = 60 * 1000
 	piSmokeTimeout           = time.Duration(piSmokeTimeoutMS) * time.Millisecond
-	piSmokePrompt            = "/skill:cortex-catalog-marker\nRespond with exactly one minified JSON object containing the activated skill name and first Markdown heading."
+	piSmokePrompt            = "/skill:cortex-catalog-marker\nRespond with exactly one minified JSON object using this envelope: {\"name\":\"<activated skill name>\",\"heading\":\"<first Markdown heading without the leading #>\"}. Do not use a Markdown code fence or include any other text."
 )
 
 var realSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
@@ -292,6 +292,16 @@ func contextDeadline() context.Context {
 }
 
 func TestPiRealSmokeHelpers(t *testing.T) {
+	t.Run("prompt defines the exact acknowledgement envelope", func(t *testing.T) {
+		for _, fragment := range []string{
+			`{"name":"<activated skill name>","heading":"<first Markdown heading without the leading #>"}`,
+			"Do not use a Markdown code fence or include any other text.",
+		} {
+			if !strings.Contains(piSmokePrompt, fragment) {
+				t.Fatalf("prompt missing %q", fragment)
+			}
+		}
+	})
 	t.Run("gate requires exact authorization", func(t *testing.T) {
 		for value, want := range map[string]bool{piRealSmokeAuthorization: true, "": false, "issue-41-pi ": false} {
 			if got := realSmokeAuthorized(value, piRealSmokeAuthorization); got != want {

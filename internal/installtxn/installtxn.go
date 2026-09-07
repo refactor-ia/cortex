@@ -2,6 +2,7 @@
 package installtxn
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/ownership"
+	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
 
@@ -27,6 +29,101 @@ var (
 	ErrConflict = errors.New("install transaction: ownership conflict")
 	ErrFailed   = errors.New("install transaction: failed")
 )
+
+const stateRelativePath = ".cortex/install-state.json"
+
+var errPriorOwnership = errors.New("install transaction: prior ownership index is invalid")
+
+// priorOwnedArtifact is one canonical snapshot-owned prior artifact identity.
+type priorOwnedArtifact struct {
+	relativePath         string
+	kind                 installstate.Kind
+	logicalID            string
+	sha256               string
+	mode                 fs.FileMode
+	capabilityID         string
+	roleID               qarole.RoleID
+	actorContractVersion string
+	installationID       installstate.InstallationID
+}
+
+// priorOwnershipIndex is a private detached index of canonical prior-owned artifacts.
+type priorOwnershipIndex struct {
+	schemaVersion  int
+	installationID installstate.InstallationID
+	artifacts      []priorOwnedArtifact
+}
+
+// priorIndex builds a detached prior ownership index from a verified snapshot.
+func priorIndex(snapshot filetxn.Snapshot) (priorOwnershipIndex, error) {
+	entries := snapshot.Manifest.Entries
+	seen := make(map[string]bool, len(entries))
+	stateCount := 0
+	var state filetxn.Entry
+	for _, entry := range entries {
+		if seen[entry.Path] {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		seen[entry.Path] = true
+		if entry.Path == stateRelativePath {
+			stateCount++
+			state = entry
+		}
+	}
+	if stateCount != 1 {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	if !state.Exists {
+		if state.Mode != 0 || state.SHA256 != "" {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		return priorOwnershipIndex{}, nil
+	}
+	if fs.FileMode(state.Mode).Perm() != installplan.CanonicalFileMode.Perm() {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	payload, err := snapshot.Payload(stateRelativePath)
+	if err != nil {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	manifest, err := installstate.Decode(payload)
+	if err != nil {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	encoded, err := installstate.Encode(manifest)
+	if err != nil || !bytes.Equal(encoded, payload) {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	index := priorOwnershipIndex{
+		schemaVersion:  manifest.SchemaVersion(),
+		installationID: manifest.InstallationID(),
+		artifacts:      make([]priorOwnedArtifact, 0, len(manifest.Artifacts())),
+	}
+	paths := make(map[string]bool, len(manifest.Artifacts()))
+	for _, artifact := range manifest.Artifacts() {
+		relative := artifact.RelativePath()
+		if relative == stateRelativePath || paths[relative] {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		paths[relative] = true
+		kind := artifact.Kind()
+		if manifest.SchemaVersion() == 1 {
+			kind = installstate.KindSkill
+		}
+		if kind != installstate.KindSkill && kind != installstate.KindPiActor {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		index.artifacts = append(index.artifacts, priorOwnedArtifact{
+			relativePath: relative, kind: kind, logicalID: artifact.LogicalID(), sha256: artifact.SHA256(),
+			mode: installplan.CanonicalFileMode, capabilityID: artifact.CapabilityID(), roleID: artifact.RoleID(),
+			actorContractVersion: artifact.ActorContractVersion(), installationID: artifact.InstallationID(),
+		})
+	}
+	sort.Slice(index.artifacts, func(left, right int) bool {
+		return index.artifacts[left].relativePath < index.artifacts[right].relativePath
+	})
+	return index, nil
+}
 
 // Action is bounded neutral evidence for one logical artifact decision.
 type Action struct {

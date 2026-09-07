@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
@@ -738,4 +740,143 @@ func TestApplyVerifiedRejectsPreTransactionAssetRace(t *testing.T) {
 	for _, file := range candidate.Files()[1:] {
 		assertFile(t, file, false)
 	}
+}
+
+func TestPriorOwnershipIndexAbsentStateReturnsEmpty(t *testing.T) {
+	index, err := priorIndex(snapshot(t, filetxn.Entry{Path: stateRelativePath}))
+	must(t, err)
+	if index.schemaVersion != 0 || index.installationID != "" || len(index.artifacts) != 0 {
+		t.Fatalf("absent index = (%d, %q, %d)", index.schemaVersion, index.installationID, len(index.artifacts))
+	}
+}
+
+func TestPriorOwnershipIndexCanonical(t *testing.T) {
+	v1, err := priorIndex(planSnapshot(t, candidate(t, physicalTempDir(t), "one", "alpha", "beta")))
+	must(t, err)
+	if v1.schemaVersion != 1 || v1.installationID != "" || len(v1.artifacts) != 2 {
+		t.Fatalf("v1 index = (%d, %q, %d)", v1.schemaVersion, v1.installationID, len(v1.artifacts))
+	}
+	for _, artifact := range v1.artifacts {
+		if artifact.kind != installstate.KindSkill || artifact.mode != installplan.CanonicalFileMode || artifact.installationID != "" {
+			t.Fatalf("v1 artifact = %#v", artifact)
+		}
+	}
+	v2, err := priorIndex(planSnapshot(t, actorAwareCandidate(t)))
+	must(t, err)
+	if v2.schemaVersion != 2 || v2.installationID != installstate.InstallationID("000102030405060708090a0b0c0d0e0f") {
+		t.Fatalf("v2 index = (%d, %q)", v2.schemaVersion, v2.installationID)
+	}
+	skillCount, actorCount := 0, 0
+	for _, artifact := range v2.artifacts {
+		if artifact.mode != installplan.CanonicalFileMode || artifact.installationID != v2.installationID {
+			t.Fatalf("v2 artifact = %#v", artifact)
+		}
+		switch artifact.kind {
+		case installstate.KindSkill:
+			skillCount++
+		case installstate.KindPiActor:
+			actorCount++
+			if artifact.roleID == "" || artifact.actorContractVersion != "cortex.qa.pi-actor.v1" {
+				t.Fatalf("v2 actor = %#v", artifact)
+			}
+		default:
+			t.Fatalf("v2 kind = %q", artifact.kind)
+		}
+	}
+	if skillCount == 0 || actorCount != 6 {
+		t.Fatalf("v2 counts = %d skills, %d actors", skillCount, actorCount)
+	}
+}
+
+func TestPriorOwnershipIndexRejectsInvalid(t *testing.T) {
+	plan := candidate(t, physicalTempDir(t), "one", "alpha")
+	state := plan.Files()[len(plan.Files())-1].Content()
+	duplicate := func() filetxn.Snapshot {
+		snapshot := planSnapshot(t, plan)
+		snapshot.Manifest.Entries = append(snapshot.Manifest.Entries, filetxn.Entry{Path: "skills/cortex-alpha/SKILL.md", Exists: true, Mode: 0o600, SHA256: strings.Repeat("a", 64)})
+		sort.Slice(snapshot.Manifest.Entries, func(i, j int) bool { return snapshot.Manifest.Entries[i].Path < snapshot.Manifest.Entries[j].Path })
+		return snapshot
+	}
+	for _, tc := range []struct {
+		name string
+		got  filetxn.Snapshot
+	}{
+		{"missing state", snapshot(t, filetxn.Entry{Path: "skills/cortex-alpha/SKILL.md", Exists: true, Mode: 0o600, SHA256: strings.Repeat("a", 64)})},
+		{"duplicated state", snapshot(t, filetxn.Entry{Path: stateRelativePath, Exists: true, Mode: 0o600, SHA256: strings.Repeat("a", 64)}, filetxn.Entry{Path: stateRelativePath, Exists: true, Mode: 0o600, SHA256: strings.Repeat("b", 64)})},
+		{"wrong state mode", snapshotWithFiles(t, state, 0o644, nil)},
+		{"invalid payload", snapshotWithFiles(t, []byte("{invalid"), 0o600, nil)},
+		{"noncanonical payload", snapshotWithFiles(t, append([]byte(" "), state...), 0o600, nil)},
+		{"noncanonical absent", snapshot(t, filetxn.Entry{Path: stateRelativePath, Exists: false, Mode: 0o600})},
+		{"duplicate path", duplicate()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := priorIndex(tc.got); !errors.Is(err, errPriorOwnership) {
+				t.Fatalf("priorIndex(%s) error = %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestPriorOwnershipIndexOmittedUnchangedArtifactIsDetached(t *testing.T) {
+	plan := candidate(t, physicalTempDir(t), "one", "alpha", "beta")
+	state := plan.Files()[len(plan.Files())-1].Content()
+	alpha := plan.Files()[0]
+	snapshot := snapshotWithFiles(t, state, 0o600, map[string][]byte{alpha.RelativePath(): alpha.Content()})
+	index, err := priorIndex(snapshot)
+	must(t, err)
+	if index.schemaVersion != 1 || len(index.artifacts) != 2 {
+		t.Fatalf("omitted index = (%d, %d)", index.schemaVersion, len(index.artifacts))
+	}
+	found := false
+	for _, artifact := range index.artifacts {
+		if artifact.relativePath == "skills/cortex-beta/SKILL.md" {
+			found = true
+			if artifact.kind != installstate.KindSkill || artifact.mode != installplan.CanonicalFileMode || artifact.sha256 == "" {
+				t.Fatalf("omitted artifact = %#v", artifact)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("omitted unchanged artifact not indexed")
+	}
+	for i := range snapshot.Manifest.Entries {
+		snapshot.Manifest.Entries[i].Mode = 0o644
+	}
+	if index.artifacts[0].mode != installplan.CanonicalFileMode {
+		t.Fatal("index mutated by snapshot")
+	}
+}
+
+func planSnapshot(t *testing.T, plan installplan.Plan) filetxn.Snapshot {
+	t.Helper()
+	stateFile := plan.Files()[len(plan.Files())-1]
+	files := make(map[string][]byte, len(plan.Files())-1)
+	for _, file := range plan.Files()[:len(plan.Files())-1] {
+		files[file.RelativePath()] = file.Content()
+	}
+	return snapshotWithFiles(t, stateFile.Content(), uint32(stateFile.DesiredMode().Perm()), files)
+}
+
+func snapshotWithFiles(t *testing.T, state []byte, stateMode uint32, files map[string][]byte) filetxn.Snapshot {
+	t.Helper()
+	dir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(dir, "payloads"), 0o700))
+	digest := sha256.Sum256([]byte(stateRelativePath))
+	must(t, os.WriteFile(filepath.Join(dir, "payloads", hex.EncodeToString(digest[:])), state, 0o600))
+	entries := []filetxn.Entry{{Path: stateRelativePath, Exists: true, Mode: stateMode, SHA256: sha256Hex(state)}}
+	for path, data := range files {
+		entries = append(entries, filetxn.Entry{Path: path, Exists: true, Mode: 0o600, SHA256: sha256Hex(data)})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return filetxn.Snapshot{Dir: dir, Manifest: filetxn.Manifest{Version: 1, Entries: entries}}
+}
+
+func snapshot(t *testing.T, entries ...filetxn.Entry) filetxn.Snapshot {
+	t.Helper()
+	return filetxn.Snapshot{Manifest: filetxn.Manifest{Version: 1, Entries: entries}}
+}
+
+func sha256Hex(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
 }

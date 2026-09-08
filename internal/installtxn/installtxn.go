@@ -319,6 +319,29 @@ func ApplyVerified(candidate installplan.Plan, cwd, backupRoot, backupName strin
 	return applyVerifiedWith(candidate, cwd, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndFinalize)
 }
 
+// RollbackAccepted restores only the exact pre-acceptance snapshot bound to candidate and expectedID.
+func RollbackAccepted(candidate installplan.Plan, backupRoot, backupName string, expectedID TransactionID) error {
+	if candidate.InstalledState().SchemaVersion() != 2 || !canonicalRoot(candidate.RootPath()) || !expectedID.Valid() {
+		return ErrInvalid
+	}
+	snapshot, err := filetxn.Open(backupRoot, backupName)
+	if err != nil {
+		return ErrInvalid
+	}
+	actualID, err := transactionID(candidate, snapshot)
+	if err != nil || actualID != expectedID {
+		return ErrInvalid
+	}
+	after, err := deriveAcceptedAfter(candidate, snapshot)
+	if err != nil {
+		return ErrInvalid
+	}
+	if err := filetxn.RollbackRestart(candidate.RootPath(), snapshot, after); err != nil {
+		return ErrFailed
+	}
+	return nil
+}
+
 func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName string, apply applyVerifiedTransaction) (Result, error) {
 	if apply == nil || candidate.InstalledState().SchemaVersion() != 2 || !validRoot(candidate.RootPath()) || !validCWD(cwd) {
 		return Result{}, ErrInvalid
@@ -829,6 +852,14 @@ func depth(value string) int {
 	}
 	return depth
 }
+func canonicalRoot(root string) bool {
+	if !validRoot(root) {
+		return false
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	return err == nil && canonical == root
+}
+
 func validRoot(root string) bool {
 	info, err := os.Lstat(root)
 	return err == nil && info.IsDir() && info.Mode()&fs.ModeSymlink == 0

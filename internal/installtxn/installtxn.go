@@ -125,6 +125,108 @@ func priorIndex(snapshot filetxn.Snapshot) (priorOwnershipIndex, error) {
 	return index, nil
 }
 
+// deriveAcceptedAfter binds every changed preimage to its candidate-owned result.
+func deriveAcceptedAfter(candidate installplan.Plan, snapshot filetxn.Snapshot) ([]filetxn.After, error) {
+	files := make(map[string]installplan.File, len(candidate.Files()))
+	for _, file := range candidate.Files() {
+		if _, exists := files[file.RelativePath()]; exists {
+			return nil, ErrInvalid
+		}
+		files[file.RelativePath()] = file
+	}
+	entries := make(map[string]filetxn.Entry, len(snapshot.Manifest.Entries))
+	stateFound := false
+	for _, entry := range snapshot.Manifest.Entries {
+		if _, exists := entries[entry.Path]; exists {
+			return nil, ErrInvalid
+		}
+		entries[entry.Path] = entry
+		stateFound = stateFound || entry.Path == stateRelativePath
+	}
+	if !stateFound {
+		after := make([]filetxn.After, 0, len(snapshot.Manifest.Entries))
+		for _, entry := range snapshot.Manifest.Entries {
+			file, found := files[entry.Path]
+			if !found || entry.Exists {
+				return nil, ErrInvalid
+			}
+			accepted, err := filetxn.NewAfter(file.RelativePath(), true, file.Content(), file.DesiredMode())
+			if err != nil {
+				return nil, ErrInvalid
+			}
+			after = append(after, accepted)
+		}
+		return after, nil
+	}
+	prior, err := priorIndex(snapshot)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	owned := make(map[string]priorOwnedArtifact, len(prior.artifacts))
+	for _, artifact := range prior.artifacts {
+		if _, exists := owned[artifact.relativePath]; exists {
+			return nil, ErrInvalid
+		}
+		owned[artifact.relativePath] = artifact
+	}
+	for relative, file := range files {
+		if relative == stateRelativePath {
+			continue
+		}
+		artifact, found := owned[relative]
+		_, included := entries[relative]
+		kind := installstate.KindSkill
+		if file.Role() == "actor" {
+			kind = installstate.KindPiActor
+		}
+		if (!found || artifact.logicalID != file.LogicalID() || artifact.kind != kind || artifact.sha256 != file.SHA256() || artifact.mode != file.DesiredMode()) && !included {
+			return nil, ErrInvalid
+		}
+	}
+	for relative, artifact := range owned {
+		_, stillOwned := files[relative]
+		_, included := entries[relative]
+		if !stillOwned && (artifact.kind != installstate.KindSkill || !included) {
+			return nil, ErrInvalid
+		}
+	}
+	after := make([]filetxn.After, 0, len(snapshot.Manifest.Entries))
+	for _, entry := range snapshot.Manifest.Entries {
+		file, candidateOwned := files[entry.Path]
+		if candidateOwned {
+			if entry.Path != stateRelativePath && entry.Exists {
+				artifact, found := owned[entry.Path]
+				kind := installstate.KindSkill
+				if file.Role() == "actor" {
+					kind = installstate.KindPiActor
+				}
+				if !found || artifact.logicalID != file.LogicalID() || artifact.kind != kind || artifact.sha256 != entry.SHA256 || artifact.mode != fs.FileMode(entry.Mode) {
+					return nil, ErrInvalid
+				}
+			}
+			if entry.Exists && entry.SHA256 == file.SHA256() && fs.FileMode(entry.Mode) == file.DesiredMode() {
+				return nil, ErrInvalid
+			}
+			accepted, err := filetxn.NewAfter(file.RelativePath(), true, file.Content(), file.DesiredMode())
+			if err != nil {
+				return nil, ErrInvalid
+			}
+			after = append(after, accepted)
+			continue
+		}
+		artifact, found := owned[entry.Path]
+		if !found || artifact.kind != installstate.KindSkill || !entry.Exists || artifact.sha256 != entry.SHA256 || artifact.mode != fs.FileMode(entry.Mode) {
+			return nil, ErrInvalid
+		}
+		accepted, err := filetxn.NewAfter(entry.Path, false, nil, 0)
+		if err != nil {
+			return nil, ErrInvalid
+		}
+		after = append(after, accepted)
+	}
+	return after, nil
+}
+
 // Action is bounded neutral evidence for one logical artifact decision.
 type Action struct {
 	LogicalID string
@@ -246,6 +348,9 @@ func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName s
 	}
 	var id TransactionID
 	finalize := func(snapshot filetxn.Snapshot) error {
+		if _, err := deriveAcceptedAfter(candidate, snapshot); err != nil {
+			return err
+		}
 		computed, err := transactionID(candidate, snapshot)
 		if err != nil {
 			return err

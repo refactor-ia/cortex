@@ -847,6 +847,59 @@ func TestPriorOwnershipIndexOmittedUnchangedArtifactIsDetached(t *testing.T) {
 	}
 }
 
+func TestDeriveAcceptedAfterValidatesChangedSnapshotScope(t *testing.T) {
+	home := physicalTempDir(t)
+	prior := candidate(t, home, "one", "alpha", "beta")
+	desired := candidate(t, home, "two", "alpha")
+	state := prior.Files()[len(prior.Files())-1]
+	alpha, beta := prior.Files()[0], prior.Files()[1]
+
+	after, err := deriveAcceptedAfter(desired, snapshotWithFiles(t, state.Content(), uint32(state.DesiredMode()), map[string][]byte{alpha.RelativePath(): alpha.Content(), beta.RelativePath(): beta.Content()}))
+	must(t, err)
+	if len(after) != 3 || after[0].Path() != stateRelativePath || after[2].Path() != beta.RelativePath() || after[2].Exists() {
+		t.Fatalf("skill removal after evidence = %#v", after)
+	}
+
+	actorPrior := actorAwareCandidateWith(t, home, "000102030405060708090a0b0c0d0e0f")
+	actorDesired := actorAwareCandidateWith(t, home, "111102030405060708090a0b0c0d0e0f")
+	actorState := actorPrior.Files()[len(actorPrior.Files())-1]
+	if _, err := deriveAcceptedAfter(actorDesired, snapshotWithFiles(t, actorState.Content(), uint32(actorState.DesiredMode()), nil)); err != nil {
+		t.Fatalf("v2 state-only update = %v", err)
+	}
+
+	candidateSkill := desired.Files()[0]
+	var actor installplan.File
+	for _, file := range actorPrior.Files() {
+		if file.Role() == "actor" {
+			actor = file
+			break
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		candidate installplan.Plan
+		snapshot  filetxn.Snapshot
+	}{
+		{"no-state existing candidate", desired, snapshot(t, filetxn.Entry{Path: candidateSkill.RelativePath(), Exists: true, Mode: 0o600, SHA256: candidateSkill.SHA256()})},
+		{"no-state foreign path", desired, snapshot(t, filetxn.Entry{Path: "foreign.txt"})},
+		{"prior hash mismatch", desired, snapshotWithFiles(t, state.Content(), uint32(state.DesiredMode()), map[string][]byte{beta.RelativePath(): []byte("wrong")})},
+		{"changed candidate omitted", desired, snapshotWithFiles(t, state.Content(), uint32(state.DesiredMode()), nil)},
+		{"omitted actor removal", desired, snapshotWithFiles(t, actorState.Content(), uint32(actorState.DesiredMode()), map[string][]byte{actor.RelativePath(): actor.Content()})},
+		{"unchanged evidence", desired, snapshotWithFiles(t, desired.Files()[len(desired.Files())-1].Content(), uint32(state.DesiredMode()), nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := deriveAcceptedAfter(tc.candidate, tc.snapshot); err == nil {
+				t.Fatal("deriveAcceptedAfter() accepted invalid evidence")
+			}
+		})
+	}
+
+	fresh := snapshot(t, filetxn.Entry{Path: candidateSkill.RelativePath()})
+	if after, err := deriveAcceptedAfter(desired, fresh); err != nil || len(after) != 1 || !after[0].Exists() || !bytes.Equal(after[0].Data(), candidateSkill.Content()) {
+		t.Fatalf("state-omitted create = (%#v, %v)", after, err)
+	}
+}
+
 func planSnapshot(t *testing.T, plan installplan.Plan) filetxn.Snapshot {
 	t.Helper()
 	stateFile := plan.Files()[len(plan.Files())-1]

@@ -30,7 +30,7 @@ const (
 	opencodeSmokeOutputLimit       = 8 * 1024
 	opencodeSmokeTimeout           = 60 * time.Second
 	opencodeSmokeConfig            = `{"permission":{"*":"deny","skill":{"cortex-catalog-marker":"allow"}}}`
-	opencodeSmokePrompt            = "Use the cortex-catalog-marker skill. Return exactly one minified JSON object with lowercase keys name and heading. Set name to the loaded skill's declared name and heading to its first Markdown heading without the leading #. No commentary."
+	opencodeSmokePrompt            = "Use the cortex-catalog-marker skill. Return exactly one minified JSON object with lowercase keys name and heading. Set name to the loaded skill's declared name and heading to its first Markdown heading from the ORIGINAL SKILL.md content, excluding the OpenCode-added `# Skill: ...` wrapper heading, without the leading #. No commentary."
 )
 
 func TestOpenCodeRealSmoke(t *testing.T) {
@@ -61,6 +61,13 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 		for value, want := range map[string]bool{opencodeRealSmokeAuthorization: true, "": false, "issue-41-opencode ": false} {
 			if got := realSmokeAuthorized(value, opencodeRealSmokeAuthorization); got != want {
 				t.Fatalf("authorization = %t, want %t", got, want)
+			}
+		}
+	})
+	t.Run("prompt distinguishes original skill heading from wrapper", func(t *testing.T) {
+		for _, instruction := range []string{"first Markdown heading from the ORIGINAL SKILL.md content", "excluding the OpenCode-added `# Skill: ...` wrapper heading"} {
+			if !strings.Contains(opencodeSmokePrompt, instruction) {
+				t.Fatalf("prompt missing %q: %q", instruction, opencodeSmokePrompt)
 			}
 		}
 	})

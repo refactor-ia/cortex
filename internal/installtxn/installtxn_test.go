@@ -933,3 +933,99 @@ func sha256Hex(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
 }
+
+func TestRollbackAcceptedRestoresAndConverges(t *testing.T) {
+	candidate := actorAwareCandidate(t)
+	mustMkdir(t, candidate.RootPath())
+	backups := physicalTempDir(t)
+	accepted, err := ApplyVerified(candidate, physicalTempDir(t), backups, "accepted")
+	must(t, err)
+
+	must(t, RollbackAccepted(candidate, backups, "accepted", accepted.TransactionID()))
+	for _, file := range candidate.Files() {
+		assertFile(t, file, false)
+	}
+	if err := RollbackAccepted(candidate, backups, "accepted", accepted.TransactionID()); err != nil {
+		t.Fatalf("second RollbackAccepted() error = %v", err)
+	}
+}
+
+func TestRollbackAcceptedRejectsInvalidBindingWithoutMutation(t *testing.T) {
+	setup := func(t *testing.T) (installplan.Plan, string, TransactionID) {
+		t.Helper()
+		candidate := actorAwareCandidate(t)
+		mustMkdir(t, candidate.RootPath())
+		backups := physicalTempDir(t)
+		accepted, err := ApplyVerified(candidate, physicalTempDir(t), backups, "accepted")
+		must(t, err)
+		return candidate, backups, accepted.TransactionID()
+	}
+	assertUnchanged := func(t *testing.T, candidate installplan.Plan) {
+		t.Helper()
+		for _, file := range candidate.Files() {
+			assertExactBytesAndMode(t, file.AbsolutePath(), file.Content(), file.DesiredMode())
+		}
+	}
+	wrongID, err := ParseTransactionID("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	must(t, err)
+	for _, test := range []struct {
+		name string
+		want error
+		run  func(t *testing.T, candidate installplan.Plan, backups string, id TransactionID) error
+	}{
+		{"expected ID mismatch", ErrInvalid, func(_ *testing.T, candidate installplan.Plan, backups string, _ TransactionID) error {
+			return RollbackAccepted(candidate, backups, "accepted", wrongID)
+		}},
+		{"backup mismatch", ErrInvalid, func(_ *testing.T, candidate installplan.Plan, backups string, id TransactionID) error {
+			return RollbackAccepted(candidate, backups, "missing", id)
+		}},
+		{"corrupt snapshot", ErrInvalid, func(t *testing.T, candidate installplan.Plan, backups string, id TransactionID) error {
+			must(t, os.WriteFile(filepath.Join(backups, "accepted", "manifest.json"), []byte("invalid"), 0o600))
+			return RollbackAccepted(candidate, backups, "accepted", id)
+		}},
+		{"runtime drift", ErrFailed, func(t *testing.T, candidate installplan.Plan, backups string, id TransactionID) error {
+			file := candidate.Files()[0]
+			must(t, os.WriteFile(file.AbsolutePath(), []byte("drift"), file.DesiredMode()))
+			err := RollbackAccepted(candidate, backups, "accepted", id)
+			if data, readErr := os.ReadFile(file.AbsolutePath()); readErr != nil || string(data) != "drift" {
+				t.Fatalf("drifted file mutated: %q, %v", data, readErr)
+			}
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate, backups, id := setup(t)
+			err := test.run(t, candidate, backups, id)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("RollbackAccepted() error = %v, want %v", err, test.want)
+			}
+			if test.name != "runtime drift" {
+				assertUnchanged(t, candidate)
+			}
+		})
+	}
+	candidate, backups, id := setup(t)
+	different := actorAwareCandidateWith(t, filepath.Dir(filepath.Dir(candidate.RootPath())), "111102030405060708090a0b0c0d0e0f")
+	if err := RollbackAccepted(different, backups, "accepted", id); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("candidate mismatch error = %v", err)
+	}
+	assertUnchanged(t, candidate)
+}
+
+func TestRollbackAcceptedRejectsV1AndSymlinkedRoots(t *testing.T) {
+	validID, err := ParseTransactionID("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	must(t, err)
+	v1 := candidate(t, physicalTempDir(t), "one", "alpha")
+	mustMkdir(t, v1.RootPath())
+	if err := RollbackAccepted(v1, physicalTempDir(t), "missing", validID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("v1 RollbackAccepted() error = %v", err)
+	}
+	realHome, linkParent := physicalTempDir(t), physicalTempDir(t)
+	linkedHome := filepath.Join(linkParent, "home")
+	must(t, os.Symlink(realHome, linkedHome))
+	linked := actorAwareCandidateWith(t, linkedHome, "000102030405060708090a0b0c0d0e0f")
+	mustMkdir(t, linked.RootPath())
+	if err := RollbackAccepted(linked, physicalTempDir(t), "missing", validID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("symlink root RollbackAccepted() error = %v", err)
+	}
+}

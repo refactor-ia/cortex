@@ -33,7 +33,8 @@ const (
 )
 
 func TestClaudeRealSmoke(t *testing.T) {
-	if !realSmokeAuthorized(os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION"), claudeRealSmokeAuthorization) {
+	authorization := os.Getenv("CORTEX_REAL_SMOKE_AUTHORIZATION")
+	if !realSmokeAuthorized(authorization, claudeRealSmokeAuthorization) {
 		t.Skip("Claude Code real smoke authorization is required")
 	}
 	root, err := os.MkdirTemp("", "cortex-real-smoke-")
@@ -41,7 +42,7 @@ func TestClaudeRealSmoke(t *testing.T) {
 		t.Log("failure_code=internal")
 		t.Fatal("Claude Code real smoke failed")
 	}
-	evidence, runErr := runClaudeRealSmoke(root)
+	evidence, runErr := runClaudeRealSmoke(root, authorization)
 	cleanupErr := cleanupClaudeRealSmoke(root)
 	if runErr == nil && cleanupErr == nil && evidence != "" {
 		t.Logf("%s cleanup=true", evidence)
@@ -56,6 +57,38 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 			if got != want {
 				t.Fatalf("authorization = %t, want %t", got, want)
 			}
+		}
+	})
+
+	t.Run("OAuth token is gated, isolated, and absent fails closed", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-oauth-token")
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("CLAUDE_API_KEY", "")
+		lookups := 0
+		token := claudeOAuthTokenAfterGate("", func() string {
+			lookups++
+			return os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+		})
+		if token != "" || lookups != 0 {
+			t.Fatal("unauthorized gate accessed OAuth token")
+		}
+		token = claudeOAuthTokenAfterGate(claudeRealSmokeAuthorization, func() string {
+			lookups++
+			return os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+		})
+		env := claudeSmokeEnvironmentWithOAuthToken(t.TempDir(), token)
+		if lookups != 1 || !strings.Contains(strings.Join(env, "\x00"), "CLAUDE_CODE_OAUTH_TOKEN=test-oauth-token") || strings.Contains(strings.Join(env, "\x00"), "ANTHROPIC_API_KEY=") || strings.Contains(strings.Join(env, "\x00"), "CLAUDE_API_KEY=") {
+			t.Fatal("authorized OAuth token was not forwarded safely")
+		}
+		successEvidence := claudeSmokeEvidence(strings.Repeat("a", 40), "1", "snapshot", []byte("marker"), 1)
+		if !strings.Contains(successEvidence, "auth=subscription_oauth_token") || strings.Contains(successEvidence, "test-oauth-token") {
+			t.Fatal("OAuth evidence is inaccurate or leaks a token")
+		}
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+		t.Setenv("CORTEX_REAL_SMOKE_SOURCE_REVISION", strings.Repeat("a", 40))
+		evidence, err := runClaudeRealSmoke(t.TempDir(), claudeRealSmokeAuthorization)
+		if smokeFailureCodeOf(err) != smokeFailureInvalidInput || evidence != "" || strings.Contains(err.Error(), "test-oauth-token") {
+			t.Fatal("missing OAuth token did not fail closed safely")
 		}
 	})
 
@@ -136,9 +169,13 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 	})
 }
 
-func runClaudeRealSmoke(home string) (string, error) {
+func runClaudeRealSmoke(home, authorization string) (string, error) {
 	revision := os.Getenv("CORTEX_REAL_SMOKE_SOURCE_REVISION")
 	if !validSmokeRevision(revision) {
+		return "", newSmokeFailure(smokeFailureInvalidInput)
+	}
+	token := claudeOAuthTokenAfterGate(authorization, func() string { return os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") })
+	if token == "" {
 		return "", newSmokeFailure(smokeFailureInvalidInput)
 	}
 	path, err := exec.LookPath(claudeSmokeBinary)
@@ -150,7 +187,7 @@ func runClaudeRealSmoke(home string) (string, error) {
 		return "", newSmokeFailure(smokeFailureInternal)
 	}
 
-	env := claudeSmokeEnvironment(home)
+	env := claudeSmokeEnvironmentWithOAuthToken(home, token)
 	runner := &claudeRealSmokeRunner{path: path, env: env}
 	reports, err := runtimeprobe.ProbeAll(context.Background(), runner)
 	if err != nil || len(reports) != 3 || reports[0].Status() != runtimeprobe.Absent || reports[1].Status() != runtimeprobe.Absent || reports[2].RuntimeID() != runtimematrix.RuntimeClaudeCode || reports[2].Status() != runtimeprobe.VersionDetected {
@@ -208,12 +245,27 @@ func runClaudeRealSmoke(home string) (string, error) {
 func cleanupClaudeRealSmoke(root string) error {
 	return os.RemoveAll(root)
 }
+func claudeOAuthTokenAfterGate(authorization string, lookup func() string) string {
+	if !realSmokeAuthorized(authorization, claudeRealSmokeAuthorization) {
+		return ""
+	}
+	return lookup()
+}
+
 func claudeSmokeEnvironment(home string) []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home,
 		"CLAUDE_CONFIG_DIR=" + filepath.Join(home, ".claude"), "CLAUDE_CODE_SKIP_PROMPT_HISTORY=1", "DISABLE_AUTOUPDATER=1",
 		"DISABLE_TELEMETRY=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 	}
+}
+
+func claudeSmokeEnvironmentWithOAuthToken(home, token string) []string {
+	env := claudeSmokeEnvironment(home)
+	if token != "" {
+		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+token)
+	}
+	return env
 }
 
 type claudeRealSmokeRunner struct {
@@ -342,7 +394,7 @@ func claudeSmokeEvidence(revision, version, snapshot string, marker []byte, dura
 	command := append([]string{claudeSmokeBinary}, claudeSmokeCommandSpec()...)
 	commandSum := sha256.Sum256([]byte(strings.Join(command, "\x00")))
 	schemaSum := sha256.Sum256([]byte(claudeSmokeSchema))
-	return "real_smoke source_revision_input=" + revision + " runtime=claude-code auth=subscription_keychain version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " schema_spec=" + hex.EncodeToString(schemaSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(duration, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
+	return "real_smoke source_revision_input=" + revision + " runtime=claude-code auth=subscription_oauth_token version=" + version + " snapshot=" + snapshot + " marker_sha256=" + hex.EncodeToString(markerSum[:]) + " command_spec=" + hex.EncodeToString(commandSum[:]) + " schema_spec=" + hex.EncodeToString(schemaSum[:]) + " installed=true ack=true duration_ms=" + strconv.FormatInt(duration, 10) + " timeout_ms=60000 stdout_limit=8192 stderr_limit=8192 retries=0 exit=0 timeout=false stdout_overflow=false stderr_overflow=false"
 }
 
 func equalStrings(a, b []string) bool {

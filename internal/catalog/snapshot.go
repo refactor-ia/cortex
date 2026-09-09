@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash"
+	"io/fs"
 	"os"
 )
 
@@ -44,38 +45,45 @@ func BuildCatalogSnapshot(root, catalogManifestPath string, policy AdmissionPoli
 	if err != nil {
 		return CatalogSnapshot{}, errors.New("catalog snapshot: catalog load failed")
 	}
+	return buildCatalogSnapshot(loaded, func(path string) (CatalogFileSnapshot, error) {
+		return materializeCatalogFile(root, path)
+	})
+}
 
+// BuildCatalogSnapshotFS loads, admits, and materializes a catalog from an fs.FS.
+// Mutable fs.FS implementations retain the read-to-read consistency/TOCTOU residual;
+// immutable embed.FS does not.
+func BuildCatalogSnapshotFS(assets fs.FS, catalogManifestPath string, policy AdmissionPolicy) (CatalogSnapshot, error) {
+	loaded, err := LoadCatalogFS(assets, catalogManifestPath, policy)
+	if err != nil {
+		return CatalogSnapshot{}, errors.New("catalog snapshot: catalog load failed")
+	}
+	return buildCatalogSnapshot(loaded, func(path string) (CatalogFileSnapshot, error) {
+		return materializeCatalogFSFile(assets, path)
+	})
+}
+
+func buildCatalogSnapshot(loaded LoadedCatalog, materialize func(string) (CatalogFileSnapshot, error)) (CatalogSnapshot, error) {
 	families := make([]CatalogFamilySnapshot, 0, len(loaded.Families))
 	for _, loadedFamily := range loaded.Families {
-		router, err := materializeCatalogFile(root, loadedFamily.Manifest.Router)
+		router, err := materialize(loadedFamily.Manifest.Router)
 		if err != nil {
 			return CatalogSnapshot{}, errors.New("catalog snapshot: materialization failed")
 		}
-		family := CatalogFamilySnapshot{
-			manifest:     cloneFamilyManifest(loadedFamily.Manifest),
-			router:       router,
-			capabilities: make([]CatalogCapabilitySnapshot, 0, len(loadedFamily.Capabilities)),
-		}
+		family := CatalogFamilySnapshot{manifest: cloneFamilyManifest(loadedFamily.Manifest), router: router, capabilities: make([]CatalogCapabilitySnapshot, 0, len(loadedFamily.Capabilities))}
 		for _, loadedCapability := range loadedFamily.Capabilities {
 			if !loadedCapability.Admission.Admitted {
 				continue
 			}
-			source, err := materializeCatalogFile(root, loadedCapability.Manifest.Source)
+			source, err := materialize(loadedCapability.Manifest.Source)
 			if err != nil {
 				return CatalogSnapshot{}, errors.New("catalog snapshot: materialization failed")
 			}
-			family.capabilities = append(family.capabilities, CatalogCapabilitySnapshot{
-				manifest: loadedCapability.Manifest,
-				source:   source,
-			})
+			family.capabilities = append(family.capabilities, CatalogCapabilitySnapshot{manifest: loadedCapability.Manifest, source: source})
 		}
 		families = append(families, family)
 	}
-	return CatalogSnapshot{
-		manifest:    cloneCatalogManifest(loaded.Manifest),
-		families:    families,
-		fingerprint: fingerprintCatalog(loaded, families),
-	}, nil
+	return CatalogSnapshot{manifest: cloneCatalogManifest(loaded.Manifest), families: families, fingerprint: fingerprintCatalog(loaded, families)}, nil
 }
 
 func materializeCatalogFile(root, candidate string) (CatalogFileSnapshot, error) {
@@ -87,8 +95,20 @@ func materializeCatalogFile(root, candidate string) (CatalogFileSnapshot, error)
 	if err != nil {
 		return CatalogFileSnapshot{}, err
 	}
+	return catalogFileSnapshot(candidate, data), nil
+}
+
+func materializeCatalogFSFile(assets fs.FS, candidate string) (CatalogFileSnapshot, error) {
+	data, err := readRegularFSFile(assets, candidate)
+	if err != nil {
+		return CatalogFileSnapshot{}, err
+	}
+	return catalogFileSnapshot(candidate, data), nil
+}
+
+func catalogFileSnapshot(path string, data []byte) CatalogFileSnapshot {
 	digest := sha256.Sum256(data)
-	return CatalogFileSnapshot{path: candidate, content: string(data), sha256: hex.EncodeToString(digest[:])}, nil
+	return CatalogFileSnapshot{path: path, content: string(data), sha256: hex.EncodeToString(digest[:])}
 }
 
 // Manifest returns a deep copy of the catalog manifest.

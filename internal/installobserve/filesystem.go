@@ -42,11 +42,12 @@ func DefaultOptions() Options {
 // FilesystemObservation is neutral input for Classify. It grants no authority
 // to touch a filesystem path.
 type FilesystemObservation struct {
-	prior   *PriorState
-	slots   []SlotObservation
-	exact   map[string]ExactFile
-	binding [sha256.Size]byte
-	bound   bool
+	prior      *PriorState
+	slots      []SlotObservation
+	exact      map[string]ExactFile
+	binding    [sha256.Size]byte
+	bound      bool
+	rootAbsent bool
 }
 
 // ExactFile is transaction-only evidence for one present canonical logical file.
@@ -95,6 +96,34 @@ func (observation FilesystemObservation) MatchesCandidate(candidate installplan.
 	return observation.bound && valid && observation.binding == binding
 }
 
+// MatchesAbsentRoot reports whether this observation is bound to candidate and
+// records that its installation root was absent without reading below that root.
+func (observation FilesystemObservation) MatchesAbsentRoot(candidate installplan.Plan) bool {
+	if !observation.MatchesCandidate(candidate) {
+		return false
+	}
+	artifacts := candidate.InstalledState().Artifacts()
+	ids := make([]string, len(artifacts))
+	for index, artifact := range artifacts {
+		ids[index] = artifact.LogicalID()
+	}
+	sort.Strings(ids)
+	return matchesAbsentRootStructure(observation, ids)
+}
+
+func matchesAbsentRootStructure(observation FilesystemObservation, ids []string) bool {
+	if !observation.rootAbsent || observation.prior != nil || observation.exact == nil || len(observation.exact) != 0 || len(observation.slots) != len(ids) {
+		return false
+	}
+	for index, id := range ids {
+		slot := observation.slots[index]
+		if slot.LogicalID != id || slot.Present || slot.SHA256 != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // Observe reads only the canonical state file and slots named by candidate or
 // prior state. It does not discover paths, mutate the filesystem, or infer ownership.
 func Observe(candidate installplan.Plan, options Options) (FilesystemObservation, error) {
@@ -103,7 +132,20 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 		return FilesystemObservation{}, filesystemInvalid()
 	}
 
+	rootAbsent, err := absentRoot(candidate.RootPath())
+	if err != nil {
+		return FilesystemObservation{}, filesystemInvalid()
+	}
 	current := candidate.InstalledState()
+	if rootAbsent {
+		return FilesystemObservation{
+			slots:      absentSlots(current),
+			exact:      map[string]ExactFile{},
+			binding:    binding,
+			bound:      true,
+			rootAbsent: true,
+		}, nil
+	}
 	paths := make(map[string]string, len(current.Artifacts()))
 	for _, artifact := range current.Artifacts() {
 		paths[artifact.LogicalID()] = artifact.RelativePath()
@@ -152,6 +194,49 @@ func Observe(candidate installplan.Plan, options Options) (FilesystemObservation
 		slots = append(slots, SlotObservation{LogicalID: id, Present: exists, SHA256: digest})
 	}
 	return FilesystemObservation{prior: prior, slots: slots, exact: exact, binding: binding, bound: true}, nil
+}
+
+func absentSlots(manifest installstate.Manifest) []SlotObservation {
+	ids := make([]string, 0, len(manifest.Artifacts()))
+	for _, artifact := range manifest.Artifacts() {
+		ids = append(ids, artifact.LogicalID())
+	}
+	sort.Strings(ids)
+	slots := make([]SlotObservation, 0, len(ids))
+	for _, id := range ids {
+		slots = append(slots, SlotObservation{LogicalID: id})
+	}
+	return slots
+}
+
+func absentRoot(root string) (bool, error) {
+	info, err := os.Lstat(root)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false, errors.New("unsafe root type")
+		}
+		return false, nil
+	}
+	if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	for ancestor := filepath.Dir(root); ; ancestor = filepath.Dir(ancestor) {
+		info, err = os.Lstat(ancestor)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return false, errors.New("unsafe root ancestor")
+			}
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			return false, err
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return false, errors.New("missing root ancestor")
+		}
+	}
 }
 
 func validOptions(options Options) bool {

@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"fmt"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,14 +58,26 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 		roots := uninstallRoots(t)
 		states, skills := installAll(t, roots)
 		code, stdout, stderr := runUninstallForTest(t, roots, func(deps *uninstallDependencies) {
-			apply := deps.apply
-			deps.apply = func(root string, observation installobserve.UninstallObservation, backupRoot, backupName string) (uninstalltxn.Result, error) {
-				records := observation.Records()
-				if len(records) != 2 || records[1].LogicalID != "state/install-state" {
-					t.Fatalf("state was not observed last: %#v", records)
+			apply := deps.applyGroup
+			calls := 0
+			deps.applyGroup = func(requests []uninstalltxn.GroupRequest, backupRoot, backupName string) error {
+				calls++
+				if len(requests) != 3 {
+					t.Fatalf("group requests = %d", len(requests))
 				}
-				return apply(root, observation, backupRoot, backupName)
+				for _, request := range requests {
+					records := request.Observation.Records()
+					if len(records) != 2 || records[1].LogicalID != "state/install-state" {
+						t.Fatalf("state was not observed last: %#v", records)
+					}
+				}
+				return apply(requests, backupRoot, backupName)
 			}
+			t.Cleanup(func() {
+				if calls != 1 {
+					t.Errorf("group apply calls = %d", calls)
+				}
+			})
 		})
 		if code != exitOK || stderr != "" || stdout != uninstallLines("completed", "completed", "completed") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
@@ -75,24 +87,18 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			assertMissing(t, states[i])
 		}
 	})
-	t.Run("later transaction failure reports completed earlier roots honestly", func(t *testing.T) {
+	t.Run("group transaction failure reports no completed roots", func(t *testing.T) {
 		roots := uninstallRoots(t)
 		states, skills := installAll(t, roots)
 		code, stdout, stderr := runUninstallForTest(t, roots, func(deps *uninstallDependencies) {
-			apply := deps.apply
-			deps.apply = func(root string, observation installobserve.UninstallObservation, backupRoot, backupName string) (uninstalltxn.Result, error) {
-				if root == roots[1].RootPath() {
-					return uninstalltxn.Result{}, errors.New("private transaction failure")
-				}
-				return apply(root, observation, backupRoot, backupName)
+			deps.applyGroup = func([]uninstalltxn.GroupRequest, string, string) error {
+				return errors.New("private transaction failure")
 			}
 		})
-		if code != exitTransaction || stderr != "" || stdout != uninstallLines("completed", "failed", "blocked") || strings.Contains(stdout, "rollback") {
+		if code != exitTransaction || stderr != "" || stdout != uninstallLines("failed", "failed", "failed") || strings.Contains(stdout, "rollback") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
-		assertMissing(t, skills[0])
-		assertMissing(t, states[0])
-		for _, index := range []int{1, 2} {
+		for index := range roots {
 			assertPresent(t, skills[index])
 			assertPresent(t, states[index])
 		}

@@ -43,6 +43,12 @@ EXPECTED_FILES = {
         "internal/backupjournal/intent_test.go",
         "internal/backupjournal/transition.go",
         "internal/backupjournal/transition_test.go",
+        "internal/backuprecovery/executor.go",
+        "internal/backuprecovery/executor_test.go",
+        "internal/backuprecovery/filesystem.go",
+        "internal/backuprecovery/filesystem_test.go",
+        "internal/backuprecovery/intent.go",
+        "internal/backuprecovery/intent_test.go",
         "internal/backuprecovery/model.go",
         "internal/backuprecovery/model_test.go",
         "internal/filetxn/apply.go",
@@ -63,6 +69,7 @@ EXPECTED_FILES = {
         "internal/installobserve/classify.go",
         "internal/installobserve/classify_test.go",
         "internal/installobserve/filesystem.go",
+        "internal/installobserve/filesystem_internal_test.go",
         "internal/installobserve/filesystem_test.go",
         "internal/installobserve/uninstall.go",
         "internal/installobserve/uninstall_test.go",
@@ -102,11 +109,44 @@ EXPECTED_FILES = {
         "internal/releasecatalog/source.go",
         "internal/releasecatalog/source_test.go",
         "internal/releasecatalog/source_external_test.go",
+        "internal/builtinassets/assets.go",
+        "internal/builtinassets/assets_test.go",
+        "internal/builtinassets/catalog/catalog.json",
+        "internal/builtinassets/catalog/capabilities/catalog-marker.json",
+        "internal/builtinassets/catalog/families/documentation.json",
+        "internal/builtinassets/catalog/families/execution.json",
+        "internal/builtinassets/catalog/families/memory-integration.json",
+        "internal/builtinassets/catalog/families/mobile.json",
+        "internal/builtinassets/catalog/families/model-intelligence.json",
+        "internal/builtinassets/catalog/families/pcsoft.json",
+        "internal/builtinassets/catalog/families/personal.json",
+        "internal/builtinassets/catalog/families/quality-assurance.json",
+        "internal/builtinassets/catalog/families/reasoning.json",
+        "internal/builtinassets/catalog/families/services.json",
+        "internal/builtinassets/catalog/families/web.json",
+        "internal/builtinassets/catalog/routers/documentation.md",
+        "internal/builtinassets/catalog/routers/execution.md",
+        "internal/builtinassets/catalog/routers/memory-integration.md",
+        "internal/builtinassets/catalog/routers/mobile.md",
+        "internal/builtinassets/catalog/routers/model-intelligence.md",
+        "internal/builtinassets/catalog/routers/pcsoft.md",
+        "internal/builtinassets/catalog/routers/personal.md",
+        "internal/builtinassets/catalog/routers/quality-assurance.md",
+        "internal/builtinassets/catalog/routers/reasoning.md",
+        "internal/builtinassets/catalog/routers/services.md",
+        "internal/builtinassets/catalog/routers/web.md",
+        "internal/builtinassets/catalog/sources/catalog-marker.md",
         "internal/catalog/load_test.go",
         "internal/cli/doctor.go",
         "internal/cli/doctor_test.go",
         "internal/cli/modelprofile.go",
         "internal/cli/modelprofile_test.go",
+        "internal/cli/install.go",
+        "internal/cli/install_test.go",
+        "internal/cli/pi_real_smoke_test.go",
+        "internal/cli/subscription_auth_test.go",
+        "internal/cli/opencode_real_smoke_test.go",
+        "internal/cli/claude_real_smoke_test.go",
         "internal/cli/uninstall_test.go",
         "internal/lifecycleharness/install_update_parity_test.go",
         "internal/lifecycleharness/uninstall_parity_test.go",
@@ -193,8 +233,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 142)
-                self.assertEqual(len(actual_files), 142)
+                self.assertEqual(len(EXPECTED_FILES), 182)
+                self.assertEqual(len(actual_files), 182)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())
@@ -213,6 +253,18 @@ class CommunityPolicyTests(unittest.TestCase):
                                 self.assertFalse(
                                         (REPO_ROOT / relative_path).is_symlink()
                                 )
+
+                pi = read_text("internal/cli/pi_real_smoke_test.go")
+                opencode = read_text("internal/cli/opencode_real_smoke_test.go")
+                claude = read_text("internal/cli/claude_real_smoke_test.go")
+                for source in (pi, opencode, claude):
+                        self.assertNotIn("CORTEX_REAL_SMOKE_CREDENTIAL_ENV", source)
+                        self.assertNotIn("smokeCredentials", source)
+                self.assertIn("auth=subscription_copy", pi)
+                self.assertIn("auth=subscription_copy", opencode)
+                self.assertIn("XDG_DATA_HOME=", opencode)
+                self.assertIn("auth=subscription_keychain", claude)
+                self.assertNotIn("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE", claude)
 
         def test_foundation_documents_state_clean_target_status(self) -> None:
                 readme = read_text("README.md")

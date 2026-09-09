@@ -77,6 +77,91 @@ func TestApplyOperationsWithDirectoriesRejectsInvalidTargetsBeforeMutation(t *te
 		}
 	}
 }
+func TestApplyOperationsWithDirectoriesMustCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing bool
+	}{
+		{name: "absent succeeds"},
+		{name: "existing rejects", existing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			if tc.existing {
+				must(t, os.Mkdir(filepath.Join(root, "runtime"), 0o700))
+			}
+			_, err := ApplyOperationsWithDirectories(root, backups, "batch", []Directory{{Path: "runtime", Mode: 0o700, MustCreate: true}}, []Operation{{Create: &Create{Path: "runtime/file", Data: []byte("data"), Mode: 0o600}}})
+			if tc.existing {
+				if err == nil {
+					t.Fatal("ApplyOperationsWithDirectories() error = nil")
+				}
+				if _, err := os.Lstat(filepath.Join(root, "runtime", "file")); !os.IsNotExist(err) {
+					t.Fatalf("operation was applied: %v", err)
+				}
+				return
+			}
+			must(t, err)
+			assertFile(t, filepath.Join(root, "runtime", "file"), "data", 0o600)
+		})
+	}
+}
+
+func TestApplyOperationsWithDirectoriesMustCreateRejectsRaceBeforeOperations(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	operations := 0
+	deps := defaultApplyDependencies()
+	deps.createIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
+		operations++
+		return atomicfile.CreateIfAbsent(root, path, data, mode)
+	}
+	_, err := applyOperationsWithDirectoriesBeforeCreate(deps, root, backups, "batch", []Directory{{Path: "created", Mode: 0o700, MustCreate: true}, {Path: "conflict", Mode: 0o700, MustCreate: true}}, []Operation{{Create: &Create{Path: "created/file", Data: []byte("data"), Mode: 0o600}}}, func(directory preparedDirectory) {
+		if directory.path == "conflict" {
+			must(t, os.Mkdir(filepath.Join(root, "conflict"), 0o700))
+		}
+	})
+	if err == nil {
+		t.Fatal("applyOperationsWithDirectoriesBeforeCreate() error = nil")
+	}
+	if operations != 0 {
+		t.Fatalf("operations applied = %d", operations)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "created")); !os.IsNotExist(err) {
+		t.Fatalf("created directory remains: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(root, "conflict")); err != nil || !isRealDirectory(info) {
+		t.Fatalf("racing directory = (%v, %v)", info, err)
+	}
+}
+
+func TestApplyOperationsWithDirectoriesRollsBackMustCreateDirectories(t *testing.T) {
+	home := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(home, "existing"), 0o700))
+	writeFile(t, filepath.Join(home, "existing", "file"), []byte("old"), 0o600)
+	deps := defaultApplyDependencies()
+	deps.replace = func(root, path string, data []byte, mode fs.FileMode) error {
+		if err := atomicfile.Replace(root, path, data, mode); err != nil {
+			return err
+		}
+		if path == ".cortex/state.json" {
+			return errors.New("injected state failure")
+		}
+		return nil
+	}
+	_, err := applyOperationsWithDirectories(deps, home, home, ".cortex-backup", []Directory{{Path: "runtime", Mode: 0o700, MustCreate: true}, {Path: ".cortex", Mode: 0o700, MustCreate: true}}, []Operation{{Replace: &Replace{Path: "existing/file", ExpectedData: []byte("old"), ExpectedMode: 0o600, Data: []byte("new"), Mode: 0o600}}, {Write: &Write{Path: ".cortex/state.json", Data: []byte("state"), Mode: 0o600}}})
+	if err == nil || !strings.Contains(err.Error(), "injected state failure") {
+		t.Fatalf("applyOperationsWithDirectories() error = %v", err)
+	}
+	assertFile(t, filepath.Join(home, "existing", "file"), "old", 0o600)
+	for _, path := range []string{"runtime", ".cortex"} {
+		if _, err := os.Lstat(filepath.Join(home, path)); !os.IsNotExist(err) {
+			t.Fatalf("transaction-created directory remains: %s: %v", path, err)
+		}
+	}
+	if info, err := os.Lstat(filepath.Join(home, ".cortex-backup")); err != nil || !isRealDirectory(info) {
+		t.Fatalf("backup root = (%v, %v)", info, err)
+	}
+}
+
 func TestApplyOperationsWithDirectoriesRejectsPreflightMutations(t *testing.T) {
 	cases := []struct {
 		name, absent string

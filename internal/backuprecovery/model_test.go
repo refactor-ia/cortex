@@ -82,6 +82,20 @@ func TestClassifyDeniesDriftAcrossTransaction(t *testing.T) {
 		t.Fatalf("second state = %v, want drifted", plan.entries[1].state)
 	}
 }
+func TestValidCurrentSeparatesFilesystemModesFromJournalModes(t *testing.T) {
+	data := []byte("current")
+	filesystemEvidence := newCurrentPresent("key", 0640, data)
+	if !validCurrent(filesystemEvidence) {
+		t.Fatal("rejected regular-file mode from current evidence")
+	}
+	if validJournal(filesystemEvidence) {
+		t.Fatal("accepted non-durable journal mode")
+	}
+	if validCurrent(newCurrentPresent("key", 01000, data)) {
+		t.Fatal("accepted mode above permission bits")
+	}
+}
+
 func TestClassifyRejectsInvalidManifest(t *testing.T) {
 	value := fixture(t, backupjournal.Present, backupjournal.Absent)
 	entries := make([]backupjournal.EntryInput, 0, 3)

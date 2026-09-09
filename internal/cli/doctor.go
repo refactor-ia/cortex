@@ -31,7 +31,7 @@ type uninstallDependencies struct {
 	resolveRoots func() ([]skillroot.UninstallRoot, error)
 	rootExists   func(string) (bool, error)
 	observe      func(installobserve.UninstallRoot, installobserve.Options) (installobserve.UninstallObservation, error)
-	apply        func(string, installobserve.UninstallObservation, string, string) (uninstalltxn.Result, error)
+	applyGroup   func([]uninstalltxn.GroupRequest, string, string) error
 	backupName   func() string
 }
 
@@ -44,10 +44,14 @@ type uninstallPreflight struct {
 // Run executes one Cortex command with the supplied runtime probe seam.
 // A nil runner selects the constrained production system probe.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	return runWithUninstallDependencies(ctx, args, stdout, stderr, runner, defaultUninstallDependencies())
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), defaultUninstallDependencies())
 }
 
 func runWithUninstallDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, uninstall uninstallDependencies) int {
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), uninstall)
+}
+
+func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, install installDependencies, uninstall uninstallDependencies) int {
 	if len(args) > 0 && args[0] == "model-routing" {
 		return runModelProfile(args[1:], stdout, stderr)
 	}
@@ -59,7 +63,7 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 	case "doctor":
 		return runDoctor(ctx, stdout, stderr, runner)
 	case "install", "update":
-		return runUncertifiedOperation(ctx, stdout, stderr, runner, args[0])
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:
@@ -134,7 +138,7 @@ func defaultUninstallDependencies() uninstallDependencies {
 		resolveRoots: skillroot.ResolveSystemUninstallRoots,
 		rootExists:   uninstallRootExists,
 		observe:      installobserve.ObserveUninstall,
-		apply:        uninstalltxn.Apply,
+		applyGroup:   uninstalltxn.ApplyGroup,
 		backupName:   nextUninstallBackupName,
 	}
 }
@@ -185,21 +189,30 @@ func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 			return writeUninstallResult(stdout, stderr, preflight, exitConflict)
 		}
 	}
-	for index := range preflight {
-		if preflight[index].status != "ready" {
-			continue
+	requests := make([]uninstalltxn.GroupRequest, 0, len(preflight))
+	for _, item := range preflight {
+		if item.status == "ready" {
+			requests = append(requests, uninstalltxn.GroupRequest{
+				RuntimeID: item.root.RuntimeID(), Root: item.root.RootPath(), Observation: item.observation,
+			})
 		}
-		backupRoot := filepath.Join(preflight[index].root.RootPath(), ".cortex")
-		if _, err := deps.apply(preflight[index].root.RootPath(), preflight[index].observation, backupRoot, deps.backupName()); err != nil {
-			preflight[index].status = "failed"
-			for later := index + 1; later < len(preflight); later++ {
-				if preflight[later].status == "ready" {
-					preflight[later].status = "blocked"
-				}
+	}
+	if len(requests) == 0 {
+		return writeUninstallResult(stdout, stderr, preflight, exitOK)
+	}
+	backupRoot := filepath.Join(requests[0].Root, ".cortex")
+	if err := deps.applyGroup(requests, backupRoot, deps.backupName()); err != nil {
+		for index := range preflight {
+			if preflight[index].status == "ready" {
+				preflight[index].status = "failed"
 			}
-			return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
 		}
-		preflight[index].status = "completed"
+		return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
+	}
+	for index := range preflight {
+		if preflight[index].status == "ready" {
+			preflight[index].status = "completed"
+		}
 	}
 	return writeUninstallResult(stdout, stderr, preflight, exitOK)
 }

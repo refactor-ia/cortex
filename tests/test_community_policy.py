@@ -128,6 +128,7 @@ EXPECTED_FILES = {
         "internal/cli/doctor_test.go",
         "internal/cli/install.go",
         "internal/cli/install_test.go",
+        "internal/cli/lifecycle_e2e_test.go",
         "internal/cli/pi_real_smoke_test.go",
         "internal/cli/subscription_auth_test.go",
         "internal/cli/opencode_real_smoke_test.go",

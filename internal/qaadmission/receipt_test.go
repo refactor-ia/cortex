@@ -13,7 +13,7 @@ func testReceipt() Receipt {
 	hash := strings.Repeat("a", 64)
 	receipt := Receipt{
 		Contract: Contract, Status: StatusNonPassing, Code: CodeExecutionFailed, AttemptedRun: true, Role: qarole.TestRunner, Backend: "pi",
-		Versions:     Versions{Receipt: Contract, Policy: qaroute.PolicyVersion, Profile: qaroute.ProfileContract, Adapter: "cortex.qa.pi-admission.v1", ActorContract: "cortex.qa.pi-actor.v1", SkillContract: "cortex.qa.pi-skill.v1", InputContract: "cortex.qa.pi-input.v1", ProbeContract: "cortex.qa.pi-probe/v1", Runtime: "0.84.4"},
+		Versions:     Versions{Receipt: Contract, Policy: qaroute.PolicyVersion, Profile: qaroute.ProfileContract, Adapter: "cortex.qa.pi-admission.v1", ActorContract: "cortex.qa.pi-actor.v1", SkillContract: "cortex.qa.pi-skill.v1", InputContract: "cortex.qa.pi-input.v1", ProbeContract: "cortex.qa.pi-probe/v1", Runtime: "0.85.1"},
 		Installation: InstallationIdentity{ID: installstate.InstallationID("0123456789abcdef0123456789abcdef"), CatalogSHA256: hash, ActorSourceSHA256: hash, ActorGeneratedSHA256: hash, ActorBindingSHA256: hash, SkillGeneratedSHA256: hash},
 		Target:       TargetIdentity{CWDIdentity: "cwd." + hash, Revision: strings.Repeat("b", 40), Tree: strings.Repeat("c", 40), Fingerprint: "candidate." + hash},
 		Binary:       BinaryIdentity{Contract: BinaryContract, SHA256: hash, SizeBytes: 1},

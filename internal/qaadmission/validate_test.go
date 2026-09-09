@@ -50,6 +50,26 @@ func TestValidateKeepsRequestedResolvedAndObservedFactsSeparate(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresCurrentPiRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		runtime string
+		wantErr bool
+	}{
+		{name: "accepts-current-runtime", runtime: "0.85.1"},
+		{name: "rejects-previous-runtime", runtime: "0.84.4", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := testReceipt()
+			receipt.Versions.Runtime = tc.runtime
+			receipt.ReceiptID = ReceiptID(receipt)
+			if err := Validate(receipt); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() runtime %q error = %v, want error %t", tc.runtime, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateAllowsTruthfulPrelaunchWithoutExecutionFacts(t *testing.T) {
 	receipt := testReceipt()
 	receipt.Status = StatusNonPassing
@@ -78,7 +98,7 @@ func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 		{"binary-size", func(r *Receipt) { r.Binary.SizeBytes = 0 }},
 		{"actual-bounds", func(r *Receipt) { r.Bounds.ReceiptBytes-- }},
 		{"probe-version", func(r *Receipt) { r.Versions.ProbeContract = "pi-0.84.4" }},
-		{"runtime-prefixed-version", func(r *Receipt) { r.Versions.Runtime = "pi-0.84.4" }},
+		{"runtime-prefixed-version", func(r *Receipt) { r.Versions.Runtime = "pi-0.85.1" }},
 		{"route-policy", func(r *Receipt) { r.Route.Resolved.PolicyVersion = "other" }},
 		{"route-role", func(r *Receipt) { r.Route.Resolved.Role = "other" }},
 		{"route-profile", func(r *Receipt) {

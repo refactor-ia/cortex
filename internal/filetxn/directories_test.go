@@ -161,8 +161,7 @@ func TestApplyOperationsWithDirectoriesPreimageRefusesChanges(t *testing.T) {
 					if len(absent) != 1 || absent[0].Path != "made" {
 						t.Fatalf("preimage directories = %#v", absent)
 					}
-					must(t, os.Remove(filepath.Join(root, "stable")))
-					must(t, os.Mkdir(filepath.Join(root, "stable"), 0o700))
+					replaceDirectoryWithDistinctIdentity(t, root, "stable")
 				}
 				return snapshot, nil
 			}
@@ -193,9 +192,7 @@ func TestApplyOperationsWithDirectoriesFinalVerificationRollbackPreservesReplace
 			deps := defaultApplyDependencies()
 			deps.finalVerify = func() error {
 				if replacement {
-					must(t, os.Remove(filepath.Join(root, "owned", "child")))
-					must(t, os.Remove(filepath.Join(root, "owned")))
-					must(t, os.Mkdir(filepath.Join(root, "owned"), 0o700))
+					replaceDirectoryWithDistinctIdentity(t, root, "owned")
 				}
 				return errors.New("injected final verification failure")
 			}
@@ -241,9 +238,8 @@ func TestApplyOperationsWithDirectoriesRejectsPostVerificationDirectoryDrift(t *
 				[]Operation{{Create: &Create{Path: "outside", Data: []byte("new"), Mode: 0o600}}},
 				func() error {
 					if drift == "replacement" {
-						must(t, os.Remove(filepath.Join(root, "owned", "child")))
-						must(t, os.Remove(filepath.Join(root, "owned")))
-						return os.Mkdir(filepath.Join(root, "owned"), 0o700)
+						replaceDirectoryWithDistinctIdentity(t, root, "owned")
+						return nil
 					}
 					return os.Chmod(filepath.Join(root, "owned"), 0o755)
 				},
@@ -259,6 +255,35 @@ func TestApplyOperationsWithDirectoriesRejectsPostVerificationDirectoryDrift(t *
 				t.Fatalf("drifted directory = %v", statErr)
 			}
 		})
+	}
+}
+
+func replaceDirectoryWithDistinctIdentity(t *testing.T, root, name string) {
+	t.Helper()
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		t.Fatalf("directory name is not a direct child: %q", name)
+	}
+	originalPath := filepath.Join(root, name)
+	original, err := os.Lstat(originalPath)
+	must(t, err)
+	if !isRealDirectory(original) {
+		t.Fatalf("original is not a real directory: %s", name)
+	}
+	retiredPath := filepath.Join(root, "."+name+"-retired")
+	t.Cleanup(func() {
+		if err := os.RemoveAll(retiredPath); err != nil {
+			t.Errorf("remove retired directory: %v", err)
+		}
+	})
+	must(t, os.Rename(originalPath, retiredPath))
+	must(t, os.Mkdir(originalPath, original.Mode().Perm()))
+	replacement, err := os.Lstat(originalPath)
+	must(t, err)
+	if !isRealDirectory(replacement) || replacement.Mode().Perm() != original.Mode().Perm() {
+		t.Fatalf("replacement directory = %#v, want real directory with mode %#o", replacement, original.Mode().Perm())
+	}
+	if os.SameFile(original, replacement) {
+		t.Fatal("replacement retained the original directory identity")
 	}
 }
 

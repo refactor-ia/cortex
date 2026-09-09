@@ -286,8 +286,7 @@ func TestClassifyRestartDirectories(t *testing.T) {
 		{"v3 all after", manifestV3, []string{"made"}, nil, []restartStatus{exactAfter}, false},
 		{"v3 parent after child before", manifestV3, []string{"made", "made/child"}, func(t *testing.T, root string) { must(t, os.Remove(filepath.Join(root, "made", "child"))) }, []restartStatus{exactAfter, exactBefore}, false},
 		{"v3 identity drift", manifestV3, []string{"made"}, func(t *testing.T, root string) {
-			must(t, os.Remove(filepath.Join(root, "made")))
-			must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+			replaceDirectoryWithDistinctIdentity(t, root, "made")
 		}, nil, true},
 		{"v3 mode drift", manifestV3, []string{"made"}, func(t *testing.T, root string) { must(t, os.Chmod(filepath.Join(root, "made"), 0o755)) }, nil, true},
 		{"v3 wrong type", manifestV3, []string{"made"}, func(t *testing.T, root string) {
@@ -591,8 +590,7 @@ func TestRollbackRestartRejectsV3DirectoryDriftBeforeLeafMutation(t *testing.T) 
 			writeFile(t, filepath.Join(root, "made", "foreign.txt"), []byte("foreign"), 0o600)
 		}},
 		{"identity drift", func(t *testing.T, root string) {
-			must(t, os.Remove(filepath.Join(root, "made")))
-			must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+			replaceDirectoryWithDistinctIdentity(t, root, "made")
 		}},
 		{"mode drift", func(t *testing.T, root string) { must(t, os.Chmod(filepath.Join(root, "made"), 0o755)) }},
 	} {

@@ -31,7 +31,8 @@ type directoryEntry struct {
 	Mode uint32 `json:"mode"`
 }
 
-// AcceptedDirectory records one accepted transaction-created directory.
+// AcceptedDirectory records the observable device, inode, and mode tuple of one accepted transaction-created directory.
+// It is not a durable anti-ABA proof after an inode has been freed.
 type AcceptedDirectory struct {
 	Path   string `json:"path"`
 	Device uint64 `json:"device"`

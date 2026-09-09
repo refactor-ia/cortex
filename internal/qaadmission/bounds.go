@@ -1,6 +1,9 @@
 package qaadmission
 
-import "strconv"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 const (
 	MaxRequestBytes         = 128 * 1024
@@ -45,30 +48,33 @@ func (bounds BoundsFacts) fields() []string {
 		strconv.Itoa(bounds.TimeoutSeconds),
 	}
 }
-func MinimumSize() int {
+func MinimumSize(receipt Receipt) int {
 	maximum := 0
 	for _, code := range terminalCodes {
-		receipt := Receipt{Contract: Contract, Code: code, Bounds: FixedBounds()}
+		candidate := receipt
+		candidate.Code = code
+		candidate.Status = StatusNonPassing
+		candidate.AttemptedRun = mustAttempt(code)
 		if code == CodeAdmitted {
-			receipt.Status = StatusAdmitted
-		} else {
-			receipt.Status = StatusNonPassing
+			candidate.Status = StatusAdmitted
+			candidate.AttemptedRun = true
 		}
-		size := 8 + len("receipt.") + 64
-		for _, field := range receiptFields(receipt) {
-			size += 8 + len(field)
+		candidate.ReceiptID = ReceiptID(candidate)
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return MaxReceiptBytes + 1
 		}
-		if size > maximum {
-			maximum = size
+		if len(encoded) > maximum {
+			maximum = len(encoded)
 		}
 	}
 	return maximum
 }
-func BoundsSatisfiable(size int) bool {
-	return size >= MinimumSize() && size <= MaxReceiptBytes
+func BoundsSatisfiable(receipt Receipt, size int) bool {
+	return size >= MinimumSize(receipt) && size <= receipt.Bounds.ReceiptBytes
 }
-func PrelaunchCode(size int) Code {
-	if !BoundsSatisfiable(size) {
+func PrelaunchCode(receipt Receipt, size int) Code {
+	if !BoundsSatisfiable(receipt, size) {
 		return CodeReceiptBoundUnsatisfiable
 	}
 	return CodeAdmitted

@@ -49,6 +49,7 @@ func receiptFields(receipt Receipt) []string {
 		receipt.Versions.Receipt, receipt.Versions.Policy, receipt.Versions.Profile, receipt.Versions.Adapter, receipt.Versions.ActorContract, receipt.Versions.SkillContract, receipt.Versions.InputContract, receipt.Versions.ProbeContract, receipt.Versions.Runtime,
 		string(receipt.Installation.ID), receipt.Installation.CatalogSHA256, receipt.Installation.ActorSourceSHA256, receipt.Installation.ActorGeneratedSHA256, receipt.Installation.ActorBindingSHA256, receipt.Installation.SkillGeneratedSHA256,
 		receipt.Target.CWDIdentity, receipt.Target.Revision, receipt.Target.Tree, receipt.Target.Fingerprint,
+		receipt.Binary.Contract, receipt.Binary.SHA256, strconv.FormatInt(receipt.Binary.SizeBytes, 10),
 		receipt.Route.Requested.Provider, receipt.Route.Requested.Model, receipt.Route.Requested.Effort,
 		receipt.Route.Resolved.PolicyVersion, string(receipt.Route.Resolved.Role), receipt.Route.Resolved.Backend, receipt.Route.Resolved.Provider, receipt.Route.Resolved.Model, receipt.Route.Resolved.Effort,
 		receipt.Route.Observed.Provider, receipt.Route.Observed.Model, receipt.Route.Observed.Effort.Availability, receipt.Route.Observed.Effort.Value,

@@ -86,7 +86,7 @@ func TestApplyRollsBackFailedWrites(t *testing.T) {
 				{Path: "existing.txt", Data: []byte("changed"), Mode: 0o600},
 				{Path: "missing.txt", Data: []byte("created"), Mode: 0o644},
 			})
-			if err == nil || !strings.Contains(err.Error(), "injected replace failure") {
+			if err == nil || !strings.Contains(err.Error(), "injected replace failure") || strings.Contains(err.Error(), "caller intervention required") {
 				t.Fatalf("Apply() error = %v", err)
 			}
 			assertFile(t, filepath.Join(root, "existing.txt"), "original", 0o640)
@@ -113,16 +113,16 @@ func TestApplyRollsBackInReverseOrder(t *testing.T) {
 		}
 		return nil
 	}
-	deps.removeIfMatches = func(root, path string, data []byte) error {
-		removals = append(removals, path)
-		return atomicfile.RemoveIfMatches(root, path, data)
+	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
+		removals = append(removals, fmt.Sprintf("%s:%04o", path, mode.Perm()))
+		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	_, err := apply(deps, root, backups, "batch", []Write{
 		{Path: "a.txt", Data: []byte("a"), Mode: 0o600},
 		{Path: "b.txt", Data: []byte("b"), Mode: 0o600},
 		{Path: "c.txt", Data: []byte("c"), Mode: 0o600},
 	})
-	if err == nil || strings.Join(removals, ",") != "c.txt,b.txt,a.txt" {
+	if err == nil || strings.Join(removals, ",") != "c.txt:0600,b.txt:0600,a.txt:0600" {
 		t.Fatalf("error = %v, rollback order = %v", err, removals)
 	}
 }
@@ -205,6 +205,20 @@ func TestApplyOperationsRemovesVerifiedFile(t *testing.T) {
 	}
 	if err := Verify(backups, "batch"); err != nil {
 		t.Fatalf("Verify() after removal = %v", err)
+	}
+}
+
+func TestApplyOperationsRemovesMatchingZeroByteFile(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "empty.txt"), []byte{}, 0o600)
+
+	if _, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "empty.txt", ExpectedData: []byte{}, ExpectedMode: 0o600,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "empty.txt")); !os.IsNotExist(err) {
+		t.Fatalf("removed zero-byte target remains: %v", err)
 	}
 }
 
@@ -305,9 +319,9 @@ func TestApplyOperationsPreservesCallerOrderAndRollsBackInReverse(t *testing.T) 
 		}
 		return nil
 	}
-	deps.removeIfMatches = func(root, path string, data []byte) error {
-		calls = append(calls, "remove:"+path)
-		return atomicfile.RemoveIfMatches(root, path, data)
+	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, fmt.Sprintf("remove:%s:%04o", path, mode.Perm()))
+		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
 		calls = append(calls, "restore:"+path)
@@ -318,7 +332,7 @@ func TestApplyOperationsPreservesCallerOrderAndRollsBackInReverse(t *testing.T) 
 		{Remove: &Remove{Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640}},
 		{Write: &Write{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
 	})
-	if err == nil || strings.Join(calls, ",") != "replace:first.txt,remove:stale.txt,replace:later.txt,remove:later.txt,restore:stale.txt,remove:first.txt" {
+	if err == nil || strings.Join(calls, ",") != "replace:first.txt,remove:stale.txt:0640,replace:later.txt,remove:later.txt:0600,restore:stale.txt,remove:first.txt:0600" {
 		t.Fatalf("ApplyOperations() error = %v, calls = %v", err, calls)
 	}
 	assertFile(t, filepath.Join(root, "stale.txt"), "owned", 0o640)
@@ -336,6 +350,7 @@ func TestPrepareOperationsRejectsInvalidConditionalEvidence(t *testing.T) {
 		ops  []Operation
 	}{
 		{"missing replace bytes", []Operation{{Replace: &Replace{Path: "a.txt", ExpectedMode: 0o600, Mode: 0o600}}}},
+		{"missing remove bytes", []Operation{{Remove: &Remove{Path: "a.txt", ExpectedMode: 0o600}}}},
 		{"unsupported create mode", []Operation{{Create: &Create{Path: "a.txt", Mode: fs.ModeSetuid | 0o600}}}},
 		{"duplicate paths", []Operation{
 			{Create: &Create{Path: "a.txt", Mode: 0o600}},
@@ -351,6 +366,21 @@ func TestPrepareOperationsRejectsInvalidConditionalEvidence(t *testing.T) {
 				t.Fatal("prepareOperations() error = nil")
 			}
 		})
+	}
+}
+
+func TestApplyOperationsRejectsNilRemovalEvidenceBeforeCapture(t *testing.T) {
+	deps := defaultApplyDependencies()
+	deps.capture = func(string, string, string, []string) (Snapshot, error) {
+		t.Fatal("applyOperations() captured a snapshot for invalid removal evidence")
+		return Snapshot{}, nil
+	}
+
+	_, err := applyOperations(deps, t.TempDir(), t.TempDir(), "batch", []Operation{{Remove: &Remove{
+		Path: "stale.txt", ExpectedMode: 0o600,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "missing or unsupported evidence") {
+		t.Fatalf("applyOperations() error = %v", err)
 	}
 }
 
@@ -499,9 +529,9 @@ func TestApplyOperationsConditionalMixedRollbackIsReverse(t *testing.T) {
 		calls = append(calls, "replace:"+path)
 		return atomicfile.ReplaceIfMatches(root, path, expected, expectedMode, data, mode)
 	}
-	deps.removeIfMatches = func(root, path string, data []byte) error {
-		calls = append(calls, "remove:"+path)
-		return atomicfile.RemoveIfMatches(root, path, data)
+	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
+		calls = append(calls, fmt.Sprintf("remove:%s:%04o", path, mode.Perm()))
+		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
 		calls = append(calls, "restore:"+path)
@@ -513,7 +543,7 @@ func TestApplyOperationsConditionalMixedRollbackIsReverse(t *testing.T) {
 		{Remove: &Remove{Path: "stale.txt", ExpectedData: []byte("stale"), ExpectedMode: 0o640}},
 		{Create: &Create{Path: "later.txt", Data: []byte("later"), Mode: 0o600}},
 	})
-	if err == nil || strings.Join(calls, ",") != "create:created.txt,replace:existing.txt,remove:stale.txt,create:later.txt,remove:later.txt,restore:stale.txt,replace:existing.txt,remove:created.txt" {
+	if err == nil || strings.Join(calls, ",") != "create:created.txt,replace:existing.txt,remove:stale.txt:0640,create:later.txt,remove:later.txt:0600,restore:stale.txt,replace:existing.txt,remove:created.txt:0600" {
 		t.Fatalf("ApplyOperations() error = %v, calls = %v", err, calls)
 	}
 	assertFile(t, filepath.Join(root, "existing.txt"), "original", 0o640)

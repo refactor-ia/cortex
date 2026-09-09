@@ -60,7 +60,7 @@ type applyDependencies struct {
 	createIfAbsent   func(string, string, []byte, fs.FileMode) error
 	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
 	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
-	removeIfMatches  func(string, string, []byte) error
+	removeIfExact    func(string, string, []byte, fs.FileMode) error
 }
 
 type operation struct {
@@ -86,7 +86,7 @@ func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
 		capture: Capture, verify: Verify, replace: atomicfile.Replace,
 		createIfAbsent: atomicfile.CreateIfAbsent, replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
-		removeIfMatches: atomicfile.RemoveIfMatches,
+		removeIfExact: atomicfile.RemoveIfExact,
 	}
 }
 
@@ -148,7 +148,7 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 				err = errors.New("target does not match authorized evidence")
 			}
 			if err == nil {
-				err = deps.removeIfMatches(sourceRoot, operation.path, operation.remove.ExpectedData)
+				err = deps.removeIfExact(sourceRoot, operation.path, operation.remove.ExpectedData, operation.remove.ExpectedMode)
 			}
 		}
 		if err != nil {
@@ -183,28 +183,28 @@ func prepareOperations(sourceRoot string, raw []Operation) ([]operation, error) 
 				return nil, fmt.Errorf("apply write has unsupported mode")
 			}
 			path = rawOperation.Write.Path
-			copy := Write{Path: path, Data: append([]byte(nil), rawOperation.Write.Data...), Mode: rawOperation.Write.Mode}
+			copy := Write{Path: path, Data: cloneOperationBytes(rawOperation.Write.Data), Mode: rawOperation.Write.Mode}
 			operation.write = &copy
 		case rawOperation.Create != nil:
 			if rawOperation.Create.Mode&^fs.FileMode(0o777) != 0 {
 				return nil, fmt.Errorf("apply create has unsupported mode")
 			}
 			path = rawOperation.Create.Path
-			copy := Create{Path: path, Data: append([]byte(nil), rawOperation.Create.Data...), Mode: rawOperation.Create.Mode}
+			copy := Create{Path: path, Data: cloneOperationBytes(rawOperation.Create.Data), Mode: rawOperation.Create.Mode}
 			operation.create = &copy
 		case rawOperation.Replace != nil:
 			if rawOperation.Replace.ExpectedData == nil || rawOperation.Replace.ExpectedMode&^fs.FileMode(0o777) != 0 || rawOperation.Replace.Mode&^fs.FileMode(0o777) != 0 {
 				return nil, fmt.Errorf("apply replace has missing or unsupported evidence")
 			}
 			path = rawOperation.Replace.Path
-			copy := Replace{Path: path, ExpectedData: append([]byte(nil), rawOperation.Replace.ExpectedData...), ExpectedMode: rawOperation.Replace.ExpectedMode, Data: append([]byte(nil), rawOperation.Replace.Data...), Mode: rawOperation.Replace.Mode}
+			copy := Replace{Path: path, ExpectedData: cloneOperationBytes(rawOperation.Replace.ExpectedData), ExpectedMode: rawOperation.Replace.ExpectedMode, Data: cloneOperationBytes(rawOperation.Replace.Data), Mode: rawOperation.Replace.Mode}
 			operation.replace = &copy
 		case rawOperation.Remove != nil:
-			if rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
-				return nil, fmt.Errorf("apply remove has unsupported expected mode")
+			if rawOperation.Remove.ExpectedData == nil || rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply remove has missing or unsupported evidence")
 			}
 			path = rawOperation.Remove.Path
-			copy := Remove{Path: path, ExpectedData: append([]byte(nil), rawOperation.Remove.ExpectedData...), ExpectedMode: rawOperation.Remove.ExpectedMode}
+			copy := Remove{Path: path, ExpectedData: cloneOperationBytes(rawOperation.Remove.ExpectedData), ExpectedMode: rawOperation.Remove.ExpectedMode}
 			operation.remove = &copy
 		}
 		if _, err := safepath.Resolve(sourceRoot, path); err != nil {
@@ -318,7 +318,7 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 			}
 			continue
 		}
-		if err := deps.removeIfMatches(sourceRoot, operation.path, operation.write.Data); err != nil {
+		if err := removeDesired(deps, sourceRoot, operation.path, operation.write.Data, operation.write.Mode, "write"); err != nil {
 			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove %s: %w", operation.path, err))
 		}
 	}
@@ -329,21 +329,25 @@ func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string,
 }
 
 func removeCreated(deps applyDependencies, sourceRoot string, operation operation) error {
-	matches, err := targetMatches(sourceRoot, operation.path, operation.create.Data, operation.create.Mode)
+	return removeDesired(deps, sourceRoot, operation.path, operation.create.Data, operation.create.Mode, "create")
+}
+
+func removeDesired(deps applyDependencies, sourceRoot, path string, data []byte, mode fs.FileMode, kind string) error {
+	matches, err := targetMatches(sourceRoot, path, data, mode)
 	if err != nil {
 		return err
 	}
 	if !matches {
-		target, err := safepath.Resolve(sourceRoot, operation.path)
+		target, err := safepath.Resolve(sourceRoot, path)
 		if err != nil {
 			return err
 		}
 		if _, err := os.Lstat(target); os.IsNotExist(err) {
 			return nil
 		}
-		return errors.New("target changed after create")
+		return fmt.Errorf("target changed after %s", kind)
 	}
-	return deps.removeIfMatches(sourceRoot, operation.path, operation.create.Data)
+	return deps.removeIfExact(sourceRoot, path, data, mode)
 }
 
 func restoreRemoved(deps applyDependencies, sourceRoot string, operation operation, entry Entry, payload []byte) error {
@@ -358,6 +362,10 @@ func restoreRemoved(deps applyDependencies, sourceRoot string, operation operati
 		return nil
 	}
 	return deps.restoreIfAbsent(sourceRoot, operation.path, payload, fs.FileMode(entry.Mode))
+}
+
+func cloneOperationBytes(value []byte) []byte {
+	return append([]byte{}, value...)
 }
 
 func snapshotPayload(snapshotDir, path string) ([]byte, error) {

@@ -3,6 +3,7 @@ package catalog
 import (
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +16,39 @@ func buildSnapshot(t *testing.T, root string, policy AdmissionPolicy) CatalogSna
 		t.Fatal(err)
 	}
 	return snapshot
+}
+
+func TestBuildCatalogSnapshotFSMatchesDiskParser(t *testing.T) {
+	root, _ := catalogLoadFixture(t)
+	policy := AdmissionPolicy{CompatibleThirdPartyLicenses: []string{"MIT"}}
+	disk := buildSnapshot(t, root, policy)
+	embedded, err := BuildCatalogSnapshotFS(os.DirFS(root), "catalog.json", policy)
+	if err != nil || embedded.Fingerprint() != disk.Fingerprint() {
+		t.Fatalf("BuildCatalogSnapshotFS() = (%+v, %v)", embedded, err)
+	}
+}
+
+func TestBuildCatalogSnapshotFSRejectsUnsafeAndNonRegularEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		edit func(t *testing.T, root string)
+	}{
+		{"unsafe manifest", "../catalog.json", nil},
+		{"missing manifest", "missing.json", nil},
+		{"directory router", "catalog.json", func(t *testing.T, root string) { replaceWithDirectory(t, root, "routers/reasoning.md") }},
+		{"symlink source", "catalog.json", func(t *testing.T, root string) { replaceWithSymlink(t, root, "sources/owned.md") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := catalogLoadFixture(t)
+			if tc.edit != nil {
+				tc.edit(t, root)
+			}
+			if _, err := BuildCatalogSnapshotFS(os.DirFS(root), tc.path, AdmissionPolicy{}); err == nil {
+				t.Fatal("BuildCatalogSnapshotFS() error = nil")
+			}
+		})
+	}
 }
 
 func TestBuildCatalogSnapshotMaterializesAdmittedCatalog(t *testing.T) {

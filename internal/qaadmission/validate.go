@@ -12,6 +12,8 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
+const piRuntimeVersion = "0.85.1"
+
 var (
 	hex64     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	id32      = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -74,7 +76,7 @@ func validateIdentity(receipt Receipt) error {
 	return nil
 }
 func validVersions(versions Versions) bool {
-	return versions.Receipt == Contract && versions.Policy == qaroute.PolicyVersion && versions.Profile == qaroute.ProfileContract && versions.Adapter == "cortex.qa.pi-admission.v1" && versions.ActorContract == qaactor.ActorContractVersion && versions.SkillContract == "cortex.qa.pi-skill.v1" && versions.InputContract == "cortex.qa.pi-input.v1" && versions.ProbeContract == "cortex.qa.pi-probe/v1" && versions.Runtime == "0.84.4"
+	return versions.Receipt == Contract && versions.Policy == qaroute.PolicyVersion && versions.Profile == qaroute.ProfileContract && versions.Adapter == "cortex.qa.pi-admission.v1" && versions.ActorContract == qaactor.ActorContractVersion && versions.SkillContract == "cortex.qa.pi-skill.v1" && versions.InputContract == "cortex.qa.pi-input.v1" && versions.ProbeContract == "cortex.qa.pi-probe/v1" && versions.Runtime == piRuntimeVersion
 }
 func validateRoute(receipt Receipt) error {
 	route := receipt.Route.Resolved

@@ -97,6 +97,7 @@ type Receipt struct {
 	Versions     Versions
 	Installation InstallationIdentity
 	Target       TargetIdentity
+	Binary       BinaryIdentity
 	Route        RouteIdentity
 	Availability AvailabilityFacts
 	Execution    ExecutionFacts
@@ -115,6 +116,15 @@ type InstallationIdentity struct {
 type TargetIdentity struct {
 	CWDIdentity, Revision, Tree, Fingerprint string
 }
+
+const BinaryContract = "cortex.qa.pi-binary.v1"
+
+type BinaryIdentity struct {
+	Contract  string
+	SHA256    string
+	SizeBytes int64
+}
+
 type AvailabilityFacts struct {
 	Model, Authentication, Fallback string
 }

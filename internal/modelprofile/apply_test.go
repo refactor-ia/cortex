@@ -11,7 +11,7 @@ func TestApplySavedSwapsImagesWithoutMutatingBackup(t *testing.T) {
 	path := filepath.Join(root, "settings.json")
 	put(t, path, "before", 0o640)
 	roots := RuntimeRoots{Pi: root}
-	if err := Save(store, roots, []Change{{Target: PiSettings, After: []byte("after"), AfterMode: 0o600}}); err != nil {
+	if err := Save(store, roots, []Change{{Target: PiSettings, Before: []byte("before"), BeforeMode: 0o640, After: []byte("after"), AfterMode: 0o600}}); err != nil {
 		t.Fatal(err)
 	}
 	backup, err := Load(store)

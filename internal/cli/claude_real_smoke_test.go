@@ -98,7 +98,7 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 		if json.Unmarshal([]byte(claudeSmokeSchema), &schema) != nil || schema["additionalProperties"] != false {
 			t.Fatal("invalid schema")
 		}
-		want := []string{"-p", "--output-format", "json", "--json-schema", claudeSmokeSchema, "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*", claudeSmokePrompt}
+		want := []string{"-p", "--output-format", "json", "--json-schema", claudeSmokeSchema, "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*", "--", claudeSmokePrompt}
 		if got := claudeSmokeCommandSpec(); !equalStrings(got, want) {
 			t.Fatalf("command = %q", got)
 		}
@@ -243,7 +243,7 @@ func (r *claudeRealSmokeRunner) Run(ctx context.Context, path string, args, _ []
 }
 
 func claudeSmokeCommandSpec() []string {
-	return []string{"-p", "--output-format", "json", "--json-schema", claudeSmokeSchema, "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*", claudeSmokePrompt}
+	return []string{"-p", "--output-format", "json", "--json-schema", claudeSmokeSchema, "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*", "--", claudeSmokePrompt}
 }
 
 func runClaudeSmokeCommand(ctx context.Context, path, dir string, env []string) (runtimeprobe.Execution, error) {

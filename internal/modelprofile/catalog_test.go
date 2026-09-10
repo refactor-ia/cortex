@@ -44,8 +44,8 @@ func TestResolvePrimary(t *testing.T) {
 				}
 				continue
 			}
-			if err != nil || got.ModelID != w[rt] || got.ConversationalLevel != ConversationalLevelMedium {
-				t.Fatalf("ResolvePrimary(%q,%q) = (%q,%q) err %v, want %q at level %q", p, rt, got.ModelID, got.ConversationalLevel, err, w[rt], ConversationalLevelMedium)
+			if err != nil || got.ModelID != w[rt] || got.ConversationalLevel != ConversationalLevelLow {
+				t.Fatalf("ResolvePrimary(%q,%q) = (%q,%q) err %v, want %q at level %q", p, rt, got.ModelID, got.ConversationalLevel, err, w[rt], ConversationalLevelLow)
 			}
 		}
 	}

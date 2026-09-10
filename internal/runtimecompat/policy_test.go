@@ -170,16 +170,33 @@ func TestEvaluateKeepsAbsentAndProbeFailuresUnknown(t *testing.T) {
 	}
 }
 
-func TestBuiltInPolicyDoesNotCertifyObservedCandidates(t *testing.T) {
-	got, err := runtimecompat.BuiltInPolicy().Evaluate(reports(t,
-		detected("0.84.3"), detected("1.18.21"), claudeDetected("2.1.243"),
-	))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, observation := range got {
-		if observation.Compatibility != runtimematrix.CompatibilityUnknown {
-			t.Fatalf("BuiltInPolicy() certified %s: %#v", observation.ID, observation)
-		}
+func TestBuiltInPolicyCertifiesOnlyExactVersions(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		reports []runtimeprobe.Report
+		want    []runtimematrix.Compatibility
+	}{
+		{
+			name:    "certified versions",
+			reports: reports(t, detected("0.85.1"), detected("1.18.25"), claudeDetected("2.1.251")),
+			want:    []runtimematrix.Compatibility{runtimematrix.Compatible, runtimematrix.Compatible, runtimematrix.Compatible},
+		},
+		{
+			name:    "adjacent and unlisted versions",
+			reports: reports(t, detected("0.85.2"), detected("1.18.24"), claudeDetected("2.1.252")),
+			want:    []runtimematrix.Compatibility{runtimematrix.CompatibilityUnknown, runtimematrix.CompatibilityUnknown, runtimematrix.CompatibilityUnknown},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := runtimecompat.BuiltInPolicy().Evaluate(tt.reports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, observation := range got {
+				if observation.Compatibility != tt.want[index] {
+					t.Fatalf("BuiltInPolicy() %s = %s, want %s", observation.ID, observation.Compatibility, tt.want[index])
+				}
+			}
+		})
 	}
 }

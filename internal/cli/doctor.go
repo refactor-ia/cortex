@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/refactor-ia/cortex/internal/installobserve"
+	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
 	"github.com/refactor-ia/cortex/internal/skillroot"
@@ -58,7 +59,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	}
 	switch args[0] {
 	case "doctor":
-		return runDoctor(ctx, stdout, stderr, runner)
+		return runDoctor(ctx, stdout, stderr, runner, install.policy)
 	case "install", "update":
 		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
@@ -69,8 +70,8 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	}
 }
 
-func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	matrix, err := probeMatrix(ctx, runner)
+func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy) int {
+	matrix, err := probeCompatibilityMatrix(ctx, runner, policy)
 	if err != nil {
 		writeError(stderr, "probe_failed")
 		return exitFailure
@@ -80,7 +81,7 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		return exitFailure
 	}
 	for _, decision := range matrix.Decisions {
-		if decision.Outcome != runtimematrix.OutcomeAbsent {
+		if decision.Outcome != runtimematrix.OutcomeAbsent && decision.Outcome != runtimematrix.OutcomePresentCompatible {
 			return exitUnknown
 		}
 	}
@@ -113,19 +114,22 @@ func probeMatrix(ctx context.Context, runner runtimeprobe.Runner) (runtimematrix
 	return runtimematrix.Decide(observations)
 }
 
+func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, policy runtimecompat.Policy) (runtimematrix.Matrix, error) {
+	reports, err := probe(ctx, runner)
+	if err != nil {
+		return runtimematrix.Matrix{}, err
+	}
+	observations, err := policy.Evaluate(reports)
+	if err != nil {
+		return runtimematrix.Matrix{}, err
+	}
+	return runtimematrix.Decide(observations)
+}
+
 func runtimeReport(matrix runtimematrix.Matrix) string {
 	var output strings.Builder
 	for _, decision := range matrix.Decisions {
-		output.WriteString("runtime=")
-		output.WriteString(string(decision.ID))
-		if decision.Outcome == runtimematrix.OutcomeAbsent {
-			output.WriteString(" presence=absent")
-		} else {
-			output.WriteString(" presence=present compatibility=unknown")
-		}
-		output.WriteString(" action=")
-		output.WriteString(string(decision.Action))
-		output.WriteString(" touch=denied\n")
+		output.WriteString(installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false))
 	}
 	return output.String()
 }

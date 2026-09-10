@@ -1,0 +1,25 @@
+{
+  "sdk": {
+    "packageVersion": "0.85.1",
+    "activeToolNames": ["read", "grep", "find", "ls"],
+    "toolDefinitions": [
+      {"name": "read", "sourceInfo": {"path": "<builtin:read>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "grep", "sourceInfo": {"path": "<builtin:grep>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "find", "sourceInfo": {"path": "<builtin:find>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "ls", "sourceInfo": {"path": "<builtin:ls>", "source": "builtin", "scope": "temporary", "origin": "top-level"}}
+    ],
+    "loadedSkills": [{"name": "cortex-requirements-analyst", "description": "Assess requirements for ambiguity, completeness, consistency, and testability.", "source": "<temp-skill>"}]
+  },
+  "cliParser": {
+    "skillPaths": ["<temp-skill>"],
+    "tools": "read,grep,find,ls",
+    "appendSystemPromptSHA256": "a03bdc9e854328c092528fd1c2ae68e12227abc4990cbff893f7f370965a80ce",
+    "unknownFlags": [["unknown-flag", "x"]]
+  },
+  "derivedInputProvenance": {
+    "renderedSkillSHA256": "f2467d0067959ac2b80b79ee1769486d9e8500338a33dd3584e48f739a5ccb40",
+    "actorArtifactInputSHA256": "a03bdc9e854328c092528fd1c2ae68e12227abc4990cbff893f7f370965a80ce",
+    "effectivePromptSHA256": "08c5d26867a040459ead5516d0b13b90a60088654341f3fddcf5290ba4049f3f",
+    "captureOperatorSHA256": "2270745050f16bce4bd257d31f5e287d668253e0bc786cd3fbdb610761ed1248"
+  }
+}

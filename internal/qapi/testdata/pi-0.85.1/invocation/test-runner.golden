@@ -1,0 +1,20 @@
+# Synthetic expected invocation; not a Pi runtime observation.
+binary=/synthetic/bin/pi
+cwd=/synthetic/worktree
+argv:
+--model
+nan/qwen3.6
+--thinking
+low
+--append-system-prompt
+/synthetic/agents/cortex-test-runner.md
+--skill
+/synthetic/skills/cortex-test-runner/SKILL.md
+--mode
+json
+--print
+--no-session
+--no-extensions
+--no-context-files
+--tools
+read,grep,find,ls

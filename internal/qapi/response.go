@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
@@ -16,13 +17,28 @@ type responseOutcome struct {
 	provider, model, stopReason string
 	diagnostic                  *qaadmission.BoundedDiagnostic
 }
-type responseTerminal struct {
-	provider   string
-	model      string
-	stopReason string
+type responseOutcomeTerminal struct {
+	provider, model, stopReason string
+	result                      responseResult
+	tool                        bool
+}
+type responseResult struct {
+	contract, inputContract, role string
+	actorContract, actorSHA256    string
+	skillContract, skillSHA256    string
+	revision, fingerprint         string
+	route                         responseRoute
+}
+type responseRoute struct {
+	policy, backend, provider, model, effort string
+	profile, profileSHA256, overrideFields   string
 }
 
-func normalizeResponse(facts runFacts) responseOutcome {
+func normalizeResponse(facts runFacts, binding InputBinding) responseOutcome {
+	expected, valid := expectedResponse(binding)
+	if !valid {
+		return responseOutcome{code: qaadmission.CodeNormalizationFailed}
+	}
 	outcome := responseOutcome{}
 	if len(facts.stderr) != 0 {
 		var err error
@@ -50,23 +66,76 @@ func normalizeResponse(facts runFacts) responseOutcome {
 			return outcome
 		}
 		outcome.provider, outcome.model, outcome.stopReason = terminal.provider, terminal.model, terminal.stopReason
+		outcome.code = classifyResponse(terminal, expected)
 	}
 	return outcome
 }
-func parseResponse(data []byte) (responseTerminal, bool) {
+
+func expectedResponse(binding InputBinding) (responseResult, bool) {
+	if !validInputBinding(binding) {
+		return responseResult{}, false
+	}
+	route := binding.Route
+	return responseResult{
+		contract: resultContract, inputContract: InputContract, role: string(route.Role),
+		actorContract: binding.ActorContract, actorSHA256: binding.ActorSHA256,
+		skillContract: binding.SkillContract, skillSHA256: binding.SkillSHA256,
+		revision: binding.Revision, fingerprint: binding.Fingerprint,
+		route: responseRoute{route.PolicyVersion, route.Backend, route.Provider, route.Model, route.Effort, route.ProfileID, route.ProfileSHA256, strings.Join(route.OverrideFields, ",")},
+	}, true
+}
+
+func classifyResponse(terminal responseOutcomeTerminal, expected responseResult) qaadmission.Code {
+	categories := map[qaadmission.Code]bool{}
+	if terminal.tool {
+		categories[qaadmission.CodePolicyViolation] = true
+	} else if terminal.result != expected {
+		if terminal.result.route.provider != "nan" {
+			categories[qaadmission.CodeNonNaNRoute] = true
+		}
+		if responseIdentityMismatch(terminal.result, expected) {
+			categories[qaadmission.CodeObservedIdentityMismatch] = true
+		}
+	}
+	if terminal.provider != "nan" {
+		categories[qaadmission.CodeNonNaNRoute] = true
+	}
+	if terminal.model != expected.route.model || terminal.provider == "nan" && terminal.provider != expected.route.provider {
+		categories[qaadmission.CodeObservedIdentityMismatch] = true
+	}
+	if len(categories) != 1 {
+		if len(categories) == 0 {
+			return ""
+		}
+		return qaadmission.CodeNormalizationFailed
+	}
+	for code := range categories {
+		return code
+	}
+	return ""
+}
+
+func responseIdentityMismatch(actual, expected responseResult) bool {
+	if actual.route.provider != expected.route.provider {
+		actual.route.provider = expected.route.provider
+	}
+	return actual != expected
+}
+
+func parseResponse(data []byte) (responseOutcomeTerminal, bool) {
 	if !utf8.Valid(data) || len(data) == 0 || data[len(data)-1] != '\n' {
-		return responseTerminal{}, false
+		return responseOutcomeTerminal{}, false
 	}
 	state, session := 0, false
-	var terminal responseTerminal
+	var terminal responseOutcomeTerminal
 	for _, line := range bytes.Split(data[:len(data)-1], []byte("\n")) {
 		event, ok := responseObject(line)
 		if !ok {
-			return responseTerminal{}, false
+			return responseOutcomeTerminal{}, false
 		}
 		kind, ok := stringField(event, "type")
 		if !ok {
-			return responseTerminal{}, false
+			return responseOutcomeTerminal{}, false
 		}
 		switch state {
 		case 0:
@@ -75,16 +144,16 @@ func parseResponse(data []byte) (responseTerminal, bool) {
 			} else if kind == "agent_start" && exactFields(event, "type") {
 				state = 1
 			} else {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 		case 1:
 			if kind != "turn_start" || !exactFields(event, "type") {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			state = 2
 		case 2:
 			if kind != "message_start" || !exactFields(event, "type", "message") || !validAssistant(event["message"], false) {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			state = 3
 		case 3:
@@ -92,40 +161,41 @@ func parseResponse(data []byte) (responseTerminal, bool) {
 				continue
 			}
 			if kind != "message_end" || !exactFields(event, "type", "message") {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			terminal, ok = terminalMessage(event["message"])
 			if !ok {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			state = 4
 		case 4:
-			if kind != "turn_end" || !exactFields(event, "type", "message", "toolResults") {
-				return responseTerminal{}, false
+			var tools []json.RawMessage
+			if kind != "turn_end" || !exactFields(event, "type", "message", "toolResults") || json.Unmarshal(event["toolResults"], &tools) != nil || len(tools) != 0 {
+				return responseOutcomeTerminal{}, false
 			}
 			turn, valid := terminalMessage(event["message"])
-			var tools []json.RawMessage
-			if !valid || json.Unmarshal(event["toolResults"], &tools) != nil || len(tools) != 0 || turn != terminal {
-				return responseTerminal{}, false
+			if !valid || turn != terminal {
+				return responseOutcomeTerminal{}, false
 			}
 			state = 5
 		case 5:
 			var messages []json.RawMessage
 			if kind != "agent_end" || !exactFields(event, "type", "messages", "willRetry") || json.Unmarshal(event["messages"], &messages) != nil || !falseField(event, "willRetry") {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			state = 6
 		case 6:
 			if kind != "agent_settled" || !exactFields(event, "type") {
-				return responseTerminal{}, false
+				return responseOutcomeTerminal{}, false
 			}
 			state = 7
 		default:
-			return responseTerminal{}, false
+			return responseOutcomeTerminal{}, false
 		}
 	}
 	return terminal, state == 6 || state == 7
 }
+
 func responseObject(line []byte) (map[string]json.RawMessage, bool) {
 	if len(line) == 0 || bytes.Contains(line, []byte("\r")) || !validJSON(line) {
 		return nil, false
@@ -179,6 +249,7 @@ func jsonValue(decoder *json.Decoder, depth int) bool {
 	}
 	return true
 }
+
 func validUpdate(event map[string]json.RawMessage) bool {
 	if !exactFields(event, "type", "usage", "assistantMessageEvent") || !objectField(event, "usage") {
 		return false
@@ -205,16 +276,61 @@ func validUpdate(event map[string]json.RawMessage) bool {
 	}
 	return false
 }
-func terminalMessage(raw json.RawMessage) (responseTerminal, bool) {
+
+func terminalMessage(raw json.RawMessage) (responseOutcomeTerminal, bool) {
 	var message map[string]json.RawMessage
-	if json.Unmarshal(raw, &message) != nil || !validAssistant(raw, true) {
-		return responseTerminal{}, false
+	if json.Unmarshal(raw, &message) != nil || !allowedFields(message, "role", "content", "api", "provider", "model", "responseModel", "responseId", "providerThinkingLevel", "diagnostics", "usage", "stopReason", "deferred", "errorMessage", "rawStopReason", "endTurn", "timestamp") {
+		return responseOutcomeTerminal{}, false
 	}
-	provider, _ := stringField(message, "provider")
-	model, _ := stringField(message, "model")
-	stop, _ := stringField(message, "stopReason")
-	return responseTerminal{provider, model, stop}, true
+	role, ok := stringField(message, "role")
+	if !ok || role != "assistant" || !stringFieldOK(message, "provider") || !stringFieldOK(message, "model") || !stringFieldOK(message, "stopReason") {
+		return responseOutcomeTerminal{}, false
+	}
+	var content []json.RawMessage
+	if json.Unmarshal(message["content"], &content) != nil || len(content) != 1 {
+		return responseOutcomeTerminal{}, false
+	}
+	terminal := responseOutcomeTerminal{}
+	terminal.provider, _ = stringField(message, "provider")
+	terminal.model, _ = stringField(message, "model")
+	terminal.stopReason, _ = stringField(message, "stopReason")
+	if toolContent(content[0]) {
+		terminal.tool = true
+		return terminal, true
+	}
+	text, ok := textContent(content[0])
+	if !ok {
+		return responseOutcomeTerminal{}, false
+	}
+	terminal.result, ok = parseResult([]byte(text))
+	return terminal, ok
 }
+
+func parseResult(data []byte) (responseResult, bool) {
+	object, ok := responseObject(data)
+	if !ok || !exactFields(object, "contract", "input_contract", "role", "actor_contract", "actor_sha256", "skill_contract", "skill_sha256", "route", "revision", "fingerprint") {
+		return responseResult{}, false
+	}
+	var route map[string]json.RawMessage
+	if json.Unmarshal(object["route"], &route) != nil || !exactFields(route, "route_policy", "route_backend", "route_provider", "route_model", "route_effort", "route_profile", "route_profile_sha256", "route_override_fields") {
+		return responseResult{}, false
+	}
+	result := responseResult{}
+	var values = []*string{&result.contract, &result.inputContract, &result.role, &result.actorContract, &result.actorSHA256, &result.skillContract, &result.skillSHA256, &result.revision, &result.fingerprint, &result.route.policy, &result.route.backend, &result.route.provider, &result.route.model, &result.route.effort, &result.route.profile, &result.route.profileSHA256, &result.route.overrideFields}
+	for index, field := range []string{"contract", "input_contract", "role", "actor_contract", "actor_sha256", "skill_contract", "skill_sha256", "revision", "fingerprint", "route_policy", "route_backend", "route_provider", "route_model", "route_effort", "route_profile", "route_profile_sha256", "route_override_fields"} {
+		source := object
+		if index >= 9 {
+			source = route
+		}
+		if value, valid := stringField(source, field); !valid {
+			return responseResult{}, false
+		} else {
+			*values[index] = value
+		}
+	}
+	return result, true
+}
+
 func validAssistant(raw json.RawMessage, terminal bool) bool {
 	var message map[string]json.RawMessage
 	if json.Unmarshal(raw, &message) != nil || !allowedFields(message, "role", "content", "api", "provider", "model", "responseModel", "responseId", "providerThinkingLevel", "diagnostics", "usage", "stopReason", "deferred", "errorMessage", "rawStopReason", "endTurn", "timestamp") {
@@ -243,13 +359,26 @@ func allowedContent(block map[string]json.RawMessage) bool {
 	kind, _ := stringField(block, "type")
 	return kind == "text" || kind == "thinking"
 }
-func validText(raw json.RawMessage) bool {
+func textContent(raw json.RawMessage) (string, bool) {
 	var block map[string]json.RawMessage
-	if json.Unmarshal(raw, &block) != nil || !allowedFields(block, "type", "text", "textSignature") {
+	if json.Unmarshal(raw, &block) != nil || !exactFields(block, "type", "text") && !exactFields(block, "type", "text", "textSignature") {
+		return "", false
+	}
+	kind, ok := stringField(block, "type")
+	text, textOK := stringField(block, "text")
+	return text, ok && kind == "text" && textOK
+}
+func toolContent(raw json.RawMessage) bool {
+	var block map[string]json.RawMessage
+	if json.Unmarshal(raw, &block) != nil || !exactFields(block, "type", "id", "name", "arguments") || !objectField(block, "arguments") {
 		return false
 	}
 	kind, ok := stringField(block, "type")
-	return ok && kind == "text" && stringFieldOK(block, "text")
+	return ok && kind == "toolCall" && stringFieldOK(block, "id") && stringFieldOK(block, "name")
+}
+func validText(raw json.RawMessage) bool {
+	_, ok := textContent(raw)
+	return ok
 }
 func exactFields(object map[string]json.RawMessage, fields ...string) bool {
 	return len(object) == len(fields) && allowedFields(object, fields...)

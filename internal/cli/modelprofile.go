@@ -15,10 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
-var (
-	errUnsupportedOpenCodeOverride = errors.New("unsupported OpenCode config override")
-	errProfileIntervention         = errors.New("model profile intervention required")
-)
+var errUnsupportedOpenCodeOverride = errors.New("unsupported OpenCode config override")
 
 func runModelProfile(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 || args[0] != "profile" {
@@ -26,9 +23,14 @@ func runModelProfile(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if args[1] == "status" && (len(args) == 2 || len(args) == 4 && args[2] == "--scope" && args[3] == "user") {
-		if profileStatus(stdout) == nil {
+		if err := profileStatus(stdout); err == nil {
 			return exitOK
+		} else if errors.Is(err, errUnsupportedOpenCodeOverride) {
+			writeError(stderr, "model_profile_unsupported_opencode_override")
+		} else {
+			writeError(stderr, "model_profile_status_failed")
 		}
+		return exitFailure
 	}
 	if args[1] == "apply" && len(args) >= 3 && (args[2] == "nan" || args[2] == "mixed" || args[2] == "openai") {
 		if runtime, ok := profileWriteFlags(args[3:]); ok {
@@ -37,24 +39,19 @@ func runModelProfile(args []string, stdout, stderr io.Writer) int {
 				_, _ = io.WriteString(stdout, "scope=user_config_only status=applied\n")
 				return exitOK
 			}
-			if errors.Is(err, errUnsupportedOpenCodeOverride) {
-				writeError(stderr, "model_profile_unsupported_opencode_override")
-			} else if errors.Is(err, errProfileIntervention) {
-				writeError(stderr, "model_profile_intervention_required")
-			} else {
-				writeError(stderr, "model_profile_apply_failed")
-			}
+			writeError(stderr, profileErrorCode(err, "model_profile_apply_failed"))
 			return exitFailure
 		}
 	}
 	if args[1] == "rollback" {
 		if runtime, ok := profileWriteFlags(args[2:]); ok {
-			if profileRollback(runtime) == nil {
+			if err := profileRollback(runtime); err == nil {
 				_, _ = io.WriteString(stdout, "scope=user_config_only status=rolled_back\n")
 				return exitOK
+			} else {
+				writeError(stderr, profileErrorCode(err, "model_profile_rollback_failed"))
+				return exitFailure
 			}
-			writeError(stderr, "model_profile_rollback_failed")
-			return exitFailure
 		}
 	}
 	writeError(stderr, "invalid_command")
@@ -130,8 +127,8 @@ func profileApply(profile modelprofile.Profile, requested string) error {
 		return err
 	}
 	if err = atomicfile.Replace(state, "current", []byte(filepath.Base(txn)), 0o600); err != nil {
-		if modelprofile.Restore(roots, backup) != nil {
-			return errProfileIntervention
+		if restoreErr := modelprofile.Restore(roots, backup); errors.Is(restoreErr, modelprofile.ErrInterventionRequired) {
+			return modelprofile.ErrInterventionRequired
 		}
 		return err
 	}
@@ -158,10 +155,10 @@ func profileChanges(roots modelprofile.RuntimeRoots, profile modelprofile.Profil
 			return nil, err
 		}
 		if string(settings) != string(newSettings) {
-			changes = append(changes, modelprofile.Change{Target: modelprofile.PiSettings, After: newSettings, AfterMode: smode})
+			changes = append(changes, modelprofile.Change{Target: modelprofile.PiSettings, Before: settings, BeforeMode: smode, After: newSettings, AfterMode: smode})
 		}
 		if string(subagents) != string(newSubagents) {
-			changes = append(changes, modelprofile.Change{Target: modelprofile.PiSubagents, After: newSubagents, AfterMode: samode})
+			changes = append(changes, modelprofile.Change{Target: modelprofile.PiSubagents, Before: subagents, BeforeMode: samode, After: newSubagents, AfterMode: samode})
 		}
 	}
 	if open {
@@ -174,60 +171,91 @@ func profileChanges(roots modelprofile.RuntimeRoots, profile modelprofile.Profil
 			return nil, err
 		}
 		if string(config) != string(candidate) {
-			changes = append(changes, modelprofile.Change{Target: modelprofile.OpenCodeConfig, After: candidate, AfterMode: mode})
+			changes = append(changes, modelprofile.Change{Target: modelprofile.OpenCodeConfig, Before: config, BeforeMode: mode, After: candidate, AfterMode: mode})
 		}
 	}
 	return changes, nil
 }
 
 func profileSelected(roots modelprofile.RuntimeRoots, requested string) (bool, bool, error) {
-	pi, err := profileRootPresent(roots.Pi)
-	if err != nil {
-		return false, false, err
-	}
-	if pi {
-		if _, _, err = profileFile(roots.Pi, "settings.json"); err != nil {
-			return false, false, err
-		}
-		if _, _, err = profileFile(roots.Pi, "subagents.json"); err != nil {
-			return false, false, err
-		}
-	}
-	open, err := profileRootPresent(roots.OpenCode)
-	if err != nil {
-		return false, false, err
-	}
-	if open {
-		if os.Getenv("OPENCODE_CONFIG") != "" {
-			return false, false, errUnsupportedOpenCodeOverride
-		}
-		if _, err = os.Lstat(filepath.Join(roots.OpenCode, "opencode.jsonc")); err == nil {
-			return false, false, errUnsupportedOpenCodeOverride
-		} else if !os.IsNotExist(err) {
-			return false, false, err
-		}
-		if _, _, err = profileFile(roots.OpenCode, "opencode.json"); os.IsNotExist(err) {
-			open = false
-		} else if err != nil {
-			return false, false, err
-		}
-	}
 	if requested == "pi" {
-		if pi {
-			return true, false, nil
+		pi, err := profilePiSelected(roots.Pi)
+		if err != nil || !pi {
+			return false, false, firstProfileError(err)
 		}
-		return false, false, os.ErrNotExist
+		return true, false, nil
 	}
 	if requested == "opencode" {
-		if open {
-			return false, true, nil
+		open, err := profileOpenCodeSelected(roots.OpenCode)
+		if err != nil || !open {
+			return false, false, firstProfileError(err)
 		}
-		return false, false, os.ErrNotExist
+		return false, true, nil
+	}
+	pi, err := profilePiSelected(roots.Pi)
+	if err != nil {
+		return false, false, err
+	}
+	open, err := profileOpenCodeSelected(roots.OpenCode)
+	if err != nil {
+		return false, false, err
 	}
 	if !pi && !open {
 		return false, false, os.ErrNotExist
 	}
 	return pi, open, nil
+}
+
+func firstProfileError(err error) error {
+	if err != nil {
+		return err
+	}
+	return os.ErrNotExist
+}
+
+func profilePiSelected(root string) (bool, error) {
+	present, err := profileRootPresent(root)
+	if err != nil || !present {
+		return present, err
+	}
+	if _, _, err = profileFile(root, "settings.json"); err != nil {
+		return false, err
+	}
+	if _, _, err = profileFile(root, "subagents.json"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func profileOpenCodeSelected(root string) (bool, error) {
+	present, err := profileRootPresent(root)
+	if err != nil || !present {
+		return present, err
+	}
+	if os.Getenv("OPENCODE_CONFIG") != "" {
+		return false, errUnsupportedOpenCodeOverride
+	}
+	if _, err = os.Lstat(filepath.Join(root, "opencode.jsonc")); err == nil {
+		return false, errUnsupportedOpenCodeOverride
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if _, _, err = profileFile(root, "opencode.json"); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func profileErrorCode(err error, fallback string) string {
+	if errors.Is(err, errUnsupportedOpenCodeOverride) {
+		return "model_profile_unsupported_opencode_override"
+	}
+	if errors.Is(err, modelprofile.ErrInterventionRequired) {
+		return "model_profile_intervention_required"
+	}
+	return fallback
 }
 
 func profileRootPresent(root string) (bool, error) {

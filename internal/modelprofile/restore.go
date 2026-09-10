@@ -24,12 +24,17 @@ const (
 	OpenCodeConfig Target = "opencode-config"
 )
 
-// Change is a candidate image; Save captures its existing before image and does not apply it.
+// Change binds a transformed after image to the exact original image used to derive it.
 type Change struct {
-	Target    Target
-	After     []byte
-	AfterMode fs.FileMode
+	Target     Target
+	Before     []byte
+	BeforeMode fs.FileMode
+	After      []byte
+	AfterMode  fs.FileMode
 }
+
+// ErrInterventionRequired signals that a failed restore could not be compensated safely.
+var ErrInterventionRequired = errors.New("model profile intervention required")
 
 // Backup is validated, opaque rollback evidence returned only by Load.
 type Backup struct{ entries []backupEntry }
@@ -66,7 +71,8 @@ func Save(backupDir string, roots RuntimeRoots, changes []Change) error {
 	entries := make([]backupEntry, len(changes))
 	seen := map[Target]bool{}
 	for i, change := range changes {
-		if seen[change.Target] || !validImage(image{change.After, change.AfterMode}) {
+		expected := image{change.Before, change.BeforeMode}
+		if seen[change.Target] || !validImage(expected) || !validImage(image{change.After, change.AfterMode}) {
 			return errors.New("model profile restore: invalid change")
 		}
 		seen[change.Target] = true
@@ -79,8 +85,8 @@ func Save(backupDir string, roots RuntimeRoots, changes []Change) error {
 			return err
 		}
 		before, err := readImage(root, leaf)
-		if err != nil {
-			return fmt.Errorf("model profile restore: capture selected leaf: %w", err)
+		if err != nil || !sameImage(before, expected) {
+			return errors.New("model profile restore: selected leaf changed; save refused")
 		}
 		entries[i] = backupEntry{change.Target, root, identity, before, image{append([]byte(nil), change.After...), change.AfterMode}}
 	}
@@ -156,7 +162,7 @@ func restoreWith(roots RuntimeRoots, backup Backup, operations restoreOperations
 				e := done[i]
 				r, l, _ := targetPath(roots, e.Target)
 				if operations.identity(r, e.RootID) != nil || operations.replace(r, l, e.Before.Bytes, e.Before.Mode, e.After.Bytes, e.After.Mode) != nil {
-					return errors.New("model profile restore: rollback failed; intervention required")
+					return fmt.Errorf("model profile restore: rollback failed: %w", ErrInterventionRequired)
 				}
 			}
 			return errors.New("model profile restore: rollback failed")

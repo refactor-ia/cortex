@@ -18,7 +18,7 @@ func TestSaveLoadRestore(t *testing.T) {
 	put(t, filepath.Join(pi, "subagents.json"), "untouched", 0o600)
 	put(t, filepath.Join(open, "opencode.json"), "before-open", 0o644)
 	roots := RuntimeRoots{Pi: pi, OpenCode: open}
-	changes := []Change{{PiSettings, []byte("after-settings"), 0o600}, {OpenCodeConfig, []byte("after-open"), 0o640}}
+	changes := []Change{{Target: PiSettings, Before: []byte("before-settings"), BeforeMode: 0o640, After: []byte("after-settings"), AfterMode: 0o600}, {Target: OpenCodeConfig, Before: []byte("before-open"), BeforeMode: 0o644, After: []byte("after-open"), AfterMode: 0o640}}
 	if err := Save(store, roots, changes); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestRestoreRejectsReplacedRoot(t *testing.T) {
 	put(t, filepath.Join(root, "settings.json"), "before", 0o600)
 	roots := RuntimeRoots{Pi: root}
 	after := "api_token=keep-private"
-	if err := Save(store, roots, []Change{{PiSettings, []byte(after), 0o640}}); err != nil {
+	if err := Save(store, roots, []Change{{Target: PiSettings, Before: []byte("before"), BeforeMode: 0o600, After: []byte(after), AfterMode: 0o640}}); err != nil {
 		t.Fatal(err)
 	}
 	backup, err := Load(store)
@@ -72,7 +72,7 @@ func TestRestorePreflightAndCompensation(t *testing.T) {
 	put(t, filepath.Join(root, "settings.json"), "one", 0o600)
 	put(t, filepath.Join(root, "subagents.json"), "two", 0o600)
 	roots := RuntimeRoots{Pi: root}
-	changes := []Change{{PiSettings, []byte("ONE"), 0o640}, {PiSubagents, []byte("TWO"), 0o640}}
+	changes := []Change{{Target: PiSettings, Before: []byte("one"), BeforeMode: 0o600, After: []byte("ONE"), AfterMode: 0o640}, {Target: PiSubagents, Before: []byte("two"), BeforeMode: 0o600, After: []byte("TWO"), AfterMode: 0o640}}
 	if err := Save(store, roots, changes); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +125,9 @@ func TestRestorePreflightAndCompensation(t *testing.T) {
 	if err == nil {
 		t.Fatal("restore accepted root swap between leaves")
 	}
+	if !errors.Is(err, ErrInterventionRequired) {
+		t.Fatalf("restore root-swap error = %v, want intervention signal", err)
+	}
 	want(t, filepath.Join(root, "settings.json"), "ONE", 0o640)
 	want(t, filepath.Join(root, "subagents.json"), "TWO", 0o640)
 }
@@ -133,7 +136,7 @@ func TestEmptyAndInvalidRecords(t *testing.T) {
 	root, store := tempRoot(t), tempRoot(t)
 	put(t, filepath.Join(root, "settings.json"), "before", 0o600)
 	roots := RuntimeRoots{Pi: root}
-	if err := Save(store, roots, []Change{{PiSettings, nil, 0o600}}); err != nil {
+	if err := Save(store, roots, []Change{{Target: PiSettings, Before: []byte("before"), BeforeMode: 0o600, After: nil, AfterMode: 0o600}}); err != nil {
 		t.Fatal(err)
 	}
 	put(t, filepath.Join(root, "settings.json"), "", 0o600)
@@ -145,7 +148,7 @@ func TestEmptyAndInvalidRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	want(t, filepath.Join(root, "settings.json"), "before", 0o600)
-	if err := Save(tempRoot(t), roots, []Change{{Target("../x"), []byte("x"), 0o600}}); err == nil {
+	if err := Save(tempRoot(t), roots, []Change{{Target: Target("../x"), Before: []byte("before"), BeforeMode: 0o600, After: []byte("x"), AfterMode: 0o600}}); err == nil {
 		t.Fatal("unsafe target accepted")
 	}
 	base := tempRoot(t)
@@ -157,10 +160,10 @@ func TestEmptyAndInvalidRecords(t *testing.T) {
 	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(tempRoot(t), RuntimeRoots{Pi: filepath.Join(base, "link", "root")}, []Change{{PiSettings, []byte("x"), 0o600}}); err == nil {
+	if err := Save(tempRoot(t), RuntimeRoots{Pi: filepath.Join(base, "link", "root")}, []Change{{Target: PiSettings, Before: []byte("before"), BeforeMode: 0o600, After: []byte("x"), AfterMode: 0o600}}); err == nil {
 		t.Fatal("ancestor symlink accepted")
 	}
-	if err := Save(tempRoot(t), roots, []Change{{PiSettings, []byte("x"), 0o600}, {PiSettings, []byte("y"), 0o600}}); err == nil {
+	if err := Save(tempRoot(t), roots, []Change{{Target: PiSettings, Before: []byte("before"), BeforeMode: 0o600, After: []byte("x"), AfterMode: 0o600}, {Target: PiSettings, Before: []byte("before"), BeforeMode: 0o600, After: []byte("y"), AfterMode: 0o600}}); err == nil {
 		t.Fatal("duplicate target accepted")
 	}
 	if _, err := Load(tempRoot(t)); err == nil {

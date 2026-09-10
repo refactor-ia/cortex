@@ -91,13 +91,12 @@ func newEntry(source Entry) (entry, error) {
 	return current, nil
 }
 
-// BuiltInPolicy returns the production policy. Certification requires an explicit
-// source and test change after real runtime smoke evidence is merged.
+// BuiltInPolicy returns the production policy.
 func BuiltInPolicy() Policy {
 	policy, err := NewPolicy([]Entry{
-		{ID: runtimematrix.RuntimePi},
-		{ID: runtimematrix.RuntimeOpenCode},
-		{ID: runtimematrix.RuntimeClaudeCode},
+		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"0.85.1"}},
+		{ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{"1.18.25"}},
+		{ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{"2.1.251"}},
 	})
 	if err != nil {
 		panic(err)

@@ -211,8 +211,8 @@ func TestSubscriptionSmokeConfiguration(t *testing.T) {
 	if !strings.Contains(strings.Join(opencodeSmokeEnvironment(home), "\x00"), "XDG_DATA_HOME="+filepath.Join(home, ".local", "share")) {
 		t.Fatal("OpenCode environment lacks isolated data home")
 	}
-	if strings.Contains(claudeSmokeEvidence(strings.Repeat("a", 40), "1", "snapshot", []byte("marker"), 1), "auth=subscription_keychain") == false {
-		t.Fatal("Claude evidence lacks Keychain auth attribution")
+	if strings.Contains(claudeSmokeEvidence(strings.Repeat("a", 40), "1", "snapshot", []byte("marker"), 1), "auth=subscription_oauth_token") == false {
+		t.Fatal("Claude evidence lacks OAuth token auth attribution")
 	}
 	for _, evidence := range []string{
 		piSmokeEvidence(strings.Repeat("a", 40), "1", "snapshot", []byte("marker"), 1),

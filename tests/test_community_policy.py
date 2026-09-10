@@ -143,6 +143,7 @@ EXPECTED_FILES = {
         "internal/cli/modelprofile_test.go",
         "internal/cli/install.go",
         "internal/cli/install_test.go",
+        "internal/cli/lifecycle_e2e_test.go",
         "internal/cli/pi_real_smoke_test.go",
         "internal/cli/subscription_auth_test.go",
         "internal/cli/opencode_real_smoke_test.go",
@@ -263,7 +264,7 @@ class CommunityPolicyTests(unittest.TestCase):
                 self.assertIn("auth=subscription_copy", pi)
                 self.assertIn("auth=subscription_copy", opencode)
                 self.assertIn("XDG_DATA_HOME=", opencode)
-                self.assertIn("auth=subscription_keychain", claude)
+                self.assertIn("auth=subscription_oauth_token", claude)
                 self.assertNotIn("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE", claude)
 
         def test_foundation_documents_state_clean_target_status(self) -> None:

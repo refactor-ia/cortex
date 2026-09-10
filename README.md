@@ -12,7 +12,7 @@ Cortex is intended to become one curated open-source distribution of agent capab
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix; and transactional install/update primitives. These are not yet an end-to-end product. |
 | **Target only** | The capability catalog, family packages, agent prompts, model-profile definitions, runtime parity, and release. |
 
-`install` and `update` currently deny mutation because compatibility is uncertified. There are intentionally no installation instructions or quick-start path in this README.
+Only the exact runtime versions in the evidence table below are admitted; unknown versions remain fail-closed and report-only. There are intentionally no installation instructions or quick-start path in this README.
 
 ## The product direction
 
@@ -66,6 +66,18 @@ Each runtime projection will report whether the selected Cortex-owned routing is
 - Target writes are transactional, read back before success is reported, and roll back on failure; backups must be verifiable.
 - Uninstall removes only Cortex-owned material.
 - Cortex does not store or ship secrets or personal data. Credentialed and personal capabilities remain dormant until explicitly configured.
+
+## Runtime admission evidence
+
+The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.
+
+| Runtime | Exact version | Evidence records | Duration |
+| --- | --- | --- | --- |
+| Pi | 0.85.1 | source `b3364d923bf20abc242c7bd4cae25ec07731bc36`; command `71a9ab3f17ac06a26c31e61eafdeb7131ab2dfdf2ce9735dd9cc6a0b97349e75` | 9345 ms |
+| OpenCode | 1.18.25 | source `07f8979cf4969f0bb977d401e3792bd5d754e963`; command `6062b37fc943e60d1828a27ed69ed738b8572b1a27bacd068f8a679de19f2f8a`; config `61e3b70f80acc12049f71307760e500778f288b30dc0ee9d42c3cb43b091f3e0`; `skill_tool_completed=true` | 5000 ms |
+| Claude Code | 2.1.251 | source `f68758e784287cff78599c24db8632a13890c206`; command `0cba56fe517827ac8169a49cd36291d13875d06883be4729654fa34183aa8133`; schema `f7374878f385a402aa47362c62c882bdafba7abafac4d266ab81047448a5d46b`; auth `subscription_oauth_token` | 2342 ms |
+
+This is exact-version admission only. It is not full 11×3 runtime-family parity and is not release certification.
 
 ## Release evidence and catalog admission
 

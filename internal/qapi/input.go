@@ -19,7 +19,7 @@ const (
 	resultContract = "cortex.qa.pi-result.v1"
 )
 
-var resultRequirement = []byte("Return exactly one JSON object conforming to " + resultContract + " with matching input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint.")
+var resultRequirement = []byte("Return exactly one closed JSON object conforming to " + resultContract + ". It must contain only contract, input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint; every non-route field must be a string. route must contain only route_policy, route_backend, route_provider, route_model, route_effort, route_profile, route_profile_sha256, and route_override_fields; every route field must be a string. Match every field exactly.")
 
 // InputBinding contains the preflight-resolved identities required by one input.
 type InputBinding struct {

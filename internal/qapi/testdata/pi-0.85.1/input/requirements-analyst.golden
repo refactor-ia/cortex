@@ -19,5 +19,5 @@ fingerprint candidate.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 task 31
 Review café
 identity-safe data
-result 197
-Return exactly one JSON object conforming to cortex.qa.pi-result.v1 with matching input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint.
+result 485
+Return exactly one closed JSON object conforming to cortex.qa.pi-result.v1. It must contain only contract, input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint; every non-route field must be a string. route must contain only route_policy, route_backend, route_provider, route_model, route_effort, route_profile, route_profile_sha256, and route_override_fields; every route field must be a string. Match every field exactly.

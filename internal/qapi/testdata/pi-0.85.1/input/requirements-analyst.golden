@@ -1,0 +1,23 @@
+/skill:cortex-requirements-analyst
+identity 612
+input_contract cortex.qa.pi-input.v1
+role requirements-analyst
+actor_contract cortex.qa.pi-actor.v1
+actor_sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+skill_contract cortex.qa.pi-skill.v1
+skill_sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+route_policy cortex.qa.nan-policy.v1
+route_backend pi
+route_provider nan
+route_model qwen3.6
+route_effort high
+route_profile role-default
+route_profile_sha256 
+route_override_fields 
+revision cccccccccccccccccccccccccccccccccccccccc
+fingerprint candidate.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+task 31
+Review café
+identity-safe data
+result 197
+Return exactly one JSON object conforming to cortex.qa.pi-result.v1 with matching input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint.

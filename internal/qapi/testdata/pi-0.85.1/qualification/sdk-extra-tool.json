@@ -1,0 +1,14 @@
+{
+  "sdk": {
+    "packageVersion": "0.85.1",
+    "activeToolNames": ["read", "grep", "find", "ls", "bash"],
+    "toolDefinitions": [
+      {"name": "read", "sourceInfo": {"path": "<builtin:read>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "bash", "sourceInfo": {"path": "<builtin:bash>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "grep", "sourceInfo": {"path": "<builtin:grep>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "find", "sourceInfo": {"path": "<builtin:find>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
+      {"name": "ls", "sourceInfo": {"path": "<builtin:ls>", "source": "builtin", "scope": "temporary", "origin": "top-level"}}
+    ],
+    "loadedSkills": [{"name": "_shared", "description": "Shared SDD references for installed skills. Not invokable."}, {"name": "cortex-requirements-analyst", "description": "Assess requirements for ambiguity, completeness, consistency, and testability."}]
+  }
+}

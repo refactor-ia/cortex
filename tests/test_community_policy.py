@@ -223,8 +223,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 171)
-                self.assertEqual(len(actual_files), 171)
+                self.assertEqual(len(EXPECTED_FILES), 172)
+                self.assertEqual(len(actual_files), 172)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

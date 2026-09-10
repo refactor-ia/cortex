@@ -122,6 +122,40 @@ func ObserveActorShadows(candidate installplan.Plan, observation FilesystemObser
 	return ShadowObservation{conflicts: sortedShadowConflicts(conflicts), success: true}, nil
 }
 
+// admissionShadows checks only the selected actor against the existing bounded
+// scanner. Its successful result is a point-in-time observation, not a durable
+// ownership or precedence guarantee.
+func admissionShadows(root, cwd string, role qarole.RoleID, actor []byte) error {
+	candidates, err := scanActorRoots(root, cwd)
+	if err != nil {
+		return err
+	}
+	target := "cortex-" + string(role) + ".md"
+	found := false
+	for _, candidate := range candidates {
+		if candidate.basename == target {
+			if candidate.location != globalAgents || candidate.unsafe || candidate.mode.Perm() != installplan.CanonicalFileMode || !bytes.Equal(candidate.bytes, actor) {
+				return errors.New("admission actor shadowed")
+			}
+			found = true
+			continue
+		}
+		for _, named := range shadowNames(candidate.bytes, map[string]qarole.RoleID{target: role}) {
+			if named == role {
+				return errors.New("admission actor shadowed")
+			}
+		}
+	}
+	if !found {
+		return errors.New("admission actor missing during shadow scan")
+	}
+	rechecked, err := readShadowCandidate(filepath.Join(root, "agents"), globalAgents, target)
+	if err != nil || rechecked.unsafe || rechecked.mode.Perm() != installplan.CanonicalFileMode || !bytes.Equal(rechecked.bytes, actor) {
+		return errors.New("admission actor changed during shadow scan")
+	}
+	return nil
+}
+
 func scanActorRoots(piRoot, cwd string) ([]shadowCandidate, error) {
 	if err := validateShadowRoot(piRoot); err != nil {
 		return nil, err

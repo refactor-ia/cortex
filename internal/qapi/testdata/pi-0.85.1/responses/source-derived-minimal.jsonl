@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"source-derived","timestamp":"1970-01-01T00:00:00.000Z","cwd":"<redacted>"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}
+{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{}"}],"provider":"nan","model":"qwen3.6","stopReason":"stop"}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"{}"}],"provider":"nan","model":"qwen3.6","stopReason":"stop"},"toolResults":[]}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled"}

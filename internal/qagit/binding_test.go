@@ -2,6 +2,9 @@ package qagit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +45,79 @@ func TestVerifyCleanBindingAcceptsFullOIDFormats(t *testing.T) {
 			assertCommands(t, runner.calls, cwd)
 		})
 	}
+}
+
+func TestVerifyCleanBindingAddsCWDPathIdentity(t *testing.T) {
+	root := canonicalTempDir(t)
+	head, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	request := Request{CWD: root, Revision: head, Fingerprint: candidateFingerprint("sha1", head, tree)}
+
+	binding, err := VerifyCleanBinding(context.Background(), request, &fakeRunner{results: responses(root, "sha1", head, tree, "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := cwdIdentityOracle(root); binding.CWDIdentity != want {
+		t.Fatalf("CWDIdentity = %q, want independent framed oracle %q", binding.CWDIdentity, want)
+	}
+}
+
+func TestVerifyCleanBindingCWDPathIdentityDiffersAcrossCanonicalRoots(t *testing.T) {
+	head, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	identities := make([]string, 0, 2)
+	for _, root := range []string{canonicalTempDir(t), canonicalTempDir(t)} {
+		request := Request{CWD: root, Revision: head, Fingerprint: candidateFingerprint("sha1", head, tree)}
+		binding, err := VerifyCleanBinding(context.Background(), request, &fakeRunner{results: responses(root, "sha1", head, tree, "")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		identities = append(identities, binding.CWDIdentity)
+	}
+	if identities[0] == identities[1] {
+		t.Fatalf("canonical roots produced the same CWD identity: %q", identities[0])
+	}
+}
+
+func TestVerifyCleanBindingRejectsPathIdentityWithoutCanonicalGitRoot(t *testing.T) {
+	root, head, tree := canonicalTempDir(t), strings.Repeat("a", 40), strings.Repeat("b", 40)
+	link := filepath.Join(t.TempDir(), "candidate")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	otherRoot := canonicalTempDir(t)
+	for _, test := range []struct {
+		name    string
+		request Request
+		results []Result
+	}{
+		{"symlink", Request{CWD: link, Revision: head, Fingerprint: candidateFingerprint("sha1", head, tree)}, nil},
+		{"noncanonical", Request{CWD: root + "/.", Revision: head, Fingerprint: candidateFingerprint("sha1", head, tree)}, nil},
+		{"git top-level mismatch", Request{CWD: root, Revision: head, Fingerprint: candidateFingerprint("sha1", head, tree)}, responses(otherRoot, "sha1", head, tree, "")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding, err := VerifyCleanBinding(context.Background(), test.request, &fakeRunner{results: test.results})
+			if err == nil {
+				t.Fatal("invalid path identity was accepted")
+			}
+			if binding != (Binding{}) || binding.CWDIdentity != "" {
+				t.Fatalf("failure returned a binding with CWD identity: %#v", binding)
+			}
+		})
+	}
+}
+
+// cwdIdentityOracle independently assembles the exact two-frame wire form:
+// 8-byte big-endian domain byte length, domain bytes, 8-byte big-endian root
+// byte length, then the canonical Git worktree-root path bytes.
+func cwdIdentityOracle(root string) string {
+	frames := [][]byte{[]byte("cortex.qa.cwd.v1"), []byte(root)}
+	wire := make([]byte, 0, len(frames[0])+len(frames[1])+16)
+	for _, frame := range frames {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(frame)))
+		wire = append(wire, length[:]...)
+		wire = append(wire, frame...)
+	}
+	return fmt.Sprintf("cwd.%x", sha256.Sum256(wire))
 }
 
 func TestVerifyCleanBindingRejectsUnsafeRequests(t *testing.T) {

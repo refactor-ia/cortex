@@ -202,12 +202,16 @@ func TestPrelaunchReceiptBasisRejectsIncompleteBinaryIdentity(t *testing.T) {
 	}
 }
 
-func syntheticBoundPi() boundPi {
+func syntheticBoundPi(cwd ...string) boundPi {
 	var digest [sha256.Size]byte
 	for index := range digest {
 		digest[index] = byte(index + 1)
 	}
-	return boundPi{version: RuntimeVersion, digest: digest, size: 1}
+	pi := boundPi{version: RuntimeVersion, digest: digest, size: 1}
+	if len(cwd) == 1 {
+		pi.cwd = cwd[0]
+	}
+	return pi
 }
 
 type preflightFixture struct {
@@ -291,6 +295,57 @@ func preflightFingerprint(format, revision, tree string) string {
 		_, _ = hash.Write([]byte(value))
 	}
 	return fmt.Sprintf("candidate.%x", hash.Sum(nil))
+}
+
+func TestPrelaunchAvailabilityRequiresBoundPiCanonicalRequestDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(t *testing.T, fixture *preflightFixture, pi *boundPi)
+		stage     string
+		probes    int
+	}{
+		{name: "matching canonical directory", configure: func(_ *testing.T, fixture *preflightFixture, pi *boundPi) {
+			pi.cwd = fixture.request.CurrentDirectory
+		}, probes: 1},
+		{name: "different existing canonical directory", configure: func(t *testing.T, _ *preflightFixture, pi *boundPi) {
+			pi.cwd = testProfileRoot(t)
+		}, stage: "pi"},
+		{name: "empty bound directory", configure: func(_ *testing.T, _ *preflightFixture, pi *boundPi) {
+			pi.cwd = ""
+		}, stage: "pi"},
+		{name: "noncanonical bound directory", configure: func(_ *testing.T, fixture *preflightFixture, pi *boundPi) {
+			pi.cwd = fixture.request.CurrentDirectory + "/."
+		}, stage: "pi"},
+		{name: "uncanonicalizable request directory", configure: func(t *testing.T, fixture *preflightFixture, pi *boundPi) {
+			fixture.request.CurrentDirectory = filepath.Join(t.TempDir(), "missing")
+			pi.cwd = fixture.request.CurrentDirectory
+		}, stage: "pi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPreflightFixture(t)
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.runner.calls = nil
+			probes := 0
+			ops := readyPrelaunchOps(&probes, availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}})
+			pi := syntheticBoundPi(fixture.request.CurrentDirectory)
+			tc.configure(t, &fixture, &pi)
+
+			got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, pi, fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+			if tc.stage == "" {
+				if err != nil || code != qaadmission.CodeAdmitted || probes != tc.probes {
+					t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != tc.probes {
+				t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
+			}
+			assertIdentityFailure(t, err, tc.stage)
+		})
+	}
 }
 
 func TestPrelaunchAvailabilityFailsClosedBeforeProbes(t *testing.T) {
@@ -378,7 +433,7 @@ func TestPrelaunchAvailabilityFailsClosedBeforeProbes(t *testing.T) {
 			if tc.name == "catalog binding failure" {
 				snapshot = catalog.CatalogSnapshot{}
 			}
-			got, code, err := prelaunchAvailability(context.Background(), request, flight, syntheticBoundPi(), installRoot, snapshot, fixture.runner, &ops)
+			got, code, err := prelaunchAvailability(context.Background(), request, flight, syntheticBoundPi(request.CurrentDirectory), installRoot, snapshot, fixture.runner, &ops)
 			if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != 0 {
 				t.Fatalf("prelaunchAvailability() = %#v, %q, probes=%d", got, code, probes)
 			}
@@ -397,7 +452,7 @@ func TestPrelaunchAvailabilityRejectsMissingOriginalGitObjectFormatBeforeProbes(
 	fixture.runner.calls = nil
 	probes := 0
 	ops := readyPrelaunchOps(&probes, availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}})
-	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(fixture.request.CurrentDirectory), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
 	if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != 0 {
 		t.Fatalf("prelaunchAvailability() = %#v, %q, probes=%d", got, code, probes)
 	}
@@ -418,7 +473,7 @@ func TestPrelaunchAvailabilitySizesBeforeProbes(t *testing.T) {
 		basis.Bounds.ReceiptBytes = 1
 		return basis, qaadmission.CodeReceiptBoundUnsatisfiable, err
 	}
-	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(fixture.request.CurrentDirectory), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
 	if err != nil || code != qaadmission.CodeReceiptBoundUnsatisfiable || probes != 0 || got.Bounds.ReceiptBytes != 1 || got.Status != "" || got.Code != "" {
 		t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
 	}
@@ -443,7 +498,7 @@ func TestPrelaunchAvailabilityReturnsUnterminatedAvailabilityCode(t *testing.T) 
 			fixture.runner.calls = nil
 			probes := 0
 			ops := readyPrelaunchOps(&probes, tc.probes)
-			got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+			got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(fixture.request.CurrentDirectory), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
 			if err != nil || code != tc.code || probes != 1 || got.Status != "" || got.Code != "" || got.ReceiptID != "" || got.AttemptedRun || got.Availability != (qaadmission.AvailabilityFacts{}) || got.Execution != (qaadmission.ExecutionFacts{}) {
 				t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
 			}

@@ -28,6 +28,12 @@ func TestAdmissionRequest(t *testing.T) {
 			Revision: strings.Repeat("a", 40), Fingerprint: "candidate." + strings.Repeat("b", 64),
 			Task: "Please write a review.", TimeoutSeconds: 900,
 		}, true},
+		{"maximum timeout", strings.Replace(valid, `"timeoutSeconds":30`, `"timeoutSeconds":3600`, 1), AdmissionRequest{
+			Role: qarole.RequirementsAnalyst, Backend: "pi", CurrentDirectory: "/worktree",
+			Revision: strings.Repeat("a", 40), Fingerprint: "candidate." + strings.Repeat("b", 64),
+			Task: "Please write a review.", Profile: "balanced",
+			Override: qaroute.Override{Provider: "nan", Model: "qwen3.6", Effort: "high"}, TimeoutSeconds: 3600,
+		}, true},
 		{"neither branch", `{"schemaVersion":1,"role":"requirements-analyst"}`, AdmissionRequest{}, false},
 		{"both branches", strings.Replace(valid, `"contract":`, `"optIn":"cortex.qa.external.v1","contract":`, 1), AdmissionRequest{}, false},
 		{"reserved external branch", strings.Replace(valid, `"contract":"cortex.qa.pi-admission-request.v1"`, `"optIn":"cortex.qa.external.v1"`, 1), AdmissionRequest{}, false},

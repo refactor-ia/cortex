@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -15,8 +16,10 @@ import (
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/qaactor"
+	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qagit"
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skilldest"
 	"github.com/refactor-ia/cortex/internal/skillprojection"
@@ -119,6 +122,91 @@ func TestPreflightBindingRejectsInvalidRequestBeforeObservationOrGit(t *testing.
 	if !errors.Is(err, errInvalidAdmissionRequest) || len(fixture.runner.calls) != 0 {
 		t.Fatalf("preflightBinding() = %v, Git calls = %d", err, len(fixture.runner.calls))
 	}
+}
+
+func TestPrelaunchReceiptBasisMapsPreflightIdentityWithoutTerminalFacts(t *testing.T) {
+	fixture := newPreflightFixture(t)
+	fixture.request.Override = qaroute.Override{Provider: "nan", Model: "glm5.2", Effort: "high"}
+	flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pi := syntheticBoundPi()
+	wantBounds, ok := qaadmission.BoundsForTimeout(fixture.request.TimeoutSeconds)
+	if !ok {
+		t.Fatal("fixture timeout is invalid")
+	}
+	got, code, err := prelaunchReceiptBasis(fixture.request, flight, pi)
+	if err != nil || code != qaadmission.CodeAdmitted {
+		t.Fatalf("prelaunchReceiptBasis() code=%q, err=%v", code, err)
+	}
+	if got.Contract != qaadmission.Contract || got.Role != fixture.request.Role || got.Backend != fixture.request.Backend ||
+		got.Versions != (qaadmission.Versions{Receipt: qaadmission.Contract, Policy: flight.route.PolicyVersion, Profile: qaroute.ProfileContract, Adapter: "cortex.qa.pi-admission.v1", ActorContract: qaactor.ActorContractVersion, SkillContract: skillContract, InputContract: InputContract, ProbeContract: ProbeContract, Runtime: pi.version}) ||
+		got.Installation.ID != flight.assets.InstallationID() || got.Installation.CatalogSHA256 != flight.assets.CatalogFingerprint() || got.Installation.ActorSourceSHA256 != flight.assets.ActorSourceSHA256() || got.Installation.ActorGeneratedSHA256 != flight.assets.ActorSHA256() || got.Installation.ActorBindingSHA256 != flight.assets.ActorBindingSHA256() || got.Installation.SkillGeneratedSHA256 != flight.assets.SkillSHA256() ||
+		got.Target != (qaadmission.TargetIdentity{CWDIdentity: flight.git.CWDIdentity, Revision: flight.git.Revision, Tree: flight.git.Tree, Fingerprint: flight.git.Fingerprint}) || got.Binary.Contract != qaadmission.BinaryContract || got.Binary.SHA256 != fmt.Sprintf("%x", pi.digest) || got.Binary.SizeBytes != pi.size ||
+		got.Route.Requested != (qaadmission.RequestedIdentity{Provider: fixture.request.Override.Provider, Model: fixture.request.Override.Model, Effort: fixture.request.Override.Effort}) || !reflect.DeepEqual(got.Route.Resolved, flight.route) || got.Route.Observed != (qaadmission.ObservedIdentity{Effort: qaadmission.UnobservableEffort()}) || got.Bounds != wantBounds {
+		t.Fatalf("prelaunchReceiptBasis() provenance = %#v", got)
+	}
+	if got.ReceiptID != "" || got.Status != "" || got.Code != "" || got.AttemptedRun || got.Availability != (qaadmission.AvailabilityFacts{}) || got.Execution != (qaadmission.ExecutionFacts{}) || got.Diagnostic != nil {
+		t.Fatalf("prelaunchReceiptBasis() invented terminal facts: %#v", got)
+	}
+	minimum, err := qaadmission.MinimumSize(got)
+	if err != nil || !qaadmission.BoundsSatisfiable(got, minimum) || qaadmission.PrelaunchCode(got, minimum) != qaadmission.CodeAdmitted {
+		t.Fatalf("prelaunch basis minimum=%d, err=%v", minimum, err)
+	}
+}
+
+func TestPrelaunchReceiptBasisUsesRequestedTimeoutBounds(t *testing.T) {
+	for _, timeout := range []int{qaadmission.MinimumTimeoutSeconds, qaadmission.MaximumTimeoutSeconds} {
+		t.Run(fmt.Sprintf("timeout %d", timeout), func(t *testing.T) {
+			fixture := newPreflightFixture(t)
+			fixture.request.TimeoutSeconds = timeout
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, code, err := prelaunchReceiptBasis(fixture.request, flight, syntheticBoundPi())
+			wantBounds, ok := qaadmission.BoundsForTimeout(timeout)
+			minimum, sizeErr := qaadmission.MinimumSize(got)
+			if err != nil || !ok || sizeErr != nil || code != qaadmission.CodeAdmitted || got.Bounds != wantBounds || !qaadmission.BoundsSatisfiable(got, minimum) {
+				t.Fatalf("prelaunchReceiptBasis() = %#v, %q, %v; minimum=%d, %v", got, code, err, minimum, sizeErr)
+			}
+		})
+	}
+}
+
+func TestPrelaunchReceiptBasisRejectsIncompleteBinaryIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*boundPi)
+	}{
+		{"version", func(pi *boundPi) { pi.version = "" }},
+		{"digest", func(pi *boundPi) { pi.digest = [sha256.Size]byte{} }},
+		{"size", func(pi *boundPi) { pi.size = 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPreflightFixture(t)
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pi := syntheticBoundPi()
+			tc.mutate(&pi)
+			got, code, err := prelaunchReceiptBasis(fixture.request, flight, pi)
+			var failure *IdentityInsufficientError
+			if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || !errors.As(err, &failure) || failure.Stage != "binary" {
+				t.Fatalf("prelaunchReceiptBasis() = %#v, %q, %v", got, code, err)
+			}
+		})
+	}
+}
+
+func syntheticBoundPi() boundPi {
+	var digest [sha256.Size]byte
+	for index := range digest {
+		digest[index] = byte(index + 1)
+	}
+	return boundPi{version: RuntimeVersion, digest: digest, size: 1}
 }
 
 type preflightFixture struct {

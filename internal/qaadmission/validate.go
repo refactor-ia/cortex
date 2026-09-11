@@ -58,7 +58,14 @@ func CanonicalJSON(receipt Receipt) ([]byte, error) {
 	if err := Validate(receipt); err != nil {
 		return nil, err
 	}
-	return json.Marshal(receipt)
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > receipt.Bounds.ReceiptBytes {
+		return nil, fmt.Errorf("receipt exceeds byte bound")
+	}
+	return encoded, nil
 }
 
 func validateIdentity(receipt Receipt) error {

@@ -1,6 +1,7 @@
 package qaadmission
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -172,6 +173,66 @@ func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCanonicalJSONEnforcesEncodedReceiptBound(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		target  int
+		escaped bool
+		wantErr bool
+	}{
+		{"ASCII exact MaxReceiptBytes accepted", MaxReceiptBytes, false, false},
+		{"ASCII MaxReceiptBytes plus one rejected", MaxReceiptBytes + 1, false, true},
+		{"U+2028 escaped exact MaxReceiptBytes accepted", MaxReceiptBytes, true, false},
+		{"U+2028 escaped MaxReceiptBytes plus one rejected", MaxReceiptBytes + 1, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := receiptForEncodedSize(t, tc.target, tc.escaped)
+			_, err := CanonicalJSON(receipt)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("CanonicalJSON() error = %v, want error %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func receiptForEncodedSize(t *testing.T, target int, escaped bool) Receipt {
+	t.Helper()
+	receipt := testReceipt()
+	receipt.Code = CodeObservedIdentityMismatch
+	receipt.Route.Observed.Model = "arbitrary-observed-model"
+	receipt.ReceiptID = ReceiptID(receipt)
+	if err := Validate(receipt); err != nil {
+		t.Fatalf("Validate() semantic fixture: %v", err)
+	}
+
+	baseline, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatalf("json.Marshal() baseline: %v", err)
+	}
+	payloadBytes := target - len(baseline)
+	if escaped {
+		receipt.Route.Observed.Model += "\u2028"
+		payloadBytes -= len(`\u2028`)
+	}
+	if payloadBytes < 0 {
+		t.Fatalf("target %d smaller than baseline %d", target, len(baseline))
+	}
+	receipt.Route.Observed.Model += strings.Repeat("a", payloadBytes)
+	receipt.ReceiptID = ReceiptID(receipt)
+
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatalf("json.Marshal() sized receipt: %v", err)
+	}
+	if len(encoded) != target {
+		t.Fatalf("json.Marshal() length = %d, want %d", len(encoded), target)
+	}
+	if escaped && !strings.Contains(string(encoded), `\u2028`) {
+		t.Fatalf("json.Marshal() = %s, want escaped U+2028", encoded)
+	}
+	return receipt
 }
 
 func TestCanonicalJSONBindsBinaryWithoutPath(t *testing.T) {

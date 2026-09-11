@@ -88,6 +88,169 @@ func runtimeCWD(t *testing.T) string {
 	return cwd
 }
 
+func TestRuntimeBinding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("local helper process coverage")
+	}
+	cwd := runtimeCWD(t)
+	resolver := &runtimeResolver{path: buildVersionHelper(t, "success", cwd)}
+	bound, err := bindPi(context.Background(), cwd, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 1 || bound.path != runtimePath(t, resolver.path) || bound.cwd != cwd || bound.version != RuntimeVersion || bound.size <= 0 {
+		t.Fatalf("bound = %#v, resolver calls = %d", bound, resolver.calls)
+	}
+	original := executeVersionCommand
+	executeVersionCommand = func(context.Context, string, string) versionCapture {
+		t.Fatal("revalidation executed --version")
+		return versionCapture{}
+	}
+	t.Cleanup(func() { executeVersionCommand = original })
+	if err := revalidatePi(bound); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("revalidation rediscovered Pi: %d calls", resolver.calls)
+	}
+}
+
+func TestRuntimeBindingRejectsVersionCaptures(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		capture versionCapture
+	}{
+		{name: "wrong version", capture: versionCapture{started: true, stdout: []byte("pi 0.85.0\n")}},
+		{name: "malformed version", capture: versionCapture{started: true, stdout: []byte("pi version=0.85.1\n")}},
+		{name: "incomplete version", capture: versionCapture{started: true, stdout: []byte("pi 0.85\n")}},
+		{name: "silent version", capture: versionCapture{started: true}},
+		{name: "nonzero version", capture: versionCapture{started: true, stdout: []byte("pi 0.85.1\n"), exitCode: 2}},
+		{name: "incomplete capture", capture: versionCapture{started: true, stdout: []byte("pi 0.85.1\n"), stdoutTruncated: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := executeVersionCommand
+			executeVersionCommand = func(context.Context, string, string) versionCapture { return test.capture }
+			t.Cleanup(func() { executeVersionCommand = original })
+			_, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: runtimeBinary(t, "binary")})
+			if err == nil {
+				t.Fatal("bindPi() succeeded")
+			}
+		})
+	}
+}
+
+func TestRuntimeBindingRejectsUnsafeInputs(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		resolver PiPathResolver
+		context  context.Context
+	}{
+		{name: "nil resolver", context: context.Background()},
+		{name: "nil context", resolver: &runtimeResolver{}, context: nil},
+		{name: "missing binary", resolver: &runtimeResolver{path: filepath.Join(t.TempDir(), "missing")}, context: context.Background()},
+		{name: "nonregular binary", resolver: &runtimeResolver{path: runtimeDirectory(t)}, context: context.Background()},
+		{name: "symlink binary", resolver: &runtimeResolver{path: runtimeSymlink(t)}, context: context.Background()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := bindPi(test.context, runtimeDirectory(t), test.resolver); err == nil {
+				t.Fatal("bindPi() succeeded")
+			}
+		})
+	}
+}
+
+func TestRuntimeBindingRevalidationRejectsDrift(t *testing.T) {
+	for _, kind := range []string{"mode", "size", "hash", "identity"} {
+		t.Run(kind, func(t *testing.T) {
+			original := executeVersionCommand
+			executeVersionCommand = func(context.Context, string, string) versionCapture { return successfulVersion() }
+			t.Cleanup(func() { executeVersionCommand = original })
+			binary := runtimeBinary(t, "binary")
+			bound, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: binary})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutateRuntimeBinary(t, binary, kind)
+			if err := revalidatePi(bound); err == nil {
+				t.Fatal("revalidatePi() succeeded")
+			}
+		})
+	}
+}
+
+type runtimeResolver struct {
+	path  string
+	calls int
+}
+
+func (resolver *runtimeResolver) ResolvePi(context.Context) (string, error) {
+	resolver.calls++
+	return resolver.path, nil
+}
+
+func runtimeBinary(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("binary"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return runtimePath(t, path)
+}
+
+func runtimeDirectory(t *testing.T) string {
+	t.Helper()
+	return runtimePath(t, t.TempDir())
+}
+
+func runtimePath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
+func runtimeSymlink(t *testing.T) string {
+	t.Helper()
+	target := runtimeBinary(t, "target")
+	path := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func mutateRuntimeBinary(t *testing.T, path, kind string) {
+	t.Helper()
+	switch kind {
+	case "mode":
+		if err := os.Chmod(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+	case "size":
+		if err := os.WriteFile(path, []byte("larger binary"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	case "hash":
+		if err := os.WriteFile(path, []byte("change"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		replacement := path + ".new"
+		if err := os.WriteFile(replacement, []byte("binary"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func successfulVersion() versionCapture {
+	return versionCapture{started: true, stdout: []byte("pi 0.85.1\n")}
+}
+
 func buildVersionHelper(t *testing.T, mode, cwd string) string {
 	t.Helper()
 	directory := t.TempDir()

@@ -70,6 +70,54 @@ func TestValidateRequiresCurrentPiRuntime(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsBoundedTimeoutBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout int
+	}{
+		{"minimum", MinimumTimeoutSeconds},
+		{"default", DefaultTimeoutSeconds},
+		{"maximum", MaximumTimeoutSeconds},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := testReceipt()
+			bounds, ok := BoundsForTimeout(tc.timeout)
+			if !ok {
+				t.Fatalf("BoundsForTimeout(%d) rejected valid timeout", tc.timeout)
+			}
+			receipt.Bounds = bounds
+			receipt.ReceiptID = ReceiptID(receipt)
+			if err := Validate(receipt); err != nil {
+				t.Fatalf("Validate() timeout %d: %v", tc.timeout, err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsAlteredFixedBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*BoundsFacts)
+	}{
+		{"request", func(b *BoundsFacts) { b.RequestBytes-- }},
+		{"task", func(b *BoundsFacts) { b.TaskBytes-- }},
+		{"profile", func(b *BoundsFacts) { b.ProfileBytes-- }},
+		{"stdout", func(b *BoundsFacts) { b.StdoutBytes-- }},
+		{"stderr", func(b *BoundsFacts) { b.StderrBytes-- }},
+		{"receipt", func(b *BoundsFacts) { b.ReceiptBytes-- }},
+		{"diagnostic", func(b *BoundsFacts) { b.DiagnosticBytes-- }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := testReceipt()
+			tc.mutate(&receipt.Bounds)
+			receipt.ReceiptID = ReceiptID(receipt)
+			if err := Validate(receipt); err == nil {
+				t.Fatal("Validate accepted altered fixed bounds")
+			}
+		})
+	}
+}
+
 func TestValidateAllowsTruthfulPrelaunchWithoutExecutionFacts(t *testing.T) {
 	receipt := testReceipt()
 	receipt.Status = StatusNonPassing

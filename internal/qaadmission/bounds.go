@@ -36,6 +36,20 @@ func FixedBounds() BoundsFacts {
 		TimeoutSeconds:  DefaultTimeoutSeconds,
 	}
 }
+
+func BoundsForTimeout(timeout int) (BoundsFacts, bool) {
+	if timeout < MinimumTimeoutSeconds || timeout > MaximumTimeoutSeconds {
+		return BoundsFacts{}, false
+	}
+	bounds := FixedBounds()
+	bounds.TimeoutSeconds = timeout
+	return bounds, true
+}
+
+func validBounds(bounds BoundsFacts) bool {
+	want, ok := BoundsForTimeout(bounds.TimeoutSeconds)
+	return ok && bounds == want
+}
 func (bounds BoundsFacts) fields() []string {
 	return []string{
 		strconv.Itoa(bounds.RequestBytes),

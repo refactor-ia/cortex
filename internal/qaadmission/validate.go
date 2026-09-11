@@ -62,7 +62,7 @@ func CanonicalJSON(receipt Receipt) ([]byte, error) {
 }
 
 func validateIdentity(receipt Receipt) error {
-	if _, err := qarole.ValidateSquad([]qarole.RoleID{receipt.Role}); err != nil || !id32.MatchString(string(receipt.Installation.ID)) || !cwd.MatchString(receipt.Target.CWDIdentity) || !oid.MatchString(receipt.Target.Revision) || !oid.MatchString(receipt.Target.Tree) || !fp.MatchString(receipt.Target.Fingerprint) || receipt.Binary.Contract != BinaryContract || !hex64.MatchString(receipt.Binary.SHA256) || receipt.Binary.SizeBytes <= 0 || receipt.Bounds != FixedBounds() || receipt.Route.Observed.Effort != UnobservableEffort() {
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{receipt.Role}); err != nil || !id32.MatchString(string(receipt.Installation.ID)) || !cwd.MatchString(receipt.Target.CWDIdentity) || !oid.MatchString(receipt.Target.Revision) || !oid.MatchString(receipt.Target.Tree) || !fp.MatchString(receipt.Target.Fingerprint) || receipt.Binary.Contract != BinaryContract || !hex64.MatchString(receipt.Binary.SHA256) || receipt.Binary.SizeBytes <= 0 || !validBounds(receipt.Bounds) || receipt.Route.Observed.Effort != UnobservableEffort() {
 		return fmt.Errorf("invalid bound identity")
 	}
 	for _, value := range []string{receipt.Installation.CatalogSHA256, receipt.Installation.ActorSourceSHA256, receipt.Installation.ActorGeneratedSHA256, receipt.Installation.ActorBindingSHA256, receipt.Installation.SkillGeneratedSHA256} {

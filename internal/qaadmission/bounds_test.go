@@ -1,6 +1,62 @@
 package qaadmission
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
+
+func TestBoundsForTimeout(t *testing.T) {
+	fixed := FixedBounds()
+	for _, tc := range []struct {
+		name    string
+		timeout int
+		valid   bool
+	}{
+		{"minimum", MinimumTimeoutSeconds, true},
+		{"default", DefaultTimeoutSeconds, true},
+		{"maximum", MaximumTimeoutSeconds, true},
+		{"below minimum", MinimumTimeoutSeconds - 1, false},
+		{"above maximum", MaximumTimeoutSeconds + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bounds, ok := BoundsForTimeout(tc.timeout)
+			if ok != tc.valid {
+				t.Fatalf("BoundsForTimeout(%d) valid = %t, want %t", tc.timeout, ok, tc.valid)
+			}
+			if !ok {
+				return
+			}
+			if bounds.TimeoutSeconds != tc.timeout {
+				t.Fatalf("BoundsForTimeout(%d) timeout = %d", tc.timeout, bounds.TimeoutSeconds)
+			}
+			bounds.TimeoutSeconds = fixed.TimeoutSeconds
+			if bounds != fixed {
+				t.Fatalf("BoundsForTimeout(%d) changed fixed caps: %#v", tc.timeout, bounds)
+			}
+		})
+	}
+}
+
+func TestBoundsForTimeoutDefaultKeepsCanonicalJSON(t *testing.T) {
+	receipt := testReceipt()
+	baseline, err := CanonicalJSON(receipt)
+	if err != nil {
+		t.Fatalf("CanonicalJSON() baseline: %v", err)
+	}
+	bounds, ok := BoundsForTimeout(DefaultTimeoutSeconds)
+	if !ok {
+		t.Fatal("BoundsForTimeout(default) rejected the default timeout")
+	}
+	receipt.Bounds = bounds
+	receipt.ReceiptID = ReceiptID(receipt)
+	got, err := CanonicalJSON(receipt)
+	if err != nil {
+		t.Fatalf("CanonicalJSON() default timeout bounds: %v", err)
+	}
+	if !bytes.Equal(got, baseline) {
+		t.Fatalf("CanonicalJSON() changed for the default timeout\n got: %s\nwant: %s", got, baseline)
+	}
+}
 
 func TestFixedBoundsAndMinimumSize(t *testing.T) {
 	bounds := FixedBounds()

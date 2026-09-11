@@ -209,3 +209,109 @@ func runVersionCommand(ctx context.Context, path, cwd string) versionCapture {
 	}
 	return capture
 }
+
+type availabilityCommand uint8
+
+const (
+	availabilityModel availabilityCommand = iota + 1
+	availabilityAuth
+)
+
+var availabilityProbeTimeout = 10 * time.Second
+
+type probeCapture struct {
+	started, startFailed, timedOut, waitFailed bool
+	exitCode                                   int
+	stdout, stderr                             []byte
+	stdoutTruncated, stderrTruncated           bool
+}
+
+func (capture probeCapture) complete() bool {
+	return capture.started && !capture.startFailed && !capture.timedOut && !capture.waitFailed && !capture.stdoutTruncated && !capture.stderrTruncated
+}
+
+type availabilityProbes struct {
+	modelCapture probeCapture
+	model        ModelProbeResult
+	authCapture  probeCapture
+	auth         AuthProbeResult
+}
+
+// probeAvailability runs the fixed model and no-refresh auth probes once in order.
+func probeAvailability(ctx context.Context, bound boundPi, provider, model string) availabilityProbes {
+	modelCapture, modelResult := probeModelAvailability(ctx, bound, provider, model)
+	authCapture, authResult := probeAuthAvailability(ctx, bound)
+	return availabilityProbes{
+		modelCapture: modelCapture,
+		model:        modelResult,
+		authCapture:  authCapture,
+		auth:         authResult,
+	}
+}
+
+func probeModelAvailability(ctx context.Context, bound boundPi, provider, model string) (probeCapture, ModelProbeResult) {
+	capture := runAvailabilityCommand(ctx, bound, availabilityModel)
+	return capture, ProbeModel(ModelProbeInput{
+		Stdout:   capture.stdout,
+		ExitCode: capture.exitCode,
+		Complete: capture.complete(),
+	}, provider, model)
+}
+
+func probeAuthAvailability(ctx context.Context, bound boundPi) (probeCapture, AuthProbeResult) {
+	capture := runAvailabilityCommand(ctx, bound, availabilityAuth)
+	return capture, ProbeAuth(AuthProbeInput{
+		Stdout:    capture.stdout,
+		ExitCode:  capture.exitCode,
+		Complete:  capture.complete(),
+		NoRefresh: true,
+	})
+}
+
+func runAvailabilityCommand(ctx context.Context, bound boundPi, kind availabilityCommand) probeCapture {
+	arguments, stdoutLimit, stderrLimit, validKind := fixedAvailabilityCommand(kind)
+	if ctx == nil || !validKind || !validProbeBinding(bound) {
+		return probeCapture{startFailed: true}
+	}
+	runContext, cancel := context.WithTimeout(ctx, availabilityProbeTimeout)
+	defer cancel()
+	stdout := cappedWriter{maximum: stdoutLimit}
+	stderr := cappedWriter{maximum: stderrLimit}
+	command := exec.CommandContext(runContext, bound.path, arguments...)
+	command.Dir = bound.cwd
+	command.Env = minimalEnvironment()
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	command.WaitDelay = pipeWaitDelay
+	if err := command.Start(); err != nil {
+		return probeCapture{startFailed: true}
+	}
+	capture := probeCapture{started: true}
+	waitErr := command.Wait()
+	capture.stdout, capture.stderr = stdout.bytes, stderr.bytes
+	capture.stdoutTruncated, capture.stderrTruncated = stdout.truncated, stderr.truncated
+	capture.timedOut = errors.Is(runContext.Err(), context.DeadlineExceeded)
+	var exitError *exec.ExitError
+	if errors.As(waitErr, &exitError) {
+		capture.exitCode = exitError.ExitCode()
+	} else if waitErr != nil {
+		capture.waitFailed = true
+	}
+	return capture
+}
+
+func fixedAvailabilityCommand(kind availabilityCommand) ([]string, int, int, bool) {
+	switch kind {
+	case availabilityModel:
+		return []string{"--list-models"}, maxModelOutputBytes, maxAuthOutputBytes, true
+	case availabilityAuth:
+		return []string{"auth", "check", "--provider", "nan", "--json", "--no-refresh"}, maxAuthOutputBytes, maxAuthOutputBytes, true
+	default:
+		return nil, 0, 0, false
+	}
+}
+
+func validProbeBinding(bound boundPi) bool {
+	version, valid := parseVersion(bound.versionCapture)
+	return absolutePaths(bound.path, bound.cwd) && bound.version == RuntimeVersion && valid && version == RuntimeVersion
+}

@@ -79,6 +79,85 @@ func TestRuntimeVersionExecutorWaitDelay(t *testing.T) {
 	}
 }
 
+func TestRuntimeAvailability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("local helper process coverage")
+	}
+	for _, test := range []struct {
+		name                      string
+		behavior                  string
+		modelAvailable, authReady bool
+		modelCode, authCode       string
+	}{
+		{name: "ready", behavior: "availability-ready", modelAvailable: true, authReady: true},
+		{name: "missing model", behavior: "availability-missing-model", modelCode: "model_unavailable", authReady: true},
+		{name: "malformed model", behavior: "availability-malformed-model", modelCode: "normalization_failed", authReady: true},
+		{name: "nonzero model", behavior: "availability-nonzero-model", modelCode: "normalization_failed", authReady: true},
+		{name: "auth not ready", behavior: "availability-auth-not-ready", modelAvailable: true, authCode: "auth_not_ready"},
+		{name: "malformed auth", behavior: "availability-malformed-auth", modelAvailable: true, authCode: "normalization_failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cwd := runtimeCWD(t)
+			helper := buildVersionHelper(t, test.behavior, cwd)
+			observed := probeAvailability(context.Background(), runtimeBound(helper, cwd), "nan", "qwen3.6")
+			if !observed.modelCapture.complete() || !observed.authCapture.complete() || observed.model.Available != test.modelAvailable || string(observed.model.Code) != test.modelCode || observed.auth.Ready != test.authReady || string(observed.auth.Code) != test.authCode {
+				t.Fatalf("availability = %#v", observed)
+			}
+			trace, err := os.ReadFile(helper + ".trace")
+			if err != nil || string(trace) != "model\nauth\n" {
+				t.Fatalf("launch trace = %q, %v", trace, err)
+			}
+		})
+	}
+}
+
+func TestRuntimeAvailabilityTerminalCaptures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("local helper process coverage")
+	}
+	cwd := runtimeCWD(t)
+	t.Run("zero binding", func(t *testing.T) {
+		capture, _ := probeModelAvailability(context.Background(), boundPi{}, "nan", "qwen3.6")
+		if !capture.startFailed || capture.started || capture.complete() {
+			t.Fatalf("capture = %#v", capture)
+		}
+	})
+	t.Run("start failure", func(t *testing.T) {
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(filepath.Join(cwd, "missing"), cwd), "nan", "qwen3.6")
+		if !capture.startFailed || capture.started || capture.complete() {
+			t.Fatalf("capture = %#v", capture)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		original := availabilityProbeTimeout
+		availabilityProbeTimeout = 20 * time.Millisecond
+		t.Cleanup(func() { availabilityProbeTimeout = original })
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-block", cwd), cwd), "nan", "qwen3.6")
+		if !capture.started || !capture.timedOut || capture.complete() {
+			t.Fatalf("capture = %#v", capture)
+		}
+	})
+	t.Run("wait delay", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("portable inherited-pipe coverage")
+		}
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-drain", cwd), cwd), "nan", "qwen3.6")
+		if !capture.started || !capture.waitFailed || capture.complete() {
+			t.Fatalf("capture = %#v", capture)
+		}
+	})
+	t.Run("independent caps", func(t *testing.T) {
+		observed := probeAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-overflow", cwd), cwd), "nan", "qwen3.6")
+		if !observed.modelCapture.stdoutTruncated || !observed.modelCapture.stderrTruncated || len(observed.modelCapture.stdout) != maxModelOutputBytes || len(observed.modelCapture.stderr) != maxAuthOutputBytes || !observed.authCapture.stdoutTruncated || !observed.authCapture.stderrTruncated || len(observed.authCapture.stdout) != maxAuthOutputBytes || len(observed.authCapture.stderr) != maxAuthOutputBytes {
+			t.Fatalf("captures = %#v", observed)
+		}
+	})
+}
+
+func runtimeBound(path, cwd string) boundPi {
+	return boundPi{path: path, cwd: cwd, version: RuntimeVersion, versionCapture: successfulVersion()}
+}
+
 func runtimeCWD(t *testing.T) string {
 	t.Helper()
 	cwd, err := filepath.EvalSymlinks(t.TempDir())
@@ -256,14 +335,46 @@ func buildVersionHelper(t *testing.T, mode, cwd string) string {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "main.go")
 	program := fmt.Sprintf(`package main
-import ("bytes"; "fmt"; "os"; "os/exec"; "time")
-func main() {
- if len(os.Args) == 2 && os.Args[1] == "--child" { time.Sleep(1200*time.Millisecond); return }
- if len(os.Args) != 2 || os.Args[1] != "--version" { os.Exit(3) }
+import ("bytes"; "fmt"; "os"; "os/exec"; "strings"; "time")
+func checkEnvironment() {
  if cwd, _ := os.Getwd(); cwd != %q { os.Exit(4) }
  for _, key := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"} { if os.Getenv(key) != "" { os.Exit(5) } }
  if os.Getenv("LC_ALL") != "C" || os.Getenv("LANG") != "C" || os.Getenv("NO_COLOR") != "1" || os.Getenv("TERM") != "dumb" { os.Exit(6) }
- switch %q {
+}
+func record(value string) { file, err := os.OpenFile(os.Args[0]+".trace", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); if err != nil { os.Exit(9) }; defer file.Close(); fmt.Fprintln(file, value) }
+func modelTable(model string) { fmt.Printf("provider      model                context  max-out  thinking  images\nnan           %%s                  1        1        yes       no\n", model) }
+func main() {
+ if len(os.Args) == 2 && os.Args[1] == "--child" { time.Sleep(1200*time.Millisecond); return }
+ checkEnvironment()
+ behavior := %q
+ if strings.HasPrefix(behavior, "availability-") {
+  switch strings.Join(os.Args[1:], " ") {
+  case "--list-models":
+   record("model")
+   switch behavior {
+   case "availability-ready", "availability-auth-not-ready", "availability-malformed-auth": modelTable("qwen3.6")
+   case "availability-missing-model": modelTable("other")
+   case "availability-malformed-model": fmt.Print("not a model table\n")
+   case "availability-nonzero-model": modelTable("qwen3.6"); os.Exit(7)
+   case "availability-block": time.Sleep(2*time.Second)
+   case "availability-drain": child := exec.Command(os.Args[0], "--child"); child.Stdout = os.Stdout; child.Stderr = os.Stderr; if child.Start() != nil { os.Exit(8) }
+   case "availability-overflow": os.Stdout.Write(bytes.Repeat([]byte("o"), 1048577)); os.Stderr.Write(bytes.Repeat([]byte("e"), 65537))
+   default: os.Exit(10)
+   }
+  case "auth check --provider nan --json --no-refresh":
+   record("auth")
+   switch behavior {
+   case "availability-auth-not-ready": fmt.Print("{\"status\":\"not_ready\",\"reason\":\"missing credential\"}\n"); os.Exit(1)
+   case "availability-malformed-auth": fmt.Print("not json\n")
+   case "availability-overflow": os.Stdout.Write(bytes.Repeat([]byte("o"), 65537)); os.Stderr.Write(bytes.Repeat([]byte("e"), 65537))
+   default: fmt.Print("{\"status\":\"ready\",\"provider\":\"nan\",\"authType\":\"api_key\"}\n")
+   }
+  default: os.Exit(3)
+  }
+  return
+ }
+ if len(os.Args) != 2 || os.Args[1] != "--version" { os.Exit(3) }
+ switch behavior {
  case "success": fmt.Print("pi 0.85.1\n")
  case "overflow": os.Stdout.Write(bytes.Repeat([]byte("o"), 65537)); os.Stderr.Write(bytes.Repeat([]byte("e"), 65537))
  case "nonzero": fmt.Fprint(os.Stderr, "failed"); os.Exit(7)

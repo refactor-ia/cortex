@@ -2,6 +2,7 @@ package qaadmission
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 )
 
@@ -62,30 +63,87 @@ func (bounds BoundsFacts) fields() []string {
 		strconv.Itoa(bounds.TimeoutSeconds),
 	}
 }
-func MinimumSize(receipt Receipt) int {
+func MinimumSize(basis Receipt) (int, error) {
+	basis.Status = ""
+	basis.Code = ""
+	basis.AttemptedRun = false
+	basis.ReceiptID = ""
+	basis.Availability = AvailabilityFacts{}
+	basis.Execution = ExecutionFacts{}
+	basis.Diagnostic = nil
+	basis.Route.Observed = ObservedIdentity{Effort: UnobservableEffort()}
+
+	if basis.Contract != Contract || basis.Backend != "pi" {
+		return unsatisfiableSize(basis), fmt.Errorf("invalid receipt basis")
+	}
+	if err := validateIdentity(basis); err != nil {
+		return unsatisfiableSize(basis), err
+	}
+	if err := validateRoute(basis); err != nil {
+		return unsatisfiableSize(basis), err
+	}
+
 	maximum := 0
 	for _, code := range terminalCodes {
-		candidate := receipt
-		candidate.Code = code
-		candidate.Status = StatusNonPassing
-		candidate.AttemptedRun = mustAttempt(code)
-		if code == CodeAdmitted {
-			candidate.Status = StatusAdmitted
-			candidate.AttemptedRun = true
-		}
-		candidate.ReceiptID = ReceiptID(candidate)
-		encoded, err := json.Marshal(candidate)
-		if err != nil {
-			return MaxReceiptBytes + 1
-		}
-		if len(encoded) > maximum {
-			maximum = len(encoded)
+		for _, attempted := range allowedAttempts(code) {
+			candidate := minimumCandidate(basis, code, attempted)
+			if err := Validate(candidate); err != nil {
+				return unsatisfiableSize(basis), err
+			}
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
+				return unsatisfiableSize(basis), err
+			}
+			if len(encoded) > maximum {
+				maximum = len(encoded)
+			}
 		}
 	}
-	return maximum
+	return maximum, nil
 }
+
+func minimumCandidate(basis Receipt, code Code, attempted bool) Receipt {
+	candidate := basis
+	candidate.Status = StatusNonPassing
+	candidate.Code = code
+	candidate.AttemptedRun = attempted
+	candidate.ReceiptID = ""
+	candidate.Availability = AvailabilityFacts{}
+	candidate.Execution = ExecutionFacts{}
+	candidate.Diagnostic = nil
+	candidate.Route.Observed = ObservedIdentity{Effort: UnobservableEffort()}
+	if code == CodeAdmitted {
+		candidate.Status = StatusAdmitted
+		candidate.Availability = AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}
+		candidate.Execution = ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: "read,grep,find,ls", RenderedInputSHA256: "0000000000000000000000000000000000000000000000000000000000000000", Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"}
+		candidate.Route.Observed.Provider = candidate.Route.Resolved.Provider
+		candidate.Route.Observed.Model = candidate.Route.Resolved.Model
+	}
+	candidate.ReceiptID = ReceiptID(candidate)
+	return candidate
+}
+
+func allowedAttempts(code Code) []bool {
+	if mustAttempt(code) {
+		return []bool{true}
+	}
+	if mayAttempt(code) {
+		return []bool{false, true}
+	}
+	return []bool{false}
+}
+
+func unsatisfiableSize(receipt Receipt) int {
+	maximumInt := int(^uint(0) >> 1)
+	if receipt.Bounds.ReceiptBytes < maximumInt {
+		return receipt.Bounds.ReceiptBytes + 1
+	}
+	return maximumInt
+}
+
 func BoundsSatisfiable(receipt Receipt, size int) bool {
-	return size >= MinimumSize(receipt) && size <= receipt.Bounds.ReceiptBytes
+	minimum, err := MinimumSize(receipt)
+	return err == nil && size >= minimum && size <= receipt.Bounds.ReceiptBytes
 }
 func PrelaunchCode(receipt Receipt, size int) Code {
 	if !BoundsSatisfiable(receipt, size) {

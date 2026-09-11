@@ -10,6 +10,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qagit"
+	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
@@ -58,6 +59,103 @@ func preflightBinding(ctx context.Context, request AdmissionRequest, profileRoot
 		return preflight{}, identityInsufficient("clean_binding", err)
 	}
 	return preflight{route: route, assets: assets, git: binding}, nil
+}
+
+// prelaunchOps contains the private boundary seams needed to test prelaunch composition.
+type prelaunchOps struct {
+	revalidatePi          func(boundPi) error
+	catalogBinding        func(catalog.CatalogSnapshot, qarole.RoleID, string) (installobserve.AdmissionBinding, error)
+	observeAssets         func(string, string, installobserve.AdmissionBinding) (installobserve.AdmissionAssets, error)
+	verifyCleanBinding    func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error)
+	prelaunchReceiptBasis func(AdmissionRequest, preflight, boundPi) (qaadmission.Receipt, qaadmission.Code, error)
+	probeAvailability     func(context.Context, boundPi, string, string) availabilityProbes
+}
+
+func defaultPrelaunchOps() prelaunchOps {
+	return prelaunchOps{
+		revalidatePi: revalidatePi, catalogBinding: CatalogAdmissionBinding,
+		observeAssets: installobserve.ObserveAdmissionAssets, verifyCleanBinding: qagit.VerifyCleanBinding,
+		prelaunchReceiptBasis: prelaunchReceiptBasis, probeAvailability: probeAvailability,
+	}
+}
+
+// prelaunchAvailability rechecks one frozen flight before it runs availability probes.
+// It returns a complete but unterminated receipt basis and a private preparation code.
+func prelaunchAvailability(ctx context.Context, request AdmissionRequest, flight preflight, pi boundPi, installRoot string, snapshot catalog.CatalogSnapshot, gitRunner qagit.Runner, ops *prelaunchOps) (qaadmission.Receipt, qaadmission.Code, error) {
+	if !validAdmissionRequest(request) {
+		return qaadmission.Receipt{}, "", identityInsufficient("request", errInvalidAdmissionRequest)
+	}
+	if !validFrozenPreflight(request, flight) {
+		return qaadmission.Receipt{}, "", identityInsufficient("preflight", errors.New("inconsistent frozen preflight"))
+	}
+	if !validPrelaunchOps(ops) {
+		return qaadmission.Receipt{}, "", identityInsufficient("operations", errors.New("prelaunch operations are unavailable"))
+	}
+	if err := ops.revalidatePi(pi); err != nil {
+		return qaadmission.Receipt{}, "", identityInsufficient("pi", err)
+	}
+
+	expected, err := ops.catalogBinding(snapshot, request.Role, request.Backend)
+	if err != nil {
+		return qaadmission.Receipt{}, "", identityInsufficient("assets", err)
+	}
+	assets, err := ops.observeAssets(installRoot, request.CurrentDirectory, expected)
+	if err != nil || !samePreflightAssets(flight.assets, assets) {
+		if err == nil {
+			err = errors.New("admission assets changed")
+		}
+		return qaadmission.Receipt{}, "", identityInsufficient("assets", err)
+	}
+	binding, err := ops.verifyCleanBinding(ctx, qagit.Request{
+		CWD: request.CurrentDirectory, Revision: request.Revision, Fingerprint: request.Fingerprint,
+	}, gitRunner)
+	if err != nil || !samePreflightGitBinding(flight.git, binding) {
+		if err == nil {
+			err = errors.New("clean binding changed")
+		}
+		return qaadmission.Receipt{}, "", identityInsufficient("clean_binding", err)
+	}
+
+	prepared := preflight{route: flight.route, assets: assets, git: binding}
+	basis, code, err := ops.prelaunchReceiptBasis(request, prepared, pi)
+	if err != nil {
+		return qaadmission.Receipt{}, "", err
+	}
+	if code != qaadmission.CodeAdmitted {
+		return basis, code, nil
+	}
+	availability := ops.probeAvailability(ctx, pi, flight.route.Provider, flight.route.Model)
+	if !availability.model.Available {
+		return basis, availability.model.Code, nil
+	}
+	if !availability.auth.Ready {
+		return basis, availability.auth.Code, nil
+	}
+	return basis, qaadmission.CodeAdmitted, nil
+}
+
+func validFrozenPreflight(request AdmissionRequest, flight preflight) bool {
+	return flight.assets.RoleID() == request.Role && flight.assets.Backend() == request.Backend &&
+		flight.route.Role == request.Role && flight.route.Backend == request.Backend &&
+		flight.git.Revision == request.Revision && flight.git.Fingerprint == request.Fingerprint
+}
+
+func validPrelaunchOps(ops *prelaunchOps) bool {
+	return ops != nil && ops.revalidatePi != nil && ops.catalogBinding != nil && ops.observeAssets != nil &&
+		ops.verifyCleanBinding != nil && ops.prelaunchReceiptBasis != nil && ops.probeAvailability != nil
+}
+
+func samePreflightAssets(original, refreshed installobserve.AdmissionAssets) bool {
+	return original.InstallationID() == refreshed.InstallationID() &&
+		original.CatalogFingerprint() == refreshed.CatalogFingerprint() && original.RoleID() == refreshed.RoleID() && original.Backend() == refreshed.Backend() &&
+		original.ActorSHA256() == refreshed.ActorSHA256() && original.ActorSourceSHA256() == refreshed.ActorSourceSHA256() &&
+		original.ActorBindingSHA256() == refreshed.ActorBindingSHA256() && original.SkillSHA256() == refreshed.SkillSHA256() &&
+		original.ActorPath() == refreshed.ActorPath() && original.SkillPath() == refreshed.SkillPath()
+}
+
+func samePreflightGitBinding(original, refreshed qagit.Binding) bool {
+	return original.CWDIdentity == refreshed.CWDIdentity && original.Revision == refreshed.Revision && original.Tree == refreshed.Tree &&
+		original.Fingerprint == refreshed.Fingerprint && original.ObjectFormat != "" && original.ObjectFormat == refreshed.ObjectFormat
 }
 
 // prelaunchReceiptBasis prepares only the identity facts needed to size a future

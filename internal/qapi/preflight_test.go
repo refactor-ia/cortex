@@ -1,6 +1,7 @@
 package qapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -290,6 +291,190 @@ func preflightFingerprint(format, revision, tree string) string {
 		_, _ = hash.Write([]byte(value))
 	}
 	return fmt.Sprintf("candidate.%x", hash.Sum(nil))
+}
+
+func TestPrelaunchAvailabilityFailsClosedBeforeProbes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(t *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string)
+		stage     string
+	}{
+		{name: "invalid request", configure: func(_ *testing.T, fixture preflightFixture, _ preflight, _ *prelaunchOps) (AdmissionRequest, string) {
+			fixture.request.Backend = "other"
+			return fixture.request, fixture.installRoot
+		}, stage: "request"},
+		{name: "Pi revalidation failure", configure: func(_ *testing.T, fixture preflightFixture, _ preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.revalidatePi = func(boundPi) error { return errors.New("changed") }
+			return fixture.request, fixture.installRoot
+		}, stage: "pi"},
+		{name: "catalog binding failure", configure: func(_ *testing.T, fixture preflightFixture, _ preflight, _ *prelaunchOps) (AdmissionRequest, string) {
+			return fixture.request, fixture.installRoot
+		}, stage: "assets"},
+		{name: "asset observation failure", configure: func(t *testing.T, fixture preflightFixture, _ preflight, _ *prelaunchOps) (AdmissionRequest, string) {
+			if err := os.WriteFile(fixture.actorPath, []byte("replaced"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "assets"},
+		{name: "installation ID replacement", configure: func(t *testing.T, fixture preflightFixture, _ preflight, _ *prelaunchOps) (AdmissionRequest, string) {
+			replacePreflightInstallationID(t, fixture)
+			return fixture.request, fixture.installRoot
+		}, stage: "assets"},
+		{name: "asset path replacement", configure: func(t *testing.T, fixture preflightFixture, _ preflight, _ *prelaunchOps) (AdmissionRequest, string) {
+			return fixture.request, newPreflightFixture(t).installRoot
+		}, stage: "assets"},
+		{name: "different Git CWD", configure: func(_ *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.verifyCleanBinding = func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error) {
+				binding := flight.git
+				binding.CWDIdentity = "cwd." + strings.Repeat("c", 64)
+				return binding, nil
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "clean_binding"},
+		{name: "different Git tree", configure: func(_ *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.verifyCleanBinding = func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error) {
+				binding := flight.git
+				binding.Tree = strings.Repeat("c", 40)
+				return binding, nil
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "clean_binding"},
+		{name: "different Git revision", configure: func(_ *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.verifyCleanBinding = func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error) {
+				binding := flight.git
+				binding.Revision = strings.Repeat("c", 40)
+				return binding, nil
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "clean_binding"},
+		{name: "different Git fingerprint", configure: func(_ *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.verifyCleanBinding = func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error) {
+				binding := flight.git
+				binding.Fingerprint = "candidate." + strings.Repeat("c", 64)
+				return binding, nil
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "clean_binding"},
+		{name: "different Git object format", configure: func(_ *testing.T, fixture preflightFixture, flight preflight, ops *prelaunchOps) (AdmissionRequest, string) {
+			ops.verifyCleanBinding = func(context.Context, qagit.Request, qagit.Runner) (qagit.Binding, error) {
+				binding := flight.git
+				binding.ObjectFormat = "sha256"
+				return binding, nil
+			}
+			return fixture.request, fixture.installRoot
+		}, stage: "clean_binding"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPreflightFixture(t)
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.runner.calls = nil
+			probes := 0
+			ops := readyPrelaunchOps(&probes, availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}})
+			request, installRoot := tc.configure(t, fixture, flight, &ops)
+			snapshot := fixture.snapshot
+			if tc.name == "catalog binding failure" {
+				snapshot = catalog.CatalogSnapshot{}
+			}
+			got, code, err := prelaunchAvailability(context.Background(), request, flight, syntheticBoundPi(), installRoot, snapshot, fixture.runner, &ops)
+			if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != 0 {
+				t.Fatalf("prelaunchAvailability() = %#v, %q, probes=%d", got, code, probes)
+			}
+			assertIdentityFailure(t, err, tc.stage)
+		})
+	}
+}
+
+func TestPrelaunchAvailabilityRejectsMissingOriginalGitObjectFormatBeforeProbes(t *testing.T) {
+	fixture := newPreflightFixture(t)
+	flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flight.git.ObjectFormat = ""
+	fixture.runner.calls = nil
+	probes := 0
+	ops := readyPrelaunchOps(&probes, availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}})
+	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+	if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != 0 {
+		t.Fatalf("prelaunchAvailability() = %#v, %q, probes=%d", got, code, probes)
+	}
+	assertIdentityFailure(t, err, "clean_binding")
+}
+
+func TestPrelaunchAvailabilitySizesBeforeProbes(t *testing.T) {
+	fixture := newPreflightFixture(t)
+	flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.runner.calls = nil
+	probes := 0
+	ops := readyPrelaunchOps(&probes, availabilityProbes{})
+	ops.prelaunchReceiptBasis = func(request AdmissionRequest, flight preflight, pi boundPi) (qaadmission.Receipt, qaadmission.Code, error) {
+		basis, _, err := prelaunchReceiptBasis(request, flight, pi)
+		basis.Bounds.ReceiptBytes = 1
+		return basis, qaadmission.CodeReceiptBoundUnsatisfiable, err
+	}
+	got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+	if err != nil || code != qaadmission.CodeReceiptBoundUnsatisfiable || probes != 0 || got.Bounds.ReceiptBytes != 1 || got.Status != "" || got.Code != "" {
+		t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
+	}
+}
+
+func TestPrelaunchAvailabilityReturnsUnterminatedAvailabilityCode(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		probes availabilityProbes
+		code   qaadmission.Code
+	}{
+		{name: "model failure wins over auth", probes: availabilityProbes{model: ModelProbeResult{Code: qaadmission.CodeModelUnavailable}, auth: AuthProbeResult{Code: qaadmission.CodeAuthNotReady}}, code: qaadmission.CodeModelUnavailable},
+		{name: "auth failure", probes: availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Code: qaadmission.CodeAuthNotReady}}, code: qaadmission.CodeAuthNotReady},
+		{name: "both pass", probes: availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}}, code: qaadmission.CodeAdmitted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPreflightFixture(t)
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.runner.calls = nil
+			probes := 0
+			ops := readyPrelaunchOps(&probes, tc.probes)
+			got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+			if err != nil || code != tc.code || probes != 1 || got.Status != "" || got.Code != "" || got.ReceiptID != "" || got.AttemptedRun || got.Availability != (qaadmission.AvailabilityFacts{}) || got.Execution != (qaadmission.ExecutionFacts{}) {
+				t.Fatalf("prelaunchAvailability() = %#v, %q, %v, probes=%d", got, code, err, probes)
+			}
+		})
+	}
+}
+
+func readyPrelaunchOps(probeCalls *int, observed availabilityProbes) prelaunchOps {
+	ops := defaultPrelaunchOps()
+	ops.revalidatePi = func(boundPi) error { return nil }
+	ops.probeAvailability = func(context.Context, boundPi, string, string) availabilityProbes {
+		*probeCalls++
+		return observed
+	}
+	return ops
+}
+
+func replacePreflightInstallationID(t *testing.T, fixture preflightFixture) {
+	t.Helper()
+	path := filepath.Join(fixture.installRoot, ".cortex", "install-state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := bytes.ReplaceAll(data, []byte("000102030405060708090a0b0c0d0e0f"), []byte("f0e0d0c0b0a090807060504030201000"))
+	if bytes.Equal(data, replaced) {
+		t.Fatal("installation ID was not present")
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertIdentityFailure(t *testing.T, err error, stage string) {

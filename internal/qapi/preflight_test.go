@@ -29,7 +29,7 @@ func TestPreflightBindingHandsOffBoundAssetsRouteAndGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.route.Model != "glm5.2" || got.route.ProfileID != "role-default" || got.assets.RoleID() != fixture.request.Role || got.assets.ActorSHA256() != fixture.expected.ActorSHA256 || got.assets.SkillSHA256() != fixture.expected.SkillSHA256 || got.git.Revision != fixture.request.Revision || got.git.Fingerprint != fixture.request.Fingerprint {
+	if got.route.Model != "glm5.2" || got.route.ProfileID != "role-default" || got.assets.RoleID() != fixture.request.Role || got.assets.ActorSHA256() != fixture.expected.ActorSHA256 || got.assets.ActorSourceSHA256() != fixture.expected.ActorSourceSHA256 || got.assets.ActorBindingSHA256() != fixture.expected.ActorBindingSHA256 || got.assets.SkillSHA256() != fixture.expected.SkillSHA256 || got.git.Revision != fixture.request.Revision || got.git.Fingerprint != fixture.request.Fingerprint {
 		t.Fatalf("preflightBinding() = %#v", got)
 	}
 	if len(fixture.runner.calls) != 6 {

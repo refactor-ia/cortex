@@ -18,7 +18,7 @@ type Request struct {
 }
 
 type Binding struct {
-	ObjectFormat, Revision, Tree, Fingerprint string
+	ObjectFormat, Revision, Tree, Fingerprint, CWDIdentity string
 }
 
 type Runner interface {
@@ -65,7 +65,7 @@ func VerifyCleanBinding(ctx context.Context, request Request, runner Runner) (Bi
 	if fingerprint != request.Fingerprint {
 		return Binding{}, errors.New("stale git candidate fingerprint")
 	}
-	return Binding{ObjectFormat: values[2], Revision: values[3], Tree: values[4], Fingerprint: fingerprint}, nil
+	return Binding{ObjectFormat: values[2], Revision: values[3], Tree: values[4], Fingerprint: fingerprint, CWDIdentity: cwdPathIdentity(values[0])}, nil
 }
 
 func canonicalDirectory(path string) bool {
@@ -99,6 +99,21 @@ func validOID(value string, length int) bool {
 
 func validFingerprint(value string) bool {
 	return strings.HasPrefix(value, "candidate.") && validOID(strings.TrimPrefix(value, "candidate."), 64)
+}
+
+// cwdPathIdentity returns "cwd." plus the lowercase SHA-256 of two frames:
+// an 8-byte big-endian domain byte length followed by "cortex.qa.cwd.v1",
+// then an 8-byte big-endian canonical Git worktree-root path byte length
+// followed by the exact path bytes.
+func cwdPathIdentity(root string) string {
+	hash := sha256.New()
+	for _, value := range []string{"cortex.qa.cwd.v1", root} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(value))
+	}
+	return "cwd." + fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func candidateFingerprint(format, revision, tree string) string {

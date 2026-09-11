@@ -90,14 +90,18 @@ func TestAdmissionAssets(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(t, fixture)
 			}
-			assets, err := installobserve.ObserveAdmissionAssets(fixture.root, fixture.cwd, fixture.expected)
+			expected := fixture.expected
+			assets, err := installobserve.ObserveAdmissionAssets(fixture.root, fixture.cwd, expected)
+			if expected != fixture.expected {
+				t.Fatal("ObserveAdmissionAssets() mutated the caller binding")
+			}
 			if (err == nil) != tc.valid {
 				t.Fatalf("ObserveAdmissionAssets() error = %v, want valid=%t", err, tc.valid)
 			}
 			if !tc.valid {
 				return
 			}
-			if assets.InstallationID() != installstate.InstallationID(fixture.installationID) || assets.RoleID() != qarole.TestDesigner || assets.Backend() != "pi" || assets.CatalogFingerprint() != fixture.expected.CatalogFingerprint || assets.ActorSHA256() != fixture.expected.ActorSHA256 || assets.SkillSHA256() != fixture.expected.SkillSHA256 || assets.ActorPath() != fixture.actorPath || assets.SkillPath() != fixture.skillPath {
+			if assets.InstallationID() != installstate.InstallationID(fixture.installationID) || assets.RoleID() != qarole.TestDesigner || assets.Backend() != "pi" || assets.CatalogFingerprint() != fixture.expected.CatalogFingerprint || assets.ActorSHA256() != fixture.expected.ActorSHA256 || assets.ActorSourceSHA256() != fixture.expected.ActorSourceSHA256 || assets.ActorBindingSHA256() != fixture.expected.ActorBindingSHA256 || assets.SkillSHA256() != fixture.expected.SkillSHA256 || assets.ActorPath() != fixture.actorPath || assets.SkillPath() != fixture.skillPath {
 				t.Fatalf("ObserveAdmissionAssets() = %#v", assets)
 			}
 		})
@@ -125,8 +129,10 @@ func TestAdmissionAssetsRejectInvalidExplicitBindingAndRoots(t *testing.T) {
 		root, cwd string
 		expected  installobserve.AdmissionBinding
 	}{
-		{name: "alternate backend", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "other", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: fixture.expected.ActorSHA256, SkillSHA256: fixture.expected.SkillSHA256}},
-		{name: "wrong expected actor binding", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: strings.Repeat("a", 64), SkillSHA256: fixture.expected.SkillSHA256}},
+		{name: "alternate backend", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "other", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: fixture.expected.ActorSHA256, ActorSourceSHA256: fixture.expected.ActorSourceSHA256, ActorBindingSHA256: fixture.expected.ActorBindingSHA256, SkillSHA256: fixture.expected.SkillSHA256}},
+		{name: "wrong expected actor binding", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: strings.Repeat("a", 64), ActorSourceSHA256: fixture.expected.ActorSourceSHA256, ActorBindingSHA256: fixture.expected.ActorBindingSHA256, SkillSHA256: fixture.expected.SkillSHA256}},
+		{name: "missing expected actor source hash", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: fixture.expected.ActorSHA256, ActorBindingSHA256: fixture.expected.ActorBindingSHA256, SkillSHA256: fixture.expected.SkillSHA256}},
+		{name: "malformed expected actor binding hash", root: fixture.root, cwd: fixture.cwd, expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: fixture.expected.CatalogFingerprint, ActorSHA256: fixture.expected.ActorSHA256, ActorSourceSHA256: fixture.expected.ActorSourceSHA256, ActorBindingSHA256: "invalid", SkillSHA256: fixture.expected.SkillSHA256}},
 		{name: "symlink root", root: admissionSymlink(t, fixture.root), cwd: fixture.cwd, expected: fixture.expected},
 		{name: "symlink cwd", root: fixture.root, cwd: admissionSymlink(t, fixture.cwd), expected: fixture.expected},
 	} {
@@ -168,7 +174,7 @@ func newAdmissionFixture(t *testing.T) admissionFixture {
 	fixture := admissionFixture{
 		root: root, cwd: cwd, statePath: filepath.Join(root, ".cortex", "install-state.json"),
 		actorPath: filepath.Join(root, "agents", "cortex-test-designer.md"), skillPath: filepath.Join(root, "skills", "cortex-test-designer", "SKILL.md"), installationID: installationID,
-		expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: catalog, ActorSHA256: admissionHash(actor), SkillSHA256: admissionHash(skill)},
+		expected: installobserve.AdmissionBinding{Role: qarole.TestDesigner, Backend: "pi", CatalogFingerprint: catalog, ActorSHA256: admissionHash(actor), ActorSourceSHA256: admissionHash([]byte("catalog source bytes")), ActorBindingSHA256: admissionHash([]byte("catalog binding bytes")), SkillSHA256: admissionHash(skill)},
 	}
 	writeAdmissionFile(t, fixture.statePath, encoded, 0o600)
 	writeAdmissionFile(t, fixture.actorPath, actor, 0o600)

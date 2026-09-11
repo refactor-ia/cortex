@@ -18,6 +18,8 @@ type AdmissionBinding struct {
 	Backend            string
 	CatalogFingerprint string
 	ActorSHA256        string
+	ActorSourceSHA256  string
+	ActorBindingSHA256 string
 	SkillSHA256        string
 }
 
@@ -25,9 +27,9 @@ type AdmissionBinding struct {
 // assets required for one admission attempt. It does not guarantee they remain
 // unchanged after this call; later checkpoints must re-observe them.
 type AdmissionAssets struct {
-	installationID, catalogFingerprint, actorSHA256, skillSHA256 string
-	role                                                         qarole.RoleID
-	backend, actorPath, skillPath                                string
+	installationID, catalogFingerprint, actorSHA256, actorSourceSHA256, actorBindingSHA256, skillSHA256 string
+	role                                                                                                qarole.RoleID
+	backend, actorPath, skillPath                                                                       string
 }
 
 func (assets AdmissionAssets) InstallationID() installstate.InstallationID {
@@ -37,6 +39,8 @@ func (assets AdmissionAssets) CatalogFingerprint() string { return assets.catalo
 func (assets AdmissionAssets) RoleID() qarole.RoleID      { return assets.role }
 func (assets AdmissionAssets) Backend() string            { return assets.backend }
 func (assets AdmissionAssets) ActorSHA256() string        { return assets.actorSHA256 }
+func (assets AdmissionAssets) ActorSourceSHA256() string  { return assets.actorSourceSHA256 }
+func (assets AdmissionAssets) ActorBindingSHA256() string { return assets.actorBindingSHA256 }
 func (assets AdmissionAssets) SkillSHA256() string        { return assets.skillSHA256 }
 func (assets AdmissionAssets) ActorPath() string          { return assets.actorPath }
 func (assets AdmissionAssets) SkillPath() string          { return assets.skillPath }
@@ -76,7 +80,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 	}
 	return AdmissionAssets{
 		installationID: string(manifest.InstallationID()), catalogFingerprint: manifest.SnapshotFingerprint(),
-		role: expected.Role, backend: expected.Backend, actorSHA256: actor.SHA256(), skillSHA256: skill.SHA256(),
+		role: expected.Role, backend: expected.Backend, actorSHA256: actor.SHA256(), actorSourceSHA256: expected.ActorSourceSHA256, actorBindingSHA256: expected.ActorBindingSHA256, skillSHA256: skill.SHA256(),
 		actorPath: actorPath, skillPath: skillPath,
 	}, nil
 }
@@ -84,7 +88,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 func validAdmissionBinding(binding AdmissionBinding) bool {
 	_, err := qarole.ValidateSquad([]qarole.RoleID{binding.Role})
 	return err == nil && binding.Backend == "pi" && validHash(binding.CatalogFingerprint) &&
-		validHash(binding.ActorSHA256) && validHash(binding.SkillSHA256)
+		validHash(binding.ActorSHA256) && validHash(binding.ActorSourceSHA256) && validHash(binding.ActorBindingSHA256) && validHash(binding.SkillSHA256)
 }
 
 func admissionArtifact(manifest installstate.Manifest, logicalID string, kind installstate.Kind, expected AdmissionBinding) (installstate.Artifact, bool) {

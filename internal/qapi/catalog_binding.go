@@ -50,8 +50,8 @@ func CatalogAdmissionBinding(snapshot catalog.CatalogSnapshot, role qarole.RoleI
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
 
-	actorSHA256, ok := selectedActorSHA256(actorBinding, role)
-	if !ok {
+	actor, ok := selectedProjectedActor(actorBinding, role)
+	if !ok || actor.SourceSHA256() == "" || actor.GeneratedSHA256() == "" || actorBinding.BindingSHA256() == "" {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
 	skillSHA256, ok := selectedPiSkillSHA256(piSkills, role)
@@ -62,23 +62,25 @@ func CatalogAdmissionBinding(snapshot catalog.CatalogSnapshot, role qarole.RoleI
 		Role:               role,
 		Backend:            backend,
 		CatalogFingerprint: snapshot.Fingerprint(),
-		ActorSHA256:        actorSHA256,
+		ActorSHA256:        actor.GeneratedSHA256(),
+		ActorSourceSHA256:  actor.SourceSHA256(),
+		ActorBindingSHA256: actorBinding.BindingSHA256(),
 		SkillSHA256:        skillSHA256,
 	}, nil
 }
 
-func selectedActorSHA256(binding qaactor.Binding, role qarole.RoleID) (string, bool) {
-	selected := ""
+func selectedProjectedActor(binding qaactor.Binding, role qarole.RoleID) (qaactor.ProjectedActor, bool) {
+	var selected qaactor.ProjectedActor
 	for _, actor := range binding.Actors() {
 		if actor.RoleID() != role {
 			continue
 		}
-		if selected != "" || actor.GeneratedSHA256() == "" {
-			return "", false
+		if selected.RoleID() != "" {
+			return qaactor.ProjectedActor{}, false
 		}
-		selected = actor.GeneratedSHA256()
+		selected = actor
 	}
-	return selected, selected != ""
+	return selected, selected.RoleID() != ""
 }
 
 func selectedPiSkillSHA256(plan skillprojection.Plan, role qarole.RoleID) (string, bool) {

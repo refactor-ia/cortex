@@ -38,13 +38,15 @@ func TestCatalogAdmissionBindingUsesDerivedPiAssets(t *testing.T) {
 				Backend:            "pi",
 				CatalogFingerprint: snapshot.Fingerprint(),
 				ActorSHA256:        actor.GeneratedSHA256(),
+				ActorSourceSHA256:  actor.SourceSHA256(),
+				ActorBindingSHA256: actors.BindingSHA256(),
 				SkillSHA256:        skill.SHA256(),
 			}
 			if got != want {
 				t.Fatalf("CatalogAdmissionBinding() = %#v, want %#v", got, want)
 			}
-			if actor.GeneratedSHA256() == actor.SourceSHA256() {
-				t.Fatal("actor binding used its source hash instead of generated actor bytes")
+			if got.ActorSHA256 != actor.GeneratedSHA256() || got.ActorSHA256 == got.ActorSourceSHA256 {
+				t.Fatal("actor binding did not preserve the generated installed actor hash")
 			}
 
 			neutralSkill := selectedRenderedSkill(t, neutral, role)

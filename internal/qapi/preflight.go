@@ -91,6 +91,13 @@ func prelaunchAvailability(ctx context.Context, request AdmissionRequest, flight
 	if !validPrelaunchOps(ops) {
 		return qaadmission.Receipt{}, "", identityInsufficient("operations", errors.New("prelaunch operations are unavailable"))
 	}
+	canonicalCWD, err := canonicalRuntimeDirectory(request.CurrentDirectory)
+	if err != nil {
+		return qaadmission.Receipt{}, "", identityInsufficient("pi", err)
+	}
+	if pi.cwd != canonicalCWD {
+		return qaadmission.Receipt{}, "", identityInsufficient("pi", errors.New("Pi working directory changed"))
+	}
 	if err := ops.revalidatePi(pi); err != nil {
 		return qaadmission.Receipt{}, "", identityInsufficient("pi", err)
 	}

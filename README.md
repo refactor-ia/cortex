@@ -2,7 +2,7 @@
 
 Cortex is intended to become one curated open-source distribution of agent capabilities, maintained by RefactorIA and projected through generated adapters into Pi, OpenCode, and Claude Code while preserving user-owned configuration. Its canonical repository is [github.com/refactor-ia/cortex](https://github.com/refactor-ia/cortex).
 
-> **Current status — executable lifecycle delivered; product not complete.** The `doctor`, `install`, `update`, and `uninstall` lifecycle is executable with synthetic three-runtime transaction parity ([issue #41](https://github.com/refactor-ia/cortex/issues/41), [PR #173](https://github.com/refactor-ia/cortex/pull/173)). Cortex is not yet an end-to-end product, does not claim full runtime-family parity, and has no certified release path.
+> **Current status — executable lifecycle delivered; product not complete.** This repository contains the target architecture and community foundation. The `doctor`, `install`, `update`, and `uninstall` lifecycle is executable with synthetic three-runtime transaction parity ([issue #41](https://github.com/refactor-ia/cortex/issues/41), [PR #173](https://github.com/refactor-ia/cortex/pull/173)). **Implementation is not complete:** Cortex is not yet an end-to-end product, does not claim full runtime-family parity, and has no certified release path.
 
 ## What works today—and what does not
 

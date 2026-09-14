@@ -2,21 +2,21 @@
 
 Cortex is intended to become one curated open-source distribution of agent capabilities, maintained by RefactorIA and projected through generated adapters into Pi, OpenCode, and Claude Code while preserving user-owned configuration. Its canonical repository is [github.com/refactor-ia/cortex](https://github.com/refactor-ia/cortex).
 
-> **Current status — foundations, not a release.** This repository contains the target architecture and community foundation. **Implementation is not complete:** Cortex is not yet an end-to-end product, does not claim runtime parity, and has no certified release path.
+> **Current status — executable lifecycle delivered; product not complete.** The `doctor`, `install`, `update`, and `uninstall` lifecycle is executable with synthetic three-runtime transaction parity ([issue #41](https://github.com/refactor-ia/cortex/issues/41), [PR #173](https://github.com/refactor-ia/cortex/pull/173)). Cortex is not yet an end-to-end product, does not claim full runtime-family parity, and has no certified release path.
 
 ## What works today—and what does not
 
 | Status | Scope |
 | --- | --- |
-| **Executable today** | Read-only `doctor`; conservative `uninstall` of exact Cortex-owned state and artifacts. |
-| **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix; and transactional install/update primitives. These are not yet an end-to-end product. |
-| **Target only** | The capability catalog, family packages, agent prompts, model-profile definitions, runtime parity, and release. |
+| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime admission stays limited to the exact versions in the evidence table below. |
+| **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
+| **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, agent prompts, and model-profile definitions. |
 
 Only the exact runtime versions in the evidence table below are admitted; unknown versions remain fail-closed and report-only. There are intentionally no installation instructions or quick-start path in this README.
 
 ## The product direction
 
-Cortex curates one complete distribution rather than separate releases or user-selected packs. It will project approved capabilities into compatible runtimes through generated adapters; it does **not** install Pi, OpenCode, or Claude Code. When the target lifecycle is certified, Cortex will detect compatible runtimes already present, configure each compatible present runtime transactionally, and warn about absent, unknown, or incompatible runtimes without taking over ordinary work.
+Cortex targets one complete distribution rather than separate releases or user-selected packs. It will project approved capabilities into compatible runtimes through generated adapters; it does **not** install Pi, OpenCode, or Claude Code. The delivered executable lifecycle manages dedicated Cortex artifacts and runtime-local Cortex state without taking ownership of user configuration. Its synthetic three-runtime transaction coverage and exact-version marker smoke evidence are distinct from full 11×3 runtime-family parity and release certification, which remain pending.
 
 Cortex complements rather than competes with Gentle AI™; the [functional-precedence boundary](docs/architecture/overview.md#gentle-ai-functional-precedence) is normative.
 
@@ -91,7 +91,7 @@ Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no life
 
 ## Near-term direction
 
-The repository direction is to complete a certified install/update lifecycle and three-runtime parity harness, then populate and migrate the catalog and pass release gates. No delivery date is promised.
+Remaining work includes populating and migrating the catalog, establishing full 11×3 runtime-family parity evidence beyond the delivered lifecycle coverage, and passing release certification gates. No delivery date is promised.
 
 ## Contribute and learn more
 

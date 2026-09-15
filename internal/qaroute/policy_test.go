@@ -17,10 +17,10 @@ func TestResolveDefaults(t *testing.T) {
 	}{
 		{qarole.RequirementsAnalyst, "qwen3.6", "high"},
 		{qarole.TestDesigner, "qwen3.6", "high"},
-		{qarole.ExploratoryTester, "glm5.2", "high"},
+		{qarole.ExploratoryTester, "glm5.3", "high"},
 		{qarole.AdversarialTester, "deepseek-v4-flash", "high"},
 		{qarole.TestRunner, "qwen3.6", "low"},
-		{qarole.EvidenceAuditor, "glm5.2", "high"},
+		{qarole.EvidenceAuditor, "glm5.3", "high"},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
 			got, failure := Resolve(Request{Role: tc.role, Backend: "pi"}, Snapshot{})
@@ -86,7 +86,7 @@ func TestResolveRejectsTerminalRoutes(t *testing.T) {
 		{"missing-profile", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{}, "profile_invalid"},
 		{"incomplete-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: []byte(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6"}}}}}}`)}, "route_incomplete"},
 		{"non-nan-precedes-disallowed", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: profile("other", "qwen3.6", "high")}, "non_nan_route"},
-		{"disallowed-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: profile("nan", "glm5.2", "high")}, "route_disallowed"},
+		{"disallowed-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: profile("nan", "glm5.3", "high")}, "route_disallowed"},
 		{"disallowed-backend", Request{Role: qarole.RequirementsAnalyst, Backend: "other"}, Snapshot{}, "route_disallowed"},
 		{"disallowed-role", Request{Role: "unknown", Backend: "pi"}, Snapshot{}, "route_disallowed"},
 	} {

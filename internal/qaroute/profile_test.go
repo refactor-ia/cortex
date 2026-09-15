@@ -34,7 +34,7 @@ func TestResolveRejectsMalformedProfiles(t *testing.T) {
 }
 
 func TestResolveUsesOnlyTheExplicitProfile(t *testing.T) {
-	body := []byte(`{"schemaVersion":1,"defaultProfile":"first","profiles":{"first":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"high"}}}},"second":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.2","effort":"high"}}}}}}`)
+	body := []byte(`{"schemaVersion":1,"defaultProfile":"first","profiles":{"first":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"high"}}}},"second":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`)
 	for _, profileID := range []string{"missing", ""} {
 		t.Run(fmt.Sprintf("%q", profileID), func(t *testing.T) {
 			got, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: profileID}, Snapshot{Present: true, Bytes: body})

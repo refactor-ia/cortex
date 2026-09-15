@@ -44,8 +44,8 @@ type route struct {
 var defaults = map[qarole.RoleID]route{
 	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
 	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
-	qarole.ExploratoryTester:   {"nan", "glm5.2", "high"},
+	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
 	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
 	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
-	qarole.EvidenceAuditor:     {"nan", "glm5.2", "high"},
+	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
 }

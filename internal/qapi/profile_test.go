@@ -17,7 +17,7 @@ func TestProfileRouteDefaultBypassesProfileSource(t *testing.T) {
 	got, failure := resolveProfileRoute(filepath.Join(t.TempDir(), "missing"), AdmissionRequest{
 		Role: qarole.ExploratoryTester, Backend: "pi",
 	})
-	if failure.Code != "" || got.Model != "glm5.2" || got.ProfileID != "role-default" {
+	if failure.Code != "" || got.Model != "glm5.3" || got.ProfileID != "role-default" {
 		t.Fatalf("resolveProfileRoute() = (%+v, %q)", got, failure.Code)
 	}
 }
@@ -110,7 +110,7 @@ func TestProfileRoutePreservesRouteFailuresWithoutDefaults(t *testing.T) {
 
 	got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.ExploratoryTester, Backend: "pi", Profile: "balanced"})
 	if failure.Code != "route_disallowed" || got.PolicyVersion != "" {
-		t.Fatalf("resolveProfileRoute() = (%+v, %q), want route_disallowed without glm5.2 fallback", got, failure.Code)
+		t.Fatalf("resolveProfileRoute() = (%+v, %q), want route_disallowed without glm5.3 fallback", got, failure.Code)
 	}
 }
 

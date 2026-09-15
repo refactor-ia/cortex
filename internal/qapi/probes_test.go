@@ -20,7 +20,7 @@ func TestProbeModel(t *testing.T) {
 		code      qaadmission.Code
 	}{
 		{"observed exact row is available", modelInput(observed), "nan", "qwen3.6", true, ""},
-		{"observed missing glm5.2 is unavailable", modelInput(observed), "nan", "glm5.2", false, qaadmission.CodeModelUnavailable},
+		{"observed missing model is unavailable", modelInput(observed), "nan", "glm9.9-absent", false, qaadmission.CodeModelUnavailable},
 		{"wrong provider does not match", modelInput(observed), "nan-display", "qwen3.6", false, qaadmission.CodeModelUnavailable},
 		{"display label does not match", modelInput(observed), "nan", "Qwen 3.6", false, qaadmission.CodeModelUnavailable},
 		{"duplicate provider model fails normalization", modelInput(append(append([]byte{}, observed...), []byte("nan           qwen3.6              262.1K   16.4K    yes       yes   \n")...)), "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},

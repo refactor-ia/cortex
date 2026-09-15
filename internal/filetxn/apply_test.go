@@ -87,7 +87,7 @@ func TestApplyRollsBackFailedWrites(t *testing.T) {
 				{Path: "existing.txt", Data: []byte("changed"), Mode: 0o600},
 				{Path: "missing.txt", Data: []byte("created"), Mode: 0o644},
 			})
-			if err == nil || !strings.Contains(err.Error(), "injected replace failure") {
+			if err == nil || !strings.Contains(err.Error(), "injected replace failure") || strings.Contains(err.Error(), "caller intervention required") {
 				t.Fatalf("Apply() error = %v", err)
 			}
 			assertFile(t, filepath.Join(root, "existing.txt"), "original", 0o640)
@@ -115,7 +115,7 @@ func TestApplyRollsBackInReverseOrder(t *testing.T) {
 		return nil
 	}
 	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
-		removals = append(removals, path)
+		removals = append(removals, fmt.Sprintf("%s:%04o", path, mode.Perm()))
 		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	_, err := apply(deps, root, backups, "batch", []Write{
@@ -123,7 +123,7 @@ func TestApplyRollsBackInReverseOrder(t *testing.T) {
 		{Path: "b.txt", Data: []byte("b"), Mode: 0o600},
 		{Path: "c.txt", Data: []byte("c"), Mode: 0o600},
 	})
-	if err == nil || strings.Join(removals, ",") != "c.txt,b.txt,a.txt" {
+	if err == nil || strings.Join(removals, ",") != "c.txt:0600,b.txt:0600,a.txt:0600" {
 		t.Fatalf("error = %v, rollback order = %v", err, removals)
 	}
 }
@@ -239,6 +239,20 @@ func TestApplyOperationsRejectsNilRemovalEvidenceWithoutSnapshot(t *testing.T) {
 	assertFile(t, path, "owned", 0o640)
 	if _, err := os.Lstat(filepath.Join(backups, "batch")); !os.IsNotExist(err) {
 		t.Fatalf("backup was created: %v", err)
+	}
+}
+
+func TestApplyOperationsRemovesMatchingZeroByteFile(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "empty.txt"), []byte{}, 0o600)
+
+	if _, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "empty.txt", ExpectedData: []byte{}, ExpectedMode: 0o600,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "empty.txt")); !os.IsNotExist(err) {
+		t.Fatalf("removed zero-byte target remains: %v", err)
 	}
 }
 
@@ -369,7 +383,7 @@ func TestApplyOperationsPreservesCallerOrderAndRollsBackInReverse(t *testing.T) 
 		return nil
 	}
 	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
-		calls = append(calls, fmt.Sprintf("remove:%s:%#o", path, mode))
+		calls = append(calls, fmt.Sprintf("remove:%s:%04o", path, mode.Perm()))
 		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {
@@ -415,6 +429,21 @@ func TestPrepareOperationsRejectsInvalidConditionalEvidence(t *testing.T) {
 				t.Fatal("prepareOperations() error = nil")
 			}
 		})
+	}
+}
+
+func TestApplyOperationsRejectsNilRemovalEvidenceBeforeCapture(t *testing.T) {
+	deps := defaultApplyDependencies()
+	deps.capture = func(string, string, string, []string) (Snapshot, error) {
+		t.Fatal("applyOperations() captured a snapshot for invalid removal evidence")
+		return Snapshot{}, nil
+	}
+
+	_, err := applyOperations(deps, t.TempDir(), t.TempDir(), "batch", []Operation{{Remove: &Remove{
+		Path: "stale.txt", ExpectedMode: 0o600,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "missing or unsupported evidence") {
+		t.Fatalf("applyOperations() error = %v", err)
 	}
 }
 
@@ -564,7 +593,7 @@ func TestApplyOperationsConditionalMixedRollbackIsReverse(t *testing.T) {
 		return atomicfile.ReplaceIfMatches(root, path, expected, expectedMode, data, mode)
 	}
 	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
-		calls = append(calls, fmt.Sprintf("remove:%s:%#o", path, mode))
+		calls = append(calls, fmt.Sprintf("remove:%s:%04o", path, mode.Perm()))
 		return atomicfile.RemoveIfExact(root, path, data, mode)
 	}
 	deps.restoreIfAbsent = func(root, path string, data []byte, mode fs.FileMode) error {

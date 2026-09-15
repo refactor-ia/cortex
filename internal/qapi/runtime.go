@@ -69,6 +69,9 @@ func bindPi(ctx context.Context, cwd string, resolver PiPathResolver) (boundPi, 
 		return boundPi{}, err
 	}
 	bound.cwd = canonicalCWD
+	if err := revalidatePi(bound); err != nil {
+		return boundPi{}, errors.New("Pi changed before version binding")
+	}
 	capture := executeVersionCommand(ctx, bound.path, bound.cwd)
 	version, valid := parseVersion(capture)
 	if !valid || version != RuntimeVersion {
@@ -82,8 +85,21 @@ func bindPi(ctx context.Context, cwd string, resolver PiPathResolver) (boundPi, 
 }
 
 func revalidatePi(bound boundPi) error {
+	if err := revalidatePiFile(bound); err != nil {
+		return err
+	}
+	if bound.version == "" && !bound.versionCapture.started {
+		return nil
+	}
 	version, valid := parseVersion(bound.versionCapture)
-	if !absolutePaths(bound.path, bound.cwd) || !valid || version != RuntimeVersion || bound.version != version {
+	if !valid || version != RuntimeVersion || bound.version != version {
+		return errors.New("invalid Pi binding")
+	}
+	return nil
+}
+
+func revalidatePiFile(bound boundPi) error {
+	if !absolutePaths(bound.path, bound.cwd) {
 		return errors.New("invalid Pi binding")
 	}
 	current, err := inspectPi(bound.path)
@@ -98,17 +114,13 @@ func inspectPi(path string) (boundPi, error) {
 	if err != nil || !absolutePaths(absolute) {
 		return boundPi{}, errors.New("invalid Pi path")
 	}
-	listed, err := executableFile(absolute)
-	if err != nil {
-		return boundPi{}, err
-	}
 	canonical, err := filepath.EvalSymlinks(absolute)
 	if err != nil || !absolutePaths(canonical) {
 		return boundPi{}, errors.New("invalid Pi path")
 	}
 	before, err := executableFile(canonical)
-	if err != nil || !os.SameFile(listed, before) {
-		return boundPi{}, errors.New("unsafe Pi path")
+	if err != nil {
+		return boundPi{}, err
 	}
 	file, err := os.Open(canonical)
 	if err != nil {

@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"time"
 
 	"github.com/refactor-ia/cortex/internal/installobserve"
+	"github.com/refactor-ia/cortex/internal/qaadmission"
+	"github.com/refactor-ia/cortex/internal/qapi"
+	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
 	"github.com/refactor-ia/cortex/internal/skillroot"
@@ -31,7 +36,7 @@ type uninstallDependencies struct {
 	resolveRoots func() ([]skillroot.UninstallRoot, error)
 	rootExists   func(string) (bool, error)
 	observe      func(installobserve.UninstallRoot, installobserve.Options) (installobserve.UninstallObservation, error)
-	apply        func(string, installobserve.UninstallObservation, string, string) (uninstalltxn.Result, error)
+	applyGroup   func([]uninstalltxn.GroupRequest, string, string) error
 	backupName   func() string
 }
 
@@ -44,19 +49,28 @@ type uninstallPreflight struct {
 // Run executes one Cortex command with the supplied runtime probe seam.
 // A nil runner selects the constrained production system probe.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	return runWithUninstallDependencies(ctx, args, stdout, stderr, runner, defaultUninstallDependencies())
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), defaultUninstallDependencies())
 }
 
 func runWithUninstallDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, uninstall uninstallDependencies) int {
-	if len(args) != 1 {
+	return runWithDependencies(ctx, args, stdout, stderr, runner, defaultInstallDependencies(), uninstall)
+}
+
+func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, install installDependencies, uninstall uninstallDependencies) int {
+	if len(args) > 0 && args[0] == "model-routing" {
+		return runModelProfile(args[1:], stdout, stderr)
+	}
+	if len(args) == 0 || len(args) != 1 && args[0] != "qa" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
 	switch args[0] {
 	case "doctor":
-		return runDoctor(ctx, stdout, stderr, runner)
+		return runDoctor(ctx, stdout, stderr, runner, install.policy)
+	case "qa":
+		return runQA(ctx, args[1:], stdout, stderr)
 	case "install", "update":
-		return runUncertifiedOperation(ctx, stdout, stderr, runner, args[0])
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:
@@ -65,8 +79,8 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 	}
 }
 
-func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner) int {
-	matrix, err := probeMatrix(ctx, runner)
+func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy) int {
+	matrix, err := probeCompatibilityMatrix(ctx, runner, policy)
 	if err != nil {
 		writeError(stderr, "probe_failed")
 		return exitFailure
@@ -76,11 +90,92 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		return exitFailure
 	}
 	for _, decision := range matrix.Decisions {
-		if decision.Outcome != runtimematrix.OutcomeAbsent {
+		if decision.Outcome != runtimematrix.OutcomeAbsent && decision.Outcome != runtimematrix.OutcomePresentCompatible {
 			return exitUnknown
 		}
 	}
 	return exitOK
+}
+
+const (
+	qaUsage = "usage: cortex qa run --role requirements-analyst --request <file> --catalog <dir>\n"
+	// qaReportNote surfaces the honest runtime prerequisites on every failure.
+	// The default route provider is the policy placeholder "nan"; Cortex applies
+	// no model fallback and owns no automatic configuration.
+	qaReportNote = "note=prerequisites: Pi 0.85.1 runtime and installed cortex assets; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
+)
+
+// qaPiResolver is the Pi binary resolution seam; nil selects the production
+// constrained lookup.
+var qaPiResolver qapi.PiPathResolver
+
+// runQA executes one local QA report command. It never mutates user
+// configuration and never claims admission.
+func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[2] != string(qarole.RequirementsAnalyst) || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+		writeError(stderr, "invalid_arguments")
+		_, _ = io.WriteString(stderr, qaUsage)
+		return exitUsage
+	}
+	task, err := readRequestTask(args[4])
+	if err != nil {
+		return qaFailure(stderr, "invalid_request")
+	}
+	cwd, err := os.Getwd()
+	catalogRoot, absErr := filepath.Abs(args[6])
+	if err != nil || absErr != nil {
+		return qaFailure(stderr, "invalid_request")
+	}
+	installRoot, err := piInstallRoot()
+	if err != nil {
+		return qaFailure(stderr, "actor_unavailable")
+	}
+	report, code, err := qapi.RunLocalReport(ctx, qapi.ReportRequest{
+		Role: qarole.RequirementsAnalyst, CatalogRoot: catalogRoot, InstallRoot: installRoot,
+		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
+	}, qaPiResolver)
+	if err != nil || code != "" {
+		failure := qaFailure(stderr, string(code))
+		if code == qaadmission.CodeNormalizationFailed {
+			var diagnostic *qapi.ReportNormalizationError
+			if errors.As(err, &diagnostic) {
+				_, _ = fmt.Fprintf(stderr, "normalization_stage=%s normalization_reason=%s\n", diagnostic.Stage, diagnostic.Reason)
+			}
+		}
+		return failure
+	}
+	if _, err := io.WriteString(stdout, report+"\n"); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	return exitOK
+}
+
+func qaFailure(stderr io.Writer, code string) int {
+	writeError(stderr, code)
+	_, _ = io.WriteString(stderr, qaReportNote)
+	return exitFailure
+}
+
+func readRequestTask(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > qaadmission.MaxTaskBytes {
+		return nil, fmt.Errorf("request is not a bounded regular file")
+	}
+	return os.ReadFile(path)
+}
+
+func piInstallRoot() (string, error) {
+	roots, err := skillroot.ResolveSystemUninstallRoots()
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		if root.RuntimeID() == runtimematrix.RuntimePi {
+			return root.RootPath(), nil
+		}
+	}
+	return "", fmt.Errorf("pi root unavailable")
 }
 
 func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {
@@ -109,19 +204,22 @@ func probeMatrix(ctx context.Context, runner runtimeprobe.Runner) (runtimematrix
 	return runtimematrix.Decide(observations)
 }
 
+func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, policy runtimecompat.Policy) (runtimematrix.Matrix, error) {
+	reports, err := probe(ctx, runner)
+	if err != nil {
+		return runtimematrix.Matrix{}, err
+	}
+	observations, err := policy.Evaluate(reports)
+	if err != nil {
+		return runtimematrix.Matrix{}, err
+	}
+	return runtimematrix.Decide(observations)
+}
+
 func runtimeReport(matrix runtimematrix.Matrix) string {
 	var output strings.Builder
 	for _, decision := range matrix.Decisions {
-		output.WriteString("runtime=")
-		output.WriteString(string(decision.ID))
-		if decision.Outcome == runtimematrix.OutcomeAbsent {
-			output.WriteString(" presence=absent")
-		} else {
-			output.WriteString(" presence=present compatibility=unknown")
-		}
-		output.WriteString(" action=")
-		output.WriteString(string(decision.Action))
-		output.WriteString(" touch=denied\n")
+		output.WriteString(installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false))
 	}
 	return output.String()
 }
@@ -131,7 +229,7 @@ func defaultUninstallDependencies() uninstallDependencies {
 		resolveRoots: skillroot.ResolveSystemUninstallRoots,
 		rootExists:   uninstallRootExists,
 		observe:      installobserve.ObserveUninstall,
-		apply:        uninstalltxn.Apply,
+		applyGroup:   uninstalltxn.ApplyGroup,
 		backupName:   nextUninstallBackupName,
 	}
 }
@@ -182,21 +280,30 @@ func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 			return writeUninstallResult(stdout, stderr, preflight, exitConflict)
 		}
 	}
-	for index := range preflight {
-		if preflight[index].status != "ready" {
-			continue
+	requests := make([]uninstalltxn.GroupRequest, 0, len(preflight))
+	for _, item := range preflight {
+		if item.status == "ready" {
+			requests = append(requests, uninstalltxn.GroupRequest{
+				RuntimeID: item.root.RuntimeID(), Root: item.root.RootPath(), Observation: item.observation,
+			})
 		}
-		backupRoot := filepath.Join(preflight[index].root.RootPath(), ".cortex")
-		if _, err := deps.apply(preflight[index].root.RootPath(), preflight[index].observation, backupRoot, deps.backupName()); err != nil {
-			preflight[index].status = "failed"
-			for later := index + 1; later < len(preflight); later++ {
-				if preflight[later].status == "ready" {
-					preflight[later].status = "blocked"
-				}
+	}
+	if len(requests) == 0 {
+		return writeUninstallResult(stdout, stderr, preflight, exitOK)
+	}
+	backupRoot := filepath.Join(requests[0].Root, ".cortex")
+	if err := deps.applyGroup(requests, backupRoot, deps.backupName()); err != nil {
+		for index := range preflight {
+			if preflight[index].status == "ready" {
+				preflight[index].status = "failed"
 			}
-			return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
 		}
-		preflight[index].status = "completed"
+		return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
+	}
+	for index := range preflight {
+		if preflight[index].status == "ready" {
+			preflight[index].status = "completed"
+		}
 	}
 	return writeUninstallResult(stdout, stderr, preflight, exitOK)
 }

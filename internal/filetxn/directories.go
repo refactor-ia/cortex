@@ -14,12 +14,14 @@ import (
 
 // Directory is a canonical source-root-relative directory in parent-first order.
 type Directory struct {
-	Path string
-	Mode fs.FileMode
+	Path       string
+	Mode       fs.FileMode
+	MustCreate bool
 }
 type preparedDirectory struct {
 	path, target string
 	mode         fs.FileMode
+	mustCreate   bool
 	info         os.FileInfo
 }
 type createdDirectory struct {
@@ -31,6 +33,9 @@ func ApplyOperationsWithDirectories(sourceRoot, backupRoot, backupName string, d
 	return applyOperationsWithDirectories(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, directories, operations)
 }
 func applyOperationsWithDirectories(deps applyDependencies, sourceRoot, backupRoot, backupName string, rawDirectories []Directory, rawOperations []Operation) (Snapshot, error) {
+	return applyOperationsWithDirectoriesBeforeCreate(deps, sourceRoot, backupRoot, backupName, rawDirectories, rawOperations, nil)
+}
+func applyOperationsWithDirectoriesBeforeCreate(deps applyDependencies, sourceRoot, backupRoot, backupName string, rawDirectories []Directory, rawOperations []Operation, beforeCreate func(preparedDirectory)) (Snapshot, error) {
 	directories, err := prepareDirectories(sourceRoot, rawDirectories)
 	if err != nil {
 		return Snapshot{}, err
@@ -69,7 +74,7 @@ func applyOperationsWithDirectories(deps applyDependencies, sourceRoot, backupRo
 	if err := deps.verify(backupRoot, backupName); err != nil {
 		return snapshot, fmt.Errorf("apply verify directory snapshot: %w", err)
 	}
-	created, err := createDirectories(absent)
+	created, err := createDirectories(absent, beforeCreate)
 	if err != nil {
 		return snapshot, errors.Join(err, rollbackDirectories(created))
 	}
@@ -132,7 +137,7 @@ func prepareDirectories(sourceRoot string, raw []Directory) ([]preparedDirectory
 			return nil, fmt.Errorf("apply directory path is duplicated: %s", canonical)
 		}
 		indexes[canonical] = index
-		prepared[index] = preparedDirectory{path: canonical, target: filepath.Join(root, filepath.FromSlash(canonical)), mode: directory.Mode}
+		prepared[index] = preparedDirectory{path: canonical, target: filepath.Join(root, filepath.FromSlash(canonical)), mode: directory.Mode, mustCreate: directory.MustCreate}
 	}
 	for index, directory := range prepared {
 		parent := path.Dir(directory.path)
@@ -153,6 +158,13 @@ func prepareDirectories(sourceRoot string, raw []Directory) ([]preparedDirectory
 		if err := inspectPath(root, directory.path, true); err != nil {
 			return nil, err
 		}
+		if directory.mustCreate {
+			if _, err := os.Lstat(directory.target); err == nil {
+				return nil, fmt.Errorf("apply directory must be absent: %s", directory.path)
+			} else if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("apply directory inspection failed: %s", directory.path)
+			}
+		}
 	}
 	return prepared, nil
 }
@@ -166,7 +178,7 @@ func classifyDirectories(sourceRoot string, directories []preparedDirectory) (ab
 			absent = append(absent, directory)
 			continue
 		}
-		if statErr != nil || !isRealDirectory(info) {
+		if statErr != nil || directory.mustCreate || !isRealDirectory(info) {
 			return nil, nil, fmt.Errorf("classify directory is invalid: %s", directory.path)
 		}
 		directory.info = info
@@ -174,9 +186,12 @@ func classifyDirectories(sourceRoot string, directories []preparedDirectory) (ab
 	}
 	return absent, existing, nil
 }
-func createDirectories(directories []preparedDirectory) ([]createdDirectory, error) {
+func createDirectories(directories []preparedDirectory, beforeCreate func(preparedDirectory)) ([]createdDirectory, error) {
 	created := make([]createdDirectory, 0, len(directories))
 	for _, directory := range directories {
+		if beforeCreate != nil {
+			beforeCreate(directory)
+		}
 		if _, err := os.Lstat(directory.target); err == nil {
 			return created, fmt.Errorf("create directory conflict: %s", directory.path)
 		} else if !os.IsNotExist(err) {

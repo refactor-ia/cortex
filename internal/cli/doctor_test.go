@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/refactor-ia/cortex/internal/runtimecompat"
+	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
 )
 
@@ -46,6 +48,14 @@ func readyRunner() *fakeRunner {
 	}}
 }
 
+func certifiedRunner() *fakeRunner {
+	return &fakeRunner{runs: map[string]fakeRun{
+		"/private/pi":       {execution: runtimeprobe.Execution{Stdout: []byte("0.85.1\n")}},
+		"/private/opencode": {execution: runtimeprobe.Execution{Stdout: []byte("1.18.25\n")}},
+		"/private/claude":   {execution: runtimeprobe.Execution{Stdout: []byte("2.1.251 (Claude Code)")}},
+	}}
+}
+
 func TestRunDoctor(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -66,18 +76,18 @@ func TestRunDoctor(t *testing.T) {
 				"runtime=claude-code presence=absent action=warn touch=denied\n",
 		},
 		{
-			name:     "present runtimes remain unknown in canonical order",
-			runner:   readyRunner(),
-			wantCode: 2,
-			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
-				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+			name:     "certified runtimes are compatible in canonical order",
+			runner:   certifiedRunner(),
+			wantCode: 0,
+			wantStdout: "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
+				"runtime=opencode presence=present compatibility=compatible action=configure touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied\n",
 			assert: func(t *testing.T, runner *fakeRunner, output string) {
 				t.Helper()
 				if !reflect.DeepEqual(runner.calls, []string{"/private/pi --version", "/private/opencode --version", "/private/claude --version"}) {
 					t.Fatalf("probe calls = %#v", runner.calls)
 				}
-				for _, forbidden := range []string{"1.2.3", "2.3.4", "3.4.5", "/private/"} {
+				for _, forbidden := range []string{"0.85.1", "1.18.25", "2.1.251", "/private/"} {
 					if strings.Contains(output, forbidden) {
 						t.Fatalf("doctor output leaks %q: %q", forbidden, output)
 					}
@@ -128,6 +138,61 @@ func TestRunDoctor(t *testing.T) {
 				tt.assert(t, tt.runner, stdout.String())
 			}
 		})
+	}
+}
+
+func TestRunDoctorReportsInjectedPolicyCompatibility(t *testing.T) {
+	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
+		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
+		{ID: runtimematrix.RuntimeOpenCode, KnownIncompatible: []string{"2.3.4"}},
+		{ID: runtimematrix.RuntimeClaudeCode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultInstallDependencies()
+	deps.policy = policy
+
+	var stdout, stderr bytes.Buffer
+	if got := runWithInstallDependencies(context.Background(), []string{"doctor"}, &stdout, &stderr, readyRunner(), deps); got != exitUnknown {
+		t.Fatalf("doctor exit code = %d, want %d", got, exitUnknown)
+	}
+	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
+		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied\n" +
+		"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"
+	if stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
+	}
+}
+
+func TestRunDoctorReturnsOKForCompatibleAndAbsentRuntimes(t *testing.T) {
+	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
+		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
+		{ID: runtimematrix.RuntimeOpenCode},
+		{ID: runtimematrix.RuntimeClaudeCode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultInstallDependencies()
+	deps.policy = policy
+	runner := &fakeRunner{
+		lookup: map[string]error{"opencode": exec.ErrNotFound, "claude": exec.ErrNotFound},
+		runs:   map[string]fakeRun{"/private/pi": {execution: runtimeprobe.Execution{Stdout: []byte("1.2.3\n")}}},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if got := runWithInstallDependencies(context.Background(), []string{"doctor"}, &stdout, &stderr, runner, deps); got != exitOK {
+		t.Fatalf("doctor exit code = %d, want %d", got, exitOK)
+	}
+	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
+		"runtime=opencode presence=absent action=warn touch=denied\n" +
+		"runtime=claude-code presence=absent action=warn touch=denied\n"
+	if stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
+	}
+	if got, want := runner.calls, []string{"/private/pi --version"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("probe calls = %#v, want %#v", got, want)
 	}
 }
 

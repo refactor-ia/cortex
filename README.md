@@ -2,21 +2,23 @@
 
 Cortex is intended to become one curated open-source distribution of agent capabilities, maintained by RefactorIA and projected through generated adapters into Pi, OpenCode, and Claude Code while preserving user-owned configuration. Its canonical repository is [github.com/refactor-ia/cortex](https://github.com/refactor-ia/cortex).
 
-> **Current status — foundations, not a release.** This repository contains the target architecture and community foundation. **Implementation is not complete:** Cortex is not yet an end-to-end product, does not claim runtime parity, and has no certified release path.
+> **Current status — executable lifecycle delivered; product not complete.** This repository contains the target architecture and community foundation. The `doctor`, `install`, `update`, and `uninstall` lifecycle is executable with synthetic three-runtime transaction parity ([issue #41](https://github.com/refactor-ia/cortex/issues/41), [PR #173](https://github.com/refactor-ia/cortex/pull/173)). **Implementation is not complete:** Cortex is not yet an end-to-end product, does not claim full runtime-family parity, and has no certified release path.
 
 ## What works today—and what does not
 
 | Status | Scope |
 | --- | --- |
-| **Executable today** | Read-only `doctor`; conservative `uninstall` of exact Cortex-owned state and artifacts. |
-| **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix; and transactional install/update primitives. These are not yet an end-to-end product. |
-| **Target only** | The capability catalog, family packages, agent prompts, model-profile definitions, runtime parity, and release. |
+| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime admission stays limited to the exact versions in the evidence table below. |
+| **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
+| **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, agent prompts, and model-profile definitions. |
 
-`install` and `update` currently deny mutation because compatibility is uncertified. There are intentionally no installation instructions or quick-start path in this README.
+Only the exact runtime versions in the evidence table below are admitted; unknown versions remain fail-closed and report-only. There are intentionally no installation instructions or quick-start path in this README.
 
 ## The product direction
 
-Cortex curates one complete distribution rather than separate releases or user-selected packs. It will project approved capabilities into compatible runtimes through generated adapters; it does **not** install Pi, OpenCode, or Claude Code. When the target lifecycle is certified, Cortex will detect compatible runtimes already present, configure each compatible present runtime transactionally, and warn about absent, unknown, or incompatible runtimes without taking over ordinary work.
+Cortex targets one complete distribution rather than separate releases or user-selected packs. It will project approved capabilities into compatible runtimes through generated adapters; it does **not** install Pi, OpenCode, or Claude Code. The delivered executable lifecycle manages dedicated Cortex artifacts and runtime-local Cortex state without taking ownership of user configuration. Its synthetic three-runtime transaction coverage and exact-version marker smoke evidence are distinct from full 11×3 runtime-family parity and release certification, which remain pending.
+
+Cortex complements rather than competes with Gentle AI™; the [functional-precedence boundary](docs/architecture/overview.md#gentle-ai-functional-precedence) is normative.
 
 For the full intended contract, see the [architecture overview](docs/architecture/overview.md). The [documentation map](docs/README.md) points to the repository authorities.
 
@@ -65,6 +67,18 @@ Each runtime projection will report whether the selected Cortex-owned routing is
 - Uninstall removes only Cortex-owned material.
 - Cortex does not store or ship secrets or personal data. Credentialed and personal capabilities remain dormant until explicitly configured.
 
+## Runtime admission evidence
+
+The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.
+
+| Runtime | Exact version | Evidence records | Duration |
+| --- | --- | --- | --- |
+| Pi | 0.85.1 | source `b3364d923bf20abc242c7bd4cae25ec07731bc36`; command `71a9ab3f17ac06a26c31e61eafdeb7131ab2dfdf2ce9735dd9cc6a0b97349e75` | 9345 ms |
+| OpenCode | 1.18.25 | source `07f8979cf4969f0bb977d401e3792bd5d754e963`; command `6062b37fc943e60d1828a27ed69ed738b8572b1a27bacd068f8a679de19f2f8a`; config `61e3b70f80acc12049f71307760e500778f288b30dc0ee9d42c3cb43b091f3e0`; `skill_tool_completed=true` | 5000 ms |
+| Claude Code | 2.1.251 | source `f68758e784287cff78599c24db8632a13890c206`; command `0cba56fe517827ac8169a49cd36291d13875d06883be4729654fa34183aa8133`; schema `f7374878f385a402aa47362c62c882bdafba7abafac4d266ab81047448a5d46b`; auth `subscription_oauth_token` | 2342 ms |
+
+This is exact-version admission only. It is not full 11×3 runtime-family parity and is not release certification.
+
 ## Release evidence and catalog admission
 
 A future parity claim requires structural conformance, isolated installation and readback, and at least one real smoke invocation for every family and runtime: 11 families across 3 runtimes, for at least 33 invocations. Release evidence must also cover absent runtimes, unknown versions, and known-incompatible adapters.
@@ -77,7 +91,7 @@ Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no life
 
 ## Near-term direction
 
-The repository direction is to complete a certified install/update lifecycle and three-runtime parity harness, then populate and migrate the catalog and pass release gates. No delivery date is promised.
+Remaining work includes populating and migrating the catalog, establishing full 11×3 runtime-family parity evidence beyond the delivered lifecycle coverage, and passing release certification gates. No delivery date is promised.
 
 ## Contribute and learn more
 

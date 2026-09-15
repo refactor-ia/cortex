@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"catalog-marker","description":"Marks the built-in Cortex lifecycle catalog without granting runtime behavior.","family":"documentation","source":"sources/catalog-marker.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

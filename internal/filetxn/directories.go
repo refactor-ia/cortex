@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 )
@@ -21,6 +22,11 @@ type preparedDirectory struct {
 	path, target string
 	mode         fs.FileMode
 	mustCreate   bool
+	info         os.FileInfo
+}
+type createdDirectory struct {
+	preparedDirectory
+	createdInfo os.FileInfo
 }
 
 func ApplyOperationsWithDirectories(sourceRoot, backupRoot, backupName string, directories []Directory, operations []Operation) (Snapshot, error) {
@@ -45,13 +51,70 @@ func applyOperationsWithDirectoriesBeforeCreate(deps applyDependencies, sourceRo
 			}
 		}
 	}
-	created, err := createDirectoriesBeforeCreate(directories, beforeCreate)
+	absent, existing, err := classifyDirectories(sourceRoot, directories)
 	if err != nil {
-		return Snapshot{}, errors.Join(err, rollbackDirectories(created))
+		return Snapshot{}, err
 	}
-	snapshot, err := applyOperations(deps, sourceRoot, backupRoot, backupName, rawOperations)
+	if len(absent) == 0 {
+		return applyOperations(deps, sourceRoot, backupRoot, backupName, rawOperations)
+	}
+	paths := make([]string, len(operations))
+	for index, operation := range operations {
+		paths[index] = operation.path
+	}
+	preimage := make([]Directory, len(absent))
+	for index, directory := range absent {
+		preimage[index] = Directory{Path: directory.path, Mode: directory.mode}
+	}
+	sort.Slice(preimage, func(i, j int) bool { return preimage[i].Path < preimage[j].Path })
+	snapshot, err := deps.captureDirectoryPreimage(sourceRoot, backupRoot, backupName, paths, preimage)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("apply directory snapshot: %w", err)
+	}
+	if err := deps.verify(backupRoot, backupName); err != nil {
+		return snapshot, fmt.Errorf("apply verify directory snapshot: %w", err)
+	}
+	created, err := createDirectories(absent, beforeCreate)
 	if err != nil {
 		return snapshot, errors.Join(err, rollbackDirectories(created))
+	}
+	if err := revalidateDirectories(existing); err != nil {
+		return snapshot, errors.Join(err, rollbackDirectories(created))
+	}
+	finalize := deps.finalize
+	var finalized Snapshot
+	if finalize != nil {
+		deps.finalize = func(snapshot Snapshot) error {
+			accepted, err := acceptCreatedDirectories(snapshot, created)
+			if err != nil {
+				return err
+			}
+			if err := rewriteManifestStrict(snapshot.Dir, accepted.Manifest); err != nil {
+				return err
+			}
+			reloaded, err := reloadAndVerify(backupRoot, backupName)
+			if err != nil {
+				return err
+			}
+			if err := finalize(reloaded); err != nil {
+				return err
+			}
+			finalized = reloaded
+			return nil
+		}
+	}
+	deps.capture = func(root, backup, name string, capturedPaths []string) (Snapshot, error) {
+		if root != sourceRoot || backup != backupRoot || name != backupName || !samePaths(capturedPaths, paths) {
+			return Snapshot{}, errors.New("apply directory snapshot does not match preimage")
+		}
+		return snapshot, nil
+	}
+	snapshot, err = applyOperations(deps, sourceRoot, backupRoot, backupName, rawOperations)
+	if err != nil {
+		return snapshot, errors.Join(err, rollbackDirectories(created))
+	}
+	if finalize != nil {
+		snapshot = finalized
 	}
 	return snapshot, nil
 }
@@ -105,20 +168,33 @@ func prepareDirectories(sourceRoot string, raw []Directory) ([]preparedDirectory
 	}
 	return prepared, nil
 }
-func createDirectoriesBeforeCreate(directories []preparedDirectory, beforeCreate func(preparedDirectory)) ([]preparedDirectory, error) {
-	created := make([]preparedDirectory, 0, len(directories))
+func classifyDirectories(sourceRoot string, directories []preparedDirectory) (absent, existing []preparedDirectory, err error) {
+	for _, directory := range directories {
+		if err := inspectPath(sourceRoot, directory.path, true); err != nil {
+			return nil, nil, fmt.Errorf("classify directory is invalid: %s", directory.path)
+		}
+		info, statErr := os.Lstat(directory.target)
+		if os.IsNotExist(statErr) {
+			absent = append(absent, directory)
+			continue
+		}
+		if statErr != nil || directory.mustCreate || !isRealDirectory(info) {
+			return nil, nil, fmt.Errorf("classify directory is invalid: %s", directory.path)
+		}
+		directory.info = info
+		existing = append(existing, directory)
+	}
+	return absent, existing, nil
+}
+func createDirectories(directories []preparedDirectory, beforeCreate func(preparedDirectory)) ([]createdDirectory, error) {
+	created := make([]createdDirectory, 0, len(directories))
 	for _, directory := range directories {
 		if beforeCreate != nil {
 			beforeCreate(directory)
 		}
-		info, err := os.Lstat(directory.target)
-		switch {
-		case err == nil:
-			if directory.mustCreate || !isRealDirectory(info) {
-				return created, fmt.Errorf("create directory is invalid: %s", directory.path)
-			}
-			continue
-		case !os.IsNotExist(err):
+		if _, err := os.Lstat(directory.target); err == nil {
+			return created, fmt.Errorf("create directory conflict: %s", directory.path)
+		} else if !os.IsNotExist(err) {
 			return created, fmt.Errorf("create directory inspection failed: %s", directory.path)
 		}
 		parentInfo, err := os.Lstat(filepath.Dir(directory.target))
@@ -126,34 +202,77 @@ func createDirectoriesBeforeCreate(directories []preparedDirectory, beforeCreate
 			return created, fmt.Errorf("create directory parent is invalid: %s", directory.path)
 		}
 		if err := os.Mkdir(directory.target, directory.mode.Perm()); err != nil {
-			if directory.mustCreate || !os.IsExist(err) {
-				return created, fmt.Errorf("create directory failed: %s", directory.path)
-			}
-			info, inspectErr := os.Lstat(directory.target)
-			if inspectErr != nil || !isRealDirectory(info) {
+			if os.IsExist(err) {
 				return created, fmt.Errorf("create directory conflict: %s", directory.path)
 			}
-			continue
+			return created, fmt.Errorf("create directory failed: %s", directory.path)
 		}
-		created = append(created, directory)
+		info, err := os.Lstat(directory.target)
+		if err != nil || !isRealDirectory(info) {
+			return created, fmt.Errorf("create directory identity failed: %s", directory.path)
+		}
+		created = append(created, createdDirectory{preparedDirectory: directory, createdInfo: info})
 		if err := os.Chmod(directory.target, directory.mode.Perm()); err != nil {
 			return created, fmt.Errorf("set directory mode failed: %s", directory.path)
 		}
+		if info, err = os.Lstat(directory.target); err != nil || !isRealDirectory(info) {
+			return created, fmt.Errorf("create directory identity failed: %s", directory.path)
+		}
+		created[len(created)-1].createdInfo = info
 		if err := syncDirectory(filepath.Dir(directory.target)); err != nil {
 			return created, fmt.Errorf("sync directory parent failed: %s", directory.path)
 		}
 	}
 	return created, nil
 }
-func rollbackDirectories(created []preparedDirectory) error {
+func revalidateDirectories(directories []preparedDirectory) error {
+	for _, directory := range directories {
+		info, err := os.Lstat(directory.target)
+		if err != nil || !isRealDirectory(info) || !os.SameFile(directory.info, info) || info.Mode().Perm() != directory.info.Mode().Perm() {
+			return fmt.Errorf("existing directory changed: %s", directory.path)
+		}
+	}
+	return nil
+}
+func acceptCreatedDirectories(snapshot Snapshot, created []createdDirectory) (Snapshot, error) {
+	if snapshot.Manifest.Version != manifestV2 || len(snapshot.Manifest.AbsentDirectories) != len(created) {
+		return Snapshot{}, errors.New("accepted directory snapshot is invalid")
+	}
+	byPath := make(map[string]createdDirectory, len(created))
+	for _, directory := range created {
+		if _, exists := byPath[directory.path]; exists {
+			return Snapshot{}, errors.New("accepted directory is duplicated")
+		}
+		byPath[directory.path] = directory
+	}
+	accepted := make([]AcceptedDirectory, len(snapshot.Manifest.AbsentDirectories))
+	for index, absent := range snapshot.Manifest.AbsentDirectories {
+		directory, exists := byPath[absent.Path]
+		if !exists || uint32(directory.mode) != absent.Mode {
+			return Snapshot{}, fmt.Errorf("accepted directory is missing: %s", absent.Path)
+		}
+		info, err := os.Lstat(directory.target)
+		if err != nil || !isRealDirectory(info) || !os.SameFile(directory.createdInfo, info) || info.Mode().Perm() != directory.createdInfo.Mode().Perm() {
+			return Snapshot{}, fmt.Errorf("accepted directory changed: %s", directory.path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino == 0 {
+			return Snapshot{}, fmt.Errorf("accepted directory identity is unavailable: %s", directory.path)
+		}
+		accepted[index] = AcceptedDirectory{Path: absent.Path, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+	}
+	snapshot.Manifest.Version = manifestV3
+	snapshot.Manifest.AcceptedDirectories = accepted
+	return snapshot, nil
+}
+
+func rollbackDirectories(created []createdDirectory) error {
 	var rollbackErr error
 	for index := len(created) - 1; index >= 0; index-- {
 		directory := created[index]
 		info, err := os.Lstat(directory.target)
-		if err != nil || !isRealDirectory(info) {
-			if !os.IsNotExist(err) {
-				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback directory changed: %s", directory.path))
-			}
+		if err != nil || !isRealDirectory(info) || !os.SameFile(directory.createdInfo, info) || info.Mode().Perm() != directory.createdInfo.Mode().Perm() {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback directory changed: %s", directory.path))
 			continue
 		}
 		if err := os.Remove(directory.target); err != nil {
@@ -168,6 +287,17 @@ func rollbackDirectories(created []preparedDirectory) error {
 		return fmt.Errorf("rollback failed; caller intervention required: %w", rollbackErr)
 	}
 	return nil
+}
+func samePaths(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 func prepareOperationsAllowingMissingParents(sourceRoot string, raw []Operation) ([]operation, error) {
 	if len(raw) == 0 {
@@ -203,8 +333,8 @@ func prepareOperationsAllowingMissingParents(sourceRoot string, raw []Operation)
 			}
 		case rawOperation.Remove != nil:
 			candidate = rawOperation.Remove.Path
-			if rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
-				return nil, fmt.Errorf("apply remove has unsupported expected mode")
+			if rawOperation.Remove.ExpectedData == nil || rawOperation.Remove.ExpectedMode&^fs.FileMode(0o777) != 0 {
+				return nil, fmt.Errorf("apply remove has missing or unsupported evidence")
 			}
 		}
 		if actions != 1 {

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"requirements-analyst","description":"Assess requirements for ambiguity, completeness, consistency, and testability.","family":"quality-assurance","source":"families/quality-assurance/sources/requirements-analyst.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

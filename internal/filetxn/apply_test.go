@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -208,6 +209,39 @@ func TestApplyOperationsRemovesVerifiedFile(t *testing.T) {
 	}
 }
 
+func TestApplyOperationsRemovesVerifiedEmptyFile(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "empty.txt")
+	writeFile(t, path, []byte{}, 0o640)
+
+	_, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "empty.txt", ExpectedData: []byte{}, ExpectedMode: 0o640,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("removed target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsRejectsNilRemovalEvidenceWithoutSnapshot(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "stale.txt")
+	writeFile(t, path, []byte("owned"), 0o640)
+
+	_, err := ApplyOperations(root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "stale.txt", ExpectedMode: 0o640,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "missing or unsupported evidence") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	assertFile(t, path, "owned", 0o640)
+	if _, err := os.Lstat(filepath.Join(backups, "batch")); !os.IsNotExist(err) {
+		t.Fatalf("backup was created: %v", err)
+	}
+}
+
 func TestApplyOperationsRemovesMatchingZeroByteFile(t *testing.T) {
 	root, backups := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(root, "empty.txt"), []byte{}, 0o600)
@@ -274,6 +308,35 @@ func TestApplyOperationsRejectsRemovalEvidenceThatDoesNotMatchSnapshot(t *testin
 			t.Fatalf("Verify() after rejected removal = %v", err)
 		}
 	}
+}
+
+func TestApplyOperationsFinalRemovalRefusesModeDrift(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "stale.txt")
+	writeFile(t, path, []byte("owned"), 0o640)
+	deps := defaultApplyDependencies()
+	called := false
+	deps.removeIfExact = func(root, path string, data []byte, mode fs.FileMode) error {
+		called = true
+		if mode != 0o640 {
+			t.Fatalf("removal mode = %#o, want %#o", mode, fs.FileMode(0o640))
+		}
+		if err := os.Chmod(filepath.Join(root, path), 0o600); err != nil {
+			return err
+		}
+		return atomicfile.RemoveIfExact(root, path, data, mode)
+	}
+
+	_, err := applyOperations(deps, root, backups, "batch", []Operation{{Remove: &Remove{
+		Path: "stale.txt", ExpectedData: []byte("owned"), ExpectedMode: 0o640,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "destination mode does not match") {
+		t.Fatalf("ApplyOperations() error = %v", err)
+	}
+	if !called {
+		t.Fatal("final removal primitive was not called")
+	}
+	assertFile(t, path, "owned", 0o600)
 }
 
 func TestApplyOperationsRejectsTargetDriftBeforeRemoval(t *testing.T) {
@@ -560,5 +623,120 @@ func assertFile(t *testing.T, path, want string, mode fs.FileMode) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != want || fileMode(t, path) != mode {
 		t.Fatalf("file %q = %q, %#o, %v", path, data, fileMode(t, path), err)
+	}
+}
+
+func TestApplyOperationsFinalVerificationRollsBackEmptyCreate(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "created.txt")
+	_, err := applyOperationsWithFinalVerification(defaultApplyDependencies(), root, backups, "batch", []Operation{
+		{Create: &Create{Path: "created.txt", Data: []byte{}, Mode: 0o600}},
+	}, func() error {
+		assertFile(t, path, "", 0o600)
+		return errors.New("injected final verification failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected final verification failure") {
+		t.Fatalf("final verification error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("created target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsFinalVerificationRollsBackInReverse(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(root, "existing.txt"), []byte("before"), 0o640)
+	var verified []string
+	_, err := applyOperationsWithFinalVerification(defaultApplyDependencies(), root, backups, "batch", []Operation{
+		{Replace: &Replace{Path: "existing.txt", ExpectedData: []byte("before"), ExpectedMode: 0o640, Data: []byte("after"), Mode: 0o600}},
+		{Create: &Create{Path: "created.txt", Data: []byte("created"), Mode: 0o600}},
+	}, func() error {
+		for _, name := range []string{"existing.txt", "created.txt"} {
+			verified = append(verified, name)
+		}
+		assertFile(t, filepath.Join(root, "existing.txt"), "after", 0o600)
+		assertFile(t, filepath.Join(root, "created.txt"), "created", 0o600)
+		return errors.New("injected final verification failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected final verification failure") {
+		t.Fatalf("final verification error = %v", err)
+	}
+	if strings.Join(verified, ",") != "existing.txt,created.txt" {
+		t.Fatalf("verified = %v", verified)
+	}
+	assertFile(t, filepath.Join(root, "existing.txt"), "before", 0o640)
+	if _, err := os.Lstat(filepath.Join(root, "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("created target remains: %v", err)
+	}
+}
+
+func TestApplyOperationsWithDirectoriesAndFinalize(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		finalVerify     func(t *testing.T, backups, path string) error
+		finalize        error
+		payload         bool
+		finalizeCalls   int
+		rollbackTargets bool
+		rollbackFile    string
+	}{
+		{name: "success", finalizeCalls: 1},
+		{name: "final verification failure", finalVerify: func(t *testing.T, _, _ string) error { return errors.New("final verify failed") }, rollbackTargets: true},
+		{name: "manifest tamper", finalVerify: func(t *testing.T, backups, _ string) error {
+			return os.WriteFile(filepath.Join(backups, "batch", manifestName), []byte("{"), 0o600)
+		}, rollbackTargets: true},
+		{name: "payload tamper", payload: true, finalVerify: func(t *testing.T, backups, path string) error {
+			return os.WriteFile(backupPayloadPath(filepath.Join(backups, "batch"), path), []byte("tampered"), 0o600)
+		}, rollbackTargets: true, rollbackFile: "original"},
+		{name: "finalize failure", finalize: errors.New("finalize failed"), finalizeCalls: 1, rollbackTargets: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, backups, path := t.TempDir(), t.TempDir(), "generated/file.txt"
+			operations := []Operation{{Write: &Write{Path: path, Data: []byte("created"), Mode: 0o600}}}
+			if tt.payload {
+				path = "existing.txt"
+				writeFile(t, filepath.Join(root, path), []byte("original"), 0o640)
+				operations = []Operation{{Write: &Write{Path: path, Data: []byte("created"), Mode: 0o600}}}
+			}
+			var calls int
+			var finalized Snapshot
+			snapshot, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+				[]Directory{{Path: "generated", Mode: 0o700}}, operations,
+				func() error {
+					assertFile(t, filepath.Join(root, path), "created", 0o600)
+					if tt.finalVerify != nil {
+						return tt.finalVerify(t, backups, path)
+					}
+					return nil
+				},
+				func(reloaded Snapshot) error {
+					calls++
+					finalized = reloaded
+					return tt.finalize
+				},
+			)
+			if tt.finalizeCalls == 1 && tt.finalize == nil {
+				reloaded, reloadErr := reloadAndVerify(backups, "batch")
+				if err != nil || reloadErr != nil || !reflect.DeepEqual(finalized, reloaded) || !reflect.DeepEqual(snapshot, reloaded) || finalized.Manifest.Version != manifestV3 || len(finalized.Manifest.AcceptedDirectories) != 1 || finalized.Manifest.AcceptedDirectories[0].Path != "generated" {
+					t.Fatalf("result = %#v, finalized = %#v, reloaded = %#v, errors = %v, %v", snapshot, finalized, reloaded, err, reloadErr)
+				}
+				return
+			}
+			if err == nil || calls != tt.finalizeCalls {
+				t.Fatalf("error = %v, finalize calls = %d", err, calls)
+			}
+			if tt.rollbackTargets {
+				if tt.rollbackFile == "" {
+					if _, statErr := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(statErr) {
+						t.Fatalf("created target remains: %v", statErr)
+					}
+				} else {
+					assertFile(t, filepath.Join(root, path), tt.rollbackFile, 0o640)
+				}
+				if _, statErr := os.Lstat(filepath.Join(root, "generated")); !os.IsNotExist(statErr) {
+					t.Fatalf("created directory remains: %v", statErr)
+				}
+			}
+		})
 	}
 }

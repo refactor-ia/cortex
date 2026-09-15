@@ -23,7 +23,9 @@ var approvedFamilyIDs = []string{
 	"mobile", "pcsoft", "services", "personal", "memory-integration", "documentation",
 }
 var approvedAgentIDs = []string{
-	"pcsoft-expert", "test-runner", "security-audit", "frontend-quality", "flutter-quality", "kb-feeder",
+	"pcsoft-expert",
+	"requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester", "test-runner", "evidence-auditor",
+	"security-audit", "frontend-quality", "flutter-quality", "kb-feeder",
 }
 
 // ApprovedFamilyIDs returns a copy of the approved family IDs.

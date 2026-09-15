@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,9 @@ import (
 	"time"
 
 	"github.com/refactor-ia/cortex/internal/installobserve"
+	"github.com/refactor-ia/cortex/internal/qaadmission"
+	"github.com/refactor-ia/cortex/internal/qapi"
+	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
@@ -56,13 +60,15 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if len(args) > 0 && args[0] == "model-routing" {
 		return runModelProfile(args[1:], stdout, stderr)
 	}
-	if len(args) != 1 {
+	if len(args) == 0 || len(args) != 1 && args[0] != "qa" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
 	switch args[0] {
 	case "doctor":
 		return runDoctor(ctx, stdout, stderr, runner, install.policy)
+	case "qa":
+		return runQA(ctx, args[1:], stdout, stderr)
 	case "install", "update":
 		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
@@ -89,6 +95,87 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		}
 	}
 	return exitOK
+}
+
+const (
+	qaUsage = "usage: cortex qa run --role requirements-analyst --request <file> --catalog <dir>\n"
+	// qaReportNote surfaces the honest runtime prerequisites on every failure.
+	// The default route provider is the policy placeholder "nan"; Cortex applies
+	// no model fallback and owns no automatic configuration.
+	qaReportNote = "note=prerequisites: Pi 0.85.1 runtime and installed cortex assets; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
+)
+
+// qaPiResolver is the Pi binary resolution seam; nil selects the production
+// constrained lookup.
+var qaPiResolver qapi.PiPathResolver
+
+// runQA executes one local QA report command. It never mutates user
+// configuration and never claims admission.
+func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[2] != string(qarole.RequirementsAnalyst) || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+		writeError(stderr, "invalid_arguments")
+		_, _ = io.WriteString(stderr, qaUsage)
+		return exitUsage
+	}
+	task, err := readRequestTask(args[4])
+	if err != nil {
+		return qaFailure(stderr, "invalid_request")
+	}
+	cwd, err := os.Getwd()
+	catalogRoot, absErr := filepath.Abs(args[6])
+	if err != nil || absErr != nil {
+		return qaFailure(stderr, "invalid_request")
+	}
+	installRoot, err := piInstallRoot()
+	if err != nil {
+		return qaFailure(stderr, "actor_unavailable")
+	}
+	report, code, err := qapi.RunLocalReport(ctx, qapi.ReportRequest{
+		Role: qarole.RequirementsAnalyst, CatalogRoot: catalogRoot, InstallRoot: installRoot,
+		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
+	}, qaPiResolver)
+	if err != nil || code != "" {
+		failure := qaFailure(stderr, string(code))
+		if code == qaadmission.CodeNormalizationFailed {
+			var diagnostic *qapi.ReportNormalizationError
+			if errors.As(err, &diagnostic) {
+				_, _ = fmt.Fprintf(stderr, "normalization_stage=%s normalization_reason=%s\n", diagnostic.Stage, diagnostic.Reason)
+			}
+		}
+		return failure
+	}
+	if _, err := io.WriteString(stdout, report+"\n"); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	return exitOK
+}
+
+func qaFailure(stderr io.Writer, code string) int {
+	writeError(stderr, code)
+	_, _ = io.WriteString(stderr, qaReportNote)
+	return exitFailure
+}
+
+func readRequestTask(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > qaadmission.MaxTaskBytes {
+		return nil, fmt.Errorf("request is not a bounded regular file")
+	}
+	return os.ReadFile(path)
+}
+
+func piInstallRoot() (string, error) {
+	roots, err := skillroot.ResolveSystemUninstallRoots()
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		if root.RuntimeID() == runtimematrix.RuntimePi {
+			return root.RootPath(), nil
+		}
+	}
+	return "", fmt.Errorf("pi root unavailable")
 }
 
 func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {

@@ -63,6 +63,33 @@ func TestDecodeFamilyManifestRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestGeneralCoreAgentAllowlistStaysSynchronizedWithSchema(t *testing.T) {
+	want := []string{
+		"requirements-analyst",
+		"test-designer",
+		"exploratory-tester",
+		"adversarial-tester",
+		"test-runner",
+		"evidence-auditor",
+	}
+	approved := ApprovedAgentIDs()
+	for _, id := range want {
+		if !contains(approved, id) {
+			t.Errorf("ApprovedAgentIDs() is missing %q", id)
+		}
+	}
+
+	data, err := os.ReadFile("../../schemas/family.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range want {
+		if !strings.Contains(string(data), `"`+id+`"`) {
+			t.Errorf("family schema agents enum is missing %q", id)
+		}
+	}
+}
+
 func TestFamilySchemaStructure(t *testing.T) {
 	data, err := os.ReadFile("../../schemas/family.schema.json")
 	if err != nil {

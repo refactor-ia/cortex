@@ -54,13 +54,16 @@ type Operation struct {
 }
 
 type applyDependencies struct {
-	capture          func(string, string, string, []string) (Snapshot, error)
-	verify           func(string, string) error
-	replace          func(string, string, []byte, fs.FileMode) error
-	createIfAbsent   func(string, string, []byte, fs.FileMode) error
-	replaceIfMatches func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
-	restoreIfAbsent  func(string, string, []byte, fs.FileMode) error
-	removeIfExact    func(string, string, []byte, fs.FileMode) error
+	capture                  func(string, string, string, []string) (Snapshot, error)
+	captureDirectoryPreimage func(string, string, string, []string, []Directory) (Snapshot, error)
+	verify                   func(string, string) error
+	replace                  func(string, string, []byte, fs.FileMode) error
+	createIfAbsent           func(string, string, []byte, fs.FileMode) error
+	replaceIfMatches         func(string, string, []byte, fs.FileMode, []byte, fs.FileMode) error
+	restoreIfAbsent          func(string, string, []byte, fs.FileMode) error
+	removeIfExact            func(string, string, []byte, fs.FileMode) error
+	finalVerify              func() error
+	finalize                 func(Snapshot) error
 }
 
 type operation struct {
@@ -82,9 +85,36 @@ func ApplyOperations(sourceRoot, backupRoot, backupName string, operations []Ope
 	return applyOperations(defaultApplyDependencies(), sourceRoot, backupRoot, backupName, operations)
 }
 
+// ApplyOperationsWithDirectoriesAndVerify runs finalVerify after every operation
+// succeeds and before the transaction is accepted. A verification failure rolls
+// the completed operations back with the existing transaction snapshot.
+func ApplyOperationsWithDirectoriesAndVerify(sourceRoot, backupRoot, backupName string, directories []Directory, operations []Operation, finalVerify func() error) (Snapshot, error) {
+	if finalVerify == nil {
+		return Snapshot{}, errors.New("apply final verification is required")
+	}
+	deps := defaultApplyDependencies()
+	deps.finalVerify = finalVerify
+	return applyOperationsWithDirectories(deps, sourceRoot, backupRoot, backupName, directories, operations)
+}
+
+// ApplyOperationsWithDirectoriesAndFinalize verifies the completed operations,
+// reloads their persisted snapshot, and finalizes that exact verified snapshot.
+func ApplyOperationsWithDirectoriesAndFinalize(sourceRoot, backupRoot, backupName string, directories []Directory, operations []Operation, finalVerify func() error, finalize func(Snapshot) error) (Snapshot, error) {
+	if finalVerify == nil {
+		return Snapshot{}, errors.New("apply final verification is required")
+	}
+	if finalize == nil {
+		return Snapshot{}, errors.New("apply finalizer is required")
+	}
+	deps := defaultApplyDependencies()
+	deps.finalVerify = finalVerify
+	deps.finalize = finalize
+	return applyOperationsWithDirectories(deps, sourceRoot, backupRoot, backupName, directories, operations)
+}
+
 func defaultApplyDependencies() applyDependencies {
 	return applyDependencies{
-		capture: Capture, verify: Verify, replace: atomicfile.Replace,
+		capture: Capture, captureDirectoryPreimage: captureWithDirectoryPreimage, verify: Verify, replace: atomicfile.Replace,
 		createIfAbsent: atomicfile.CreateIfAbsent, replaceIfMatches: atomicfile.ReplaceIfMatches, restoreIfAbsent: restoreIfAbsent,
 		removeIfExact: atomicfile.RemoveIfExact,
 	}
@@ -97,6 +127,11 @@ func apply(deps applyDependencies, sourceRoot, backupRoot, backupName string, wr
 		operations[index] = Operation{Write: &write}
 	}
 	return applyOperations(deps, sourceRoot, backupRoot, backupName, operations)
+}
+
+func applyOperationsWithFinalVerification(deps applyDependencies, sourceRoot, backupRoot, backupName string, raw []Operation, finalVerify func() error) (Snapshot, error) {
+	deps.finalVerify = finalVerify
+	return applyOperations(deps, sourceRoot, backupRoot, backupName, raw)
 }
 
 func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName string, raw []Operation) (Snapshot, error) {
@@ -117,6 +152,13 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 	}
 	if err := verifyOperationEvidence(snapshot, operations); err != nil {
 		return snapshot, err
+	}
+	var payloads map[string][]byte
+	if deps.finalize != nil {
+		payloads, err = snapshotPayloads(snapshot, operations)
+		if err != nil {
+			return snapshot, fmt.Errorf("apply read snapshot payload: %w", err)
+		}
 	}
 
 	attempted := make([]operation, 0, len(operations))
@@ -153,8 +195,26 @@ func applyOperations(deps applyDependencies, sourceRoot, backupRoot, backupName 
 		}
 		if err != nil {
 			applyErr := fmt.Errorf("apply %s %s: %w", kind, operation.path, err)
-			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted))
+			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted, payloads))
 		}
+	}
+	if deps.finalVerify != nil {
+		if err := deps.finalVerify(); err != nil {
+			applyErr := fmt.Errorf("apply final verification: %w", err)
+			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted, payloads))
+		}
+	}
+	if deps.finalize != nil {
+		reloaded, err := reloadAndVerify(backupRoot, backupName)
+		if err != nil {
+			applyErr := fmt.Errorf("apply reload snapshot: %w", err)
+			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted, payloads))
+		}
+		if err := deps.finalize(reloaded); err != nil {
+			applyErr := fmt.Errorf("apply finalize snapshot: %w", err)
+			return snapshot, errors.Join(applyErr, rollback(deps, sourceRoot, backupRoot, backupName, snapshot, attempted, payloads))
+		}
+		snapshot = reloaded
 	}
 	return snapshot, nil
 }
@@ -258,27 +318,42 @@ func verifyOperationEvidence(snapshot Snapshot, operations []operation) error {
 	return nil
 }
 
-func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string, snapshot Snapshot, attempted []operation) error {
-	if err := deps.verify(backupRoot, backupName); err != nil {
-		return fmt.Errorf("rollback failed; caller intervention required: verify snapshot: %w", err)
-	}
+func snapshotPayloads(snapshot Snapshot, operations []operation) (map[string][]byte, error) {
 	entries := make(map[string]Entry, len(snapshot.Manifest.Entries))
 	payloads := make(map[string][]byte)
 	for _, entry := range snapshot.Manifest.Entries {
 		entries[entry.Path] = entry
 	}
-	for _, operation := range attempted {
+	for _, operation := range operations {
 		entry, exists := entries[operation.path]
 		if !exists {
-			return fmt.Errorf("rollback failed; caller intervention required: snapshot entry is missing")
+			return nil, errors.New("snapshot entry is missing")
 		}
 		if entry.Exists {
 			payload, err := snapshotPayload(snapshot.Dir, entry.Path)
 			if err != nil {
-				return fmt.Errorf("rollback failed; caller intervention required: read snapshot payload: %w", err)
+				return nil, err
 			}
 			payloads[entry.Path] = payload
 		}
+	}
+	return payloads, nil
+}
+
+func rollback(deps applyDependencies, sourceRoot, backupRoot, backupName string, snapshot Snapshot, attempted []operation, payloads map[string][]byte) error {
+	if payloads == nil {
+		if err := deps.verify(backupRoot, backupName); err != nil {
+			return fmt.Errorf("rollback failed; caller intervention required: verify snapshot: %w", err)
+		}
+		var err error
+		payloads, err = snapshotPayloads(snapshot, attempted)
+		if err != nil {
+			return fmt.Errorf("rollback failed; caller intervention required: read snapshot payload: %w", err)
+		}
+	}
+	entries := make(map[string]Entry, len(snapshot.Manifest.Entries))
+	for _, entry := range snapshot.Manifest.Entries {
+		entries[entry.Path] = entry
 	}
 
 	var rollbackErr error

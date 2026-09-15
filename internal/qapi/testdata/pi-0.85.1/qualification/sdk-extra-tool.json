@@ -1,0 +1,10 @@
+{
+  "sdk": {
+    "packageVersion": "0.85.1",
+    "activeToolNames": ["read"],
+    "toolDefinitions": [
+      {"name": "read", "sourceInfo": {"path": "<builtin:read>", "source": "builtin", "scope": "temporary", "origin": "top-level"}}
+    ],
+    "loadedSkills": [{"name": "_shared", "description": "Shared SDD references for installed skills. Not invokable."}, {"name": "cortex-requirements-analyst", "description": "Assess requirements for ambiguity, completeness, consistency, and testability."}]
+  }
+}

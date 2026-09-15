@@ -2,6 +2,11 @@
 package installtxn
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -14,7 +19,9 @@ import (
 	"github.com/refactor-ia/cortex/internal/filetxn"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/ownership"
+	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
 
@@ -24,17 +31,472 @@ var (
 	ErrFailed   = errors.New("install transaction: failed")
 )
 
+const stateRelativePath = ".cortex/install-state.json"
+
+var errPriorOwnership = errors.New("install transaction: prior ownership index is invalid")
+
+// priorOwnedArtifact is one canonical snapshot-owned prior artifact identity.
+type priorOwnedArtifact struct {
+	relativePath         string
+	kind                 installstate.Kind
+	logicalID            string
+	sha256               string
+	mode                 fs.FileMode
+	capabilityID         string
+	roleID               qarole.RoleID
+	actorContractVersion string
+	installationID       installstate.InstallationID
+}
+
+// priorOwnershipIndex is a private detached index of canonical prior-owned artifacts.
+type priorOwnershipIndex struct {
+	schemaVersion  int
+	installationID installstate.InstallationID
+	artifacts      []priorOwnedArtifact
+}
+
+// priorIndex builds a detached prior ownership index from a verified snapshot.
+func priorIndex(snapshot filetxn.Snapshot) (priorOwnershipIndex, error) {
+	entries := snapshot.Manifest.Entries
+	seen := make(map[string]bool, len(entries))
+	stateCount := 0
+	var state filetxn.Entry
+	for _, entry := range entries {
+		if seen[entry.Path] {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		seen[entry.Path] = true
+		if entry.Path == stateRelativePath {
+			stateCount++
+			state = entry
+		}
+	}
+	if stateCount != 1 {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	if !state.Exists {
+		if state.Mode != 0 || state.SHA256 != "" {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		return priorOwnershipIndex{}, nil
+	}
+	if fs.FileMode(state.Mode).Perm() != installplan.CanonicalFileMode.Perm() {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	payload, err := snapshot.Payload(stateRelativePath)
+	if err != nil {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	manifest, err := installstate.Decode(payload)
+	if err != nil {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	encoded, err := installstate.Encode(manifest)
+	if err != nil || !bytes.Equal(encoded, payload) {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
+	index := priorOwnershipIndex{
+		schemaVersion:  manifest.SchemaVersion(),
+		installationID: manifest.InstallationID(),
+		artifacts:      make([]priorOwnedArtifact, 0, len(manifest.Artifacts())),
+	}
+	paths := make(map[string]bool, len(manifest.Artifacts()))
+	for _, artifact := range manifest.Artifacts() {
+		relative := artifact.RelativePath()
+		if relative == stateRelativePath || paths[relative] {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		paths[relative] = true
+		kind := artifact.Kind()
+		if manifest.SchemaVersion() == 1 {
+			kind = installstate.KindSkill
+		}
+		if kind != installstate.KindSkill && kind != installstate.KindPiActor {
+			return priorOwnershipIndex{}, errPriorOwnership
+		}
+		index.artifacts = append(index.artifacts, priorOwnedArtifact{
+			relativePath: relative, kind: kind, logicalID: artifact.LogicalID(), sha256: artifact.SHA256(),
+			mode: installplan.CanonicalFileMode, capabilityID: artifact.CapabilityID(), roleID: artifact.RoleID(),
+			actorContractVersion: artifact.ActorContractVersion(), installationID: artifact.InstallationID(),
+		})
+	}
+	sort.Slice(index.artifacts, func(left, right int) bool {
+		return index.artifacts[left].relativePath < index.artifacts[right].relativePath
+	})
+	return index, nil
+}
+
+// deriveAcceptedAfter binds every changed preimage to its candidate-owned result.
+func deriveAcceptedAfter(candidate installplan.Plan, snapshot filetxn.Snapshot) ([]filetxn.After, error) {
+	files := make(map[string]installplan.File, len(candidate.Files()))
+	for _, file := range candidate.Files() {
+		if _, exists := files[file.RelativePath()]; exists {
+			return nil, ErrInvalid
+		}
+		files[file.RelativePath()] = file
+	}
+	entries := make(map[string]filetxn.Entry, len(snapshot.Manifest.Entries))
+	stateFound := false
+	for _, entry := range snapshot.Manifest.Entries {
+		if _, exists := entries[entry.Path]; exists {
+			return nil, ErrInvalid
+		}
+		entries[entry.Path] = entry
+		stateFound = stateFound || entry.Path == stateRelativePath
+	}
+	if !stateFound {
+		after := make([]filetxn.After, 0, len(snapshot.Manifest.Entries))
+		for _, entry := range snapshot.Manifest.Entries {
+			file, found := files[entry.Path]
+			if !found || entry.Exists {
+				return nil, ErrInvalid
+			}
+			accepted, err := filetxn.NewAfter(file.RelativePath(), true, file.Content(), file.DesiredMode())
+			if err != nil {
+				return nil, ErrInvalid
+			}
+			after = append(after, accepted)
+		}
+		return after, nil
+	}
+	prior, err := priorIndex(snapshot)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	owned := make(map[string]priorOwnedArtifact, len(prior.artifacts))
+	for _, artifact := range prior.artifacts {
+		if _, exists := owned[artifact.relativePath]; exists {
+			return nil, ErrInvalid
+		}
+		owned[artifact.relativePath] = artifact
+	}
+	for relative, file := range files {
+		if relative == stateRelativePath {
+			continue
+		}
+		artifact, found := owned[relative]
+		_, included := entries[relative]
+		kind := installstate.KindSkill
+		if file.Role() == "actor" {
+			kind = installstate.KindPiActor
+		}
+		if (!found || artifact.logicalID != file.LogicalID() || artifact.kind != kind || artifact.sha256 != file.SHA256() || artifact.mode != file.DesiredMode()) && !included {
+			return nil, ErrInvalid
+		}
+	}
+	for relative, artifact := range owned {
+		_, stillOwned := files[relative]
+		_, included := entries[relative]
+		if !stillOwned && (artifact.kind != installstate.KindSkill || !included) {
+			return nil, ErrInvalid
+		}
+	}
+	after := make([]filetxn.After, 0, len(snapshot.Manifest.Entries))
+	for _, entry := range snapshot.Manifest.Entries {
+		file, candidateOwned := files[entry.Path]
+		if candidateOwned {
+			if entry.Path != stateRelativePath && entry.Exists {
+				artifact, found := owned[entry.Path]
+				kind := installstate.KindSkill
+				if file.Role() == "actor" {
+					kind = installstate.KindPiActor
+				}
+				if !found || artifact.logicalID != file.LogicalID() || artifact.kind != kind || artifact.sha256 != entry.SHA256 || artifact.mode != fs.FileMode(entry.Mode) {
+					return nil, ErrInvalid
+				}
+			}
+			if entry.Exists && entry.SHA256 == file.SHA256() && fs.FileMode(entry.Mode) == file.DesiredMode() {
+				return nil, ErrInvalid
+			}
+			accepted, err := filetxn.NewAfter(file.RelativePath(), true, file.Content(), file.DesiredMode())
+			if err != nil {
+				return nil, ErrInvalid
+			}
+			after = append(after, accepted)
+			continue
+		}
+		artifact, found := owned[entry.Path]
+		if !found || artifact.kind != installstate.KindSkill || !entry.Exists || artifact.sha256 != entry.SHA256 || artifact.mode != fs.FileMode(entry.Mode) {
+			return nil, ErrInvalid
+		}
+		accepted, err := filetxn.NewAfter(entry.Path, false, nil, 0)
+		if err != nil {
+			return nil, ErrInvalid
+		}
+		after = append(after, accepted)
+	}
+	return after, nil
+}
+
 // Action is bounded neutral evidence for one logical artifact decision.
 type Action struct {
 	LogicalID string
 	Action    ownership.Action
 }
 
+// TransactionID is an opaque deterministic identity for one accepted transaction.
+type TransactionID struct{ value string }
+
+// ParseTransactionID accepts exactly one non-zero lowercase SHA-256 value.
+func ParseTransactionID(value string) (TransactionID, error) {
+	if len(value) != sha256.Size*2 {
+		return TransactionID{}, ErrInvalid
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return TransactionID{}, ErrInvalid
+	}
+	for _, byteValue := range decoded {
+		if byteValue != 0 {
+			return TransactionID{value: value}, nil
+		}
+	}
+	return TransactionID{}, ErrInvalid
+}
+
+// Valid reports whether the value is a canonical non-zero transaction identity.
+func (id TransactionID) Valid() bool {
+	_, err := ParseTransactionID(id.value)
+	return err == nil
+}
+
+// String returns the canonical transaction identity or an empty string for zero.
+func (id TransactionID) String() string { return id.value }
+
 // Result contains detached neutral evidence and never includes filesystem paths.
-type Result struct{ actions []Action }
+type Result struct {
+	actions       []Action
+	transactionID TransactionID
+}
 
 // Actions returns the canonical logical artifact actions.
 func (result Result) Actions() []Action { return append([]Action(nil), result.actions...) }
+
+// TransactionID returns the opaque identity assigned after final readback.
+func (result Result) TransactionID() TransactionID { return result.transactionID }
+
+func transactionID(candidate installplan.Plan, snapshot filetxn.Snapshot) (TransactionID, error) {
+	root, err := filepath.EvalSymlinks(candidate.RootPath())
+	if err != nil || root != candidate.RootPath() {
+		return TransactionID{}, ErrInvalid
+	}
+	manifest, err := json.Marshal(snapshot.Manifest)
+	if err != nil {
+		return TransactionID{}, ErrInvalid
+	}
+	hash := sha256.New()
+	writeTransactionFrame(hash, []byte("cortex.installtxn.transaction-id.v1"))
+	writeTransactionFrame(hash, []byte(root))
+	writeTransactionFrame(hash, candidate.StateJSON())
+	for _, file := range candidate.Files() {
+		writeTransactionFrame(hash, []byte(file.Role()))
+		writeTransactionFrame(hash, []byte(file.LogicalID()))
+		writeTransactionFrame(hash, []byte(file.RelativePath()))
+		writeTransactionUint64(hash, uint64(file.DesiredMode()))
+		writeTransactionFrame(hash, []byte(file.SHA256()))
+	}
+	writeTransactionFrame(hash, manifest)
+	return ParseTransactionID(hex.EncodeToString(hash.Sum(nil)))
+}
+
+func writeTransactionUint64(hash interface{ Write([]byte) (int, error) }, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	writeTransactionFrame(hash, encoded[:])
+}
+
+func writeTransactionFrame(hash interface{ Write([]byte) (int, error) }, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write(value)
+}
+
+type applyVerifiedTransaction func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error, func(filetxn.Snapshot) error) (filetxn.Snapshot, error)
+
+// ApplyVerified materializes an actor-aware candidate only after a fresh
+// ownership and shadow preflight. It accepts state only after final readback.
+func ApplyVerified(candidate installplan.Plan, cwd, backupRoot, backupName string) (Result, error) {
+	return applyVerifiedWith(candidate, cwd, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndFinalize)
+}
+
+// RollbackAccepted restores only the exact pre-acceptance snapshot bound to candidate and expectedID.
+func RollbackAccepted(candidate installplan.Plan, backupRoot, backupName string, expectedID TransactionID) error {
+	if candidate.InstalledState().SchemaVersion() != 2 || !canonicalRoot(candidate.RootPath()) || !expectedID.Valid() {
+		return ErrInvalid
+	}
+	snapshot, err := filetxn.Open(backupRoot, backupName)
+	if err != nil {
+		return ErrInvalid
+	}
+	actualID, err := transactionID(candidate, snapshot)
+	if err != nil || actualID != expectedID {
+		return ErrInvalid
+	}
+	after, err := deriveAcceptedAfter(candidate, snapshot)
+	if err != nil {
+		return ErrInvalid
+	}
+	if err := filetxn.RollbackRestart(candidate.RootPath(), snapshot, after); err != nil {
+		return ErrFailed
+	}
+	return nil
+}
+
+func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName string, apply applyVerifiedTransaction) (Result, error) {
+	if apply == nil || candidate.InstalledState().SchemaVersion() != 2 || !validRoot(candidate.RootPath()) || !validCWD(cwd) {
+		return Result{}, ErrInvalid
+	}
+	current, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		return Result{}, ErrFailed
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, current)
+	if err != nil || !verifiedDecisionsReady(classified) {
+		return Result{}, ErrConflict
+	}
+	shadows, err := installobserve.ObserveActorShadows(candidate, current, cwd)
+	if err != nil || !shadows.Clean() {
+		return Result{}, ErrConflict
+	}
+	operations, result, err := verifiedOperations(candidate, current, classified)
+	if err != nil {
+		return Result{}, ErrInvalid
+	}
+	verify := func() error { return verifyAccepted(candidate, cwd) }
+	if len(operations) == 0 {
+		if err := verify(); err != nil {
+			return Result{}, ErrFailed
+		}
+		return result, nil
+	}
+	var id TransactionID
+	finalize := func(snapshot filetxn.Snapshot) error {
+		if _, err := deriveAcceptedAfter(candidate, snapshot); err != nil {
+			return err
+		}
+		computed, err := transactionID(candidate, snapshot)
+		if err != nil {
+			return err
+		}
+		id = computed
+		return nil
+	}
+	if _, err := apply(candidate.RootPath(), backupRoot, backupName, directoriesFor(candidate, operations), operations, verify, finalize); err != nil || !id.Valid() {
+		return Result{}, ErrFailed
+	}
+	result.transactionID = id
+	return result, nil
+}
+
+func verifiedDecisionsReady(classified installobserve.Result) bool {
+	if classified.StateAction() != ownership.Create && classified.StateAction() != ownership.Replace && classified.StateAction() != ownership.Unchanged {
+		return false
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		switch decision.Action {
+		case ownership.Create, ownership.Replace, ownership.Remove, ownership.Unchanged:
+			if decision.ObservedOwnership != ownership.CortexOwned {
+				return false
+			}
+		case ownership.Preserve:
+			if decision.ObservedOwnership == ownership.UserOwned {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func verifiedOperations(candidate installplan.Plan, observation installobserve.FilesystemObservation, classified installobserve.Result) ([]filetxn.Operation, Result, error) {
+	decisions := make(map[string]installobserve.ArtifactDecision, len(classified.ArtifactDecisions()))
+	for _, decision := range classified.ArtifactDecisions() {
+		decisions[decision.LogicalID] = decision
+	}
+	skills, actors := make([]filetxn.Operation, 0, len(decisions)), make([]filetxn.Operation, 0, len(decisions))
+	for _, file := range candidate.Files()[:len(candidate.Files())-1] {
+		decision, found := decisions[file.LogicalID()]
+		if !found {
+			return nil, Result{}, errors.New("missing candidate decision")
+		}
+		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, file, observation)
+		if !ok {
+			return nil, Result{}, errors.New("invalid candidate decision")
+		}
+		if include {
+			switch decision.Kind {
+			case installstate.KindSkill:
+				skills = append(skills, operation)
+			case installstate.KindPiActor:
+				actors = append(actors, operation)
+			default:
+				return nil, Result{}, errors.New("invalid candidate decision kind")
+			}
+		}
+		delete(decisions, file.LogicalID())
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if _, pending := decisions[decision.LogicalID]; !pending || decision.Action != ownership.Remove {
+			continue
+		}
+		if decision.Kind != installstate.KindSkill {
+			return nil, Result{}, errors.New("invalid removal decision kind")
+		}
+		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, installplan.File{}, observation)
+		if !ok {
+			return nil, Result{}, errors.New("invalid removal decision")
+		}
+		if include {
+			skills = append(skills, operation)
+		}
+	}
+	operations := append(skills, actors...)
+	state, found := candidate.Files()[len(candidate.Files())-1], true
+	operation, include, ok := stateOperation(classified.StateAction(), state, found, observation)
+	if !ok {
+		return nil, Result{}, errors.New("invalid state decision")
+	}
+	if include {
+		operations = append(operations, operation)
+	}
+	return operations, Result{actions: actionsFromClassification(classified)}, nil
+}
+
+func verifyAccepted(candidate installplan.Plan, cwd string) error {
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
+	if err != nil || classified.StateAction() != ownership.Unchanged {
+		return errors.New("accepted state readback is invalid")
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
+			return errors.New("accepted artifact readback is invalid")
+		}
+	}
+	shadows, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
+	if err != nil || !shadows.Clean() {
+		return errors.New("accepted actor shadows are invalid")
+	}
+	return nil
+}
+
+func actionsFromClassification(classified installobserve.Result) []Action {
+	decisions := classified.ArtifactDecisions()
+	actions := make([]Action, 0, len(decisions)+1)
+	for _, decision := range decisions {
+		actions = append(actions, Action{LogicalID: decision.LogicalID, Action: decision.Action})
+	}
+	return append(actions, Action{LogicalID: "state/install-state", Action: classified.StateAction()})
+}
+
+func validCWD(cwd string) bool {
+	return filepath.IsAbs(cwd) && filepath.Clean(cwd) == cwd && validRoot(cwd)
+}
 
 // Apply materializes the supplied bundle-bound candidate only when its bounded
 // observation matches. It writes skills before the installation state file.
@@ -443,6 +905,14 @@ func depth(value string) int {
 	}
 	return depth
 }
+func canonicalRoot(root string) bool {
+	if !validRoot(root) {
+		return false
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	return err == nil && canonical == root
+}
+
 func validRoot(root string) bool {
 	info, err := os.Lstat(root)
 	return err == nil && info.IsDir() && info.Mode()&fs.ModeSymlink == 0

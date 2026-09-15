@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,7 +16,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/safepath"
 )
 
-const manifestName, manifestVersion = "manifest.json", 1
+const manifestName, manifestVersion, manifestV2, manifestV3 = "manifest.json", 1, 2, 3
 
 // Entry describes one source-relative file captured by a snapshot.
 type Entry struct {
@@ -25,10 +26,26 @@ type Entry struct {
 	SHA256 string `json:"sha256,omitempty"`
 }
 
+type directoryEntry struct {
+	Path string `json:"path"`
+	Mode uint32 `json:"mode"`
+}
+
+// AcceptedDirectory records the observable device, inode, and mode tuple of one accepted transaction-created directory.
+// It is not a durable anti-ABA proof after an inode has been freed.
+type AcceptedDirectory struct {
+	Path   string `json:"path"`
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+	Mode   uint32 `json:"mode"`
+}
+
 // Manifest is the deterministic, unauthenticated record of a snapshot.
 type Manifest struct {
-	Version int     `json:"version"`
-	Entries []Entry `json:"entries"`
+	Version             int                 `json:"version"`
+	Entries             []Entry             `json:"entries"`
+	AbsentDirectories   []directoryEntry    `json:"absentDirectories,omitempty"`
+	AcceptedDirectories []AcceptedDirectory `json:"acceptedDirectories,omitempty"`
 }
 
 // Snapshot identifies a captured backup directory and its manifest.
@@ -44,27 +61,42 @@ type candidate struct {
 }
 
 // Capture records regular files and absent leaves beneath sourceRoot in backupName.
-func Capture(sourceRoot, backupRoot, backupName string, paths []string) (snapshot Snapshot, err error) {
+func Capture(sourceRoot, backupRoot, backupName string, paths []string) (Snapshot, error) {
+	return captureWithDirectories(sourceRoot, backupRoot, backupName, paths, nil)
+}
+
+func captureWithDirectoryPreimage(sourceRoot, backupRoot, backupName string, paths []string, absent []Directory) (Snapshot, error) {
+	directories, root, err := prepareDirectoryPreimage(sourceRoot, absent)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return captureWithDirectories(root, backupRoot, backupName, paths, directories)
+}
+
+func captureWithDirectories(sourceRoot, backupRoot, backupName string, paths []string, directories []directoryEntry) (snapshot Snapshot, err error) {
 	candidates := make([]candidate, 0, len(paths))
 	seen := make(map[string]struct{}, len(paths))
 	for _, raw := range paths {
+		candidatePath := filepath.ToSlash(filepath.Clean(raw))
 		source, resolveErr := safepath.Resolve(sourceRoot, raw)
 		if resolveErr != nil {
-			return Snapshot{}, fmt.Errorf("snapshot candidate: %w", resolveErr)
+			if !isAbsentDescendant(candidatePath, directories) || !validManifestPath(candidatePath) {
+				return Snapshot{}, fmt.Errorf("snapshot candidate: %w", resolveErr)
+			}
+			source = filepath.Join(sourceRoot, filepath.FromSlash(candidatePath))
 		}
-		path := filepath.ToSlash(filepath.Clean(raw))
-		if _, exists := seen[path]; exists {
-			return Snapshot{}, fmt.Errorf("snapshot candidate is duplicated: %s", path)
+		if _, exists := seen[candidatePath]; exists {
+			return Snapshot{}, fmt.Errorf("snapshot candidate is duplicated: %s", candidatePath)
 		}
-		seen[path] = struct{}{}
+		seen[candidatePath] = struct{}{}
 		info, statErr := os.Lstat(source)
 		if statErr != nil && !os.IsNotExist(statErr) {
-			return Snapshot{}, fmt.Errorf("snapshot candidate inspection failed: %s", path)
+			return Snapshot{}, fmt.Errorf("snapshot candidate inspection failed: %s", candidatePath)
 		}
 		if statErr == nil && !info.Mode().IsRegular() {
-			return Snapshot{}, fmt.Errorf("snapshot candidate is not a regular file: %s", path)
+			return Snapshot{}, fmt.Errorf("snapshot candidate is not a regular file: %s", candidatePath)
 		}
-		candidates = append(candidates, candidate{path: path, source: source, info: info})
+		candidates = append(candidates, candidate{path: candidatePath, source: source, info: info})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].path < candidates[j].path })
 
@@ -84,7 +116,11 @@ func Capture(sourceRoot, backupRoot, backupName string, paths []string) (snapsho
 		return Snapshot{}, fmt.Errorf("create snapshot payload directory: %w", err)
 	}
 
-	manifest := Manifest{Version: manifestVersion, Entries: make([]Entry, 0, len(candidates))}
+	version := manifestVersion
+	if len(directories) != 0 {
+		version = manifestV2
+	}
+	manifest := Manifest{Version: version, Entries: make([]Entry, 0, len(candidates)), AbsentDirectories: directories}
 	for _, item := range candidates {
 		entry := Entry{Path: item.path, Exists: item.info != nil}
 		if item.info != nil {
@@ -106,55 +142,121 @@ func Capture(sourceRoot, backupRoot, backupName string, paths []string) (snapsho
 	return Snapshot{Dir: backupDir, Manifest: manifest}, nil
 }
 
+func prepareDirectoryPreimage(sourceRoot string, raw []Directory) ([]directoryEntry, string, error) {
+	if len(raw) == 0 {
+		return nil, "", fmt.Errorf("snapshot absent directories are empty")
+	}
+	root, err := inspectRoot(sourceRoot)
+	if err != nil {
+		return nil, "", fmt.Errorf("snapshot source root is invalid")
+	}
+	directories := make([]directoryEntry, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for index, directory := range raw {
+		if directory.Mode&^os.FileMode(0o777) != 0 {
+			return nil, "", fmt.Errorf("snapshot absent directory has unsupported mode")
+		}
+		canonical, pathErr := canonicalDirectoryPath(directory.Path)
+		if pathErr != nil {
+			return nil, "", fmt.Errorf("snapshot absent directory path is unsafe")
+		}
+		if _, exists := seen[canonical]; exists || (index > 0 && directories[index-1].Path >= canonical) {
+			return nil, "", fmt.Errorf("snapshot absent directories are not canonical")
+		}
+		seen[canonical] = struct{}{}
+		directories[index] = directoryEntry{Path: canonical, Mode: uint32(directory.Mode)}
+	}
+	for _, directory := range directories {
+		if _, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(directory.Path))); statErr == nil || !os.IsNotExist(statErr) {
+			return nil, "", fmt.Errorf("snapshot absent directory exists or is invalid: %s", directory.Path)
+		}
+		parent := path.Dir(directory.Path)
+		for parent != "." {
+			if _, declared := seen[parent]; declared {
+				break
+			}
+			parent = path.Dir(parent)
+		}
+		if parent == "." {
+			parent = path.Dir(directory.Path)
+			if parent == "." {
+				continue
+			}
+			if err := inspectPath(root, parent, true); err != nil {
+				return nil, "", fmt.Errorf("snapshot absent directory parent is invalid: %s", directory.Path)
+			}
+			info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(parent)))
+			if statErr != nil || !isRealDirectory(info) {
+				return nil, "", fmt.Errorf("snapshot absent directory parent is missing: %s", directory.Path)
+			}
+		}
+	}
+	return directories, root, nil
+}
+
+func isAbsentDescendant(candidate string, directories []directoryEntry) bool {
+	for _, directory := range directories {
+		if strings.HasPrefix(candidate, directory.Path+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // Verify reloads and verifies backup payloads; it does not cryptographically authenticate the manifest.
 func Verify(backupRoot, backupName string) error {
+	_, err := reloadAndVerify(backupRoot, backupName)
+	return err
+}
+
+func reloadAndVerify(backupRoot, backupName string) (Snapshot, error) {
 	backupDir, err := safepath.Resolve(backupRoot, backupName)
 	if err != nil {
-		return fmt.Errorf("snapshot backup directory: %w", err)
+		return Snapshot{}, fmt.Errorf("snapshot backup directory: %w", err)
 	}
 	if info, statErr := os.Lstat(backupDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("snapshot backup directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot backup directory is missing or invalid")
 	}
 	payloadDir, resolveErr := safepath.Resolve(backupDir, "payloads")
 	if resolveErr != nil {
-		return fmt.Errorf("snapshot payload directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot payload directory is missing or invalid")
 	}
 	if info, statErr := os.Lstat(payloadDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("snapshot payload directory is missing or invalid")
+		return Snapshot{}, fmt.Errorf("snapshot payload directory is missing or invalid")
 	}
 	manifest, err := readManifest(backupDir)
 	if err != nil {
-		return err
+		return Snapshot{}, err
 	}
 	seen := make(map[string]struct{}, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		if !validManifestPath(entry.Path) {
-			return fmt.Errorf("snapshot manifest has an invalid path")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has an invalid path")
 		}
 		if _, exists := seen[entry.Path]; exists {
-			return fmt.Errorf("snapshot manifest has duplicate paths")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has duplicate paths")
 		}
 		seen[entry.Path] = struct{}{}
 		if !entry.Exists {
 			if entry.Mode != 0 || entry.SHA256 != "" {
-				return fmt.Errorf("snapshot manifest has invalid absent entry")
+				return Snapshot{}, fmt.Errorf("snapshot manifest has invalid absent entry")
 			}
 			continue
 		}
 		if entry.SHA256 == "" {
-			return fmt.Errorf("snapshot manifest has missing checksum")
+			return Snapshot{}, fmt.Errorf("snapshot manifest has missing checksum")
 		}
 		payload := backupPayloadPath(backupDir, entry.Path)
 		info, statErr := os.Lstat(payload)
 		if statErr != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("snapshot payload is missing or invalid: %s", entry.Path)
+			return Snapshot{}, fmt.Errorf("snapshot payload is missing or invalid: %s", entry.Path)
 		}
 		digest, hashErr := digestFile(payload)
 		if hashErr != nil || digest != entry.SHA256 {
-			return fmt.Errorf("snapshot payload checksum mismatch: %s", entry.Path)
+			return Snapshot{}, fmt.Errorf("snapshot payload checksum mismatch: %s", entry.Path)
 		}
 	}
-	return nil
+	return Snapshot{Dir: backupDir, Manifest: manifest}, nil
 }
 
 func validManifestPath(path string) bool {
@@ -219,6 +321,68 @@ func writeManifest(backupDir string, manifest Manifest) error {
 	return nil
 }
 
+func rewriteManifestStrict(backupDir string, manifest Manifest) (resultErr error) {
+	if err := validateManifest(manifest); err != nil {
+		return fmt.Errorf("strict snapshot manifest is invalid: %w", err)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode strict snapshot manifest: %w", err)
+	}
+	temporary := filepath.Join(backupDir, ".manifest.json.strict.tmp")
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create strict snapshot manifest: %w", err)
+	}
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = file.Close()
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("protect strict snapshot manifest: %w", err)
+	}
+	data = append(data, '\n')
+	for len(data) > 0 {
+		written, err := file.Write(data)
+		if err != nil {
+			return fmt.Errorf("write strict snapshot manifest: %w", err)
+		}
+		if written == 0 {
+			return fmt.Errorf("write strict snapshot manifest: short write")
+		}
+		data = data[written:]
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync strict snapshot manifest: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close strict snapshot manifest: %w", err)
+	}
+	if err := os.Rename(temporary, filepath.Join(backupDir, manifestName)); err != nil {
+		return fmt.Errorf("store strict snapshot manifest: %w", err)
+	}
+	renamed = true
+	if err := syncDirectoryStrict(backupDir); err != nil {
+		return fmt.Errorf("sync strict snapshot directory: %w", err)
+	}
+	return nil
+}
+
+func syncDirectoryStrict(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
+}
+
 func readManifest(backupDir string) (Manifest, error) {
 	if info, err := os.Lstat(filepath.Join(backupDir, manifestName)); err != nil || !info.Mode().IsRegular() {
 		return Manifest{}, fmt.Errorf("snapshot manifest is missing or invalid")
@@ -227,9 +391,73 @@ func readManifest(backupDir string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("read snapshot manifest: %w", err)
 	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
 	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != manifestVersion {
+	if err := decoder.Decode(&manifest); err != nil {
+		return Manifest{}, fmt.Errorf("snapshot manifest is invalid")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF || validateManifest(manifest) != nil {
 		return Manifest{}, fmt.Errorf("snapshot manifest is invalid")
 	}
 	return manifest, nil
+}
+
+func validateManifest(manifest Manifest) error {
+	if manifest.Version != manifestVersion && manifest.Version != manifestV2 && manifest.Version != manifestV3 {
+		return fmt.Errorf("unsupported version")
+	}
+	if manifest.Version == manifestVersion && len(manifest.AbsentDirectories) != 0 {
+		return fmt.Errorf("v1 has absent directories")
+	}
+	if manifest.Version == manifestV2 && len(manifest.AbsentDirectories) == 0 {
+		return fmt.Errorf("v2 has no absent directories")
+	}
+	if manifest.Version != manifestV3 && len(manifest.AcceptedDirectories) != 0 {
+		return fmt.Errorf("pre-v3 has accepted directories")
+	}
+	if manifest.Version == manifestV3 && (len(manifest.AbsentDirectories) == 0 || len(manifest.AcceptedDirectories) == 0 || len(manifest.AbsentDirectories) != len(manifest.AcceptedDirectories)) {
+		return fmt.Errorf("v3 has invalid accepted directories")
+	}
+	previous := ""
+	for _, entry := range manifest.Entries {
+		if !validManifestPath(entry.Path) || entry.Path <= previous || entry.Mode&^0o777 != 0 {
+			return fmt.Errorf("invalid entry")
+		}
+		previous = entry.Path
+		if !entry.Exists && (entry.Mode != 0 || entry.SHA256 != "") {
+			return fmt.Errorf("invalid absent entry")
+		}
+		if entry.Exists && !validSHA256(entry.SHA256) {
+			return fmt.Errorf("invalid existing entry")
+		}
+	}
+	previous = ""
+	for index, directory := range manifest.AbsentDirectories {
+		if _, err := canonicalDirectoryPath(directory.Path); err != nil || directory.Path <= previous || directory.Mode&^0o777 != 0 {
+			return fmt.Errorf("invalid absent directory")
+		}
+		previous = directory.Path
+		for _, entry := range manifest.Entries {
+			if entry.Path == directory.Path || (entry.Exists && strings.HasPrefix(entry.Path, directory.Path+"/")) {
+				return fmt.Errorf("directory conflicts with entry")
+			}
+		}
+		if manifest.Version == manifestV3 {
+			accepted := manifest.AcceptedDirectories[index]
+			if accepted.Path != directory.Path || accepted.Mode != directory.Mode || accepted.Mode&^0o777 != 0 || accepted.Inode == 0 {
+				return fmt.Errorf("invalid accepted directory")
+			}
+		}
+	}
+	return nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil && value == strings.ToLower(value)
 }

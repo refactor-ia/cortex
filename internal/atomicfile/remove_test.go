@@ -172,7 +172,7 @@ func TestRemoveIfExactRejectsInvalidInput(t *testing.T) {
 		{"traversal", t.TempDir(), "../outside.txt", []byte("evidence"), 0o600, "invalid relative path"},
 		{"dot", t.TempDir(), ".", []byte("evidence"), 0o600, "invalid relative path"},
 		{"backslash", t.TempDir(), `safe\config.txt`, []byte("evidence"), 0o600, "invalid relative path"},
-		{"empty evidence", t.TempDir(), "safe/config.txt", nil, 0o600, "invalid expected bytes"},
+		{"nil evidence", t.TempDir(), "safe/config.txt", nil, 0o600, "invalid expected bytes"},
 		{"oversized evidence", t.TempDir(), "safe/config.txt", make([]byte, removeExactMaxEvidenceBytes+1), 0o600, "invalid expected bytes"},
 		{"type bits", t.TempDir(), "safe/config.txt", []byte("evidence"), fs.ModeDir | 0o600, "invalid expected mode"},
 	}

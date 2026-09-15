@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,9 +58,14 @@ func TestApplyOperationsWithDirectoriesRollsBackCreatedDirectories(t *testing.T)
 }
 func TestApplyOperationsWithDirectoriesCreatesNestedDirectories(t *testing.T) {
 	root, backups := t.TempDir(), t.TempDir()
-	_, err := ApplyOperationsWithDirectories(root, backups, "batch", []Directory{{Path: "skills", Mode: 0o700}, {Path: "skills/cortex-demo", Mode: 0o700}}, []Operation{{Create: &Create{Path: "skills/cortex-demo/router.md", Data: []byte("router"), Mode: 0o600}}})
+	snapshot, err := ApplyOperationsWithDirectories(root, backups, "batch", []Directory{{Path: "skills", Mode: 0o700}, {Path: "skills/cortex-demo", Mode: 0o700}}, []Operation{{Create: &Create{Path: "skills/cortex-demo/router.md", Data: []byte("router"), Mode: 0o600}}})
 	must(t, err)
 	assertFile(t, filepath.Join(root, "skills", "cortex-demo", "router.md"), "router", 0o600)
+	snapshot, err = ApplyOperationsWithDirectories(root, backups, "existing", []Directory{{Path: "skills", Mode: 0o700}, {Path: "skills/cortex-demo", Mode: 0o700}}, []Operation{{Create: &Create{Path: "skills/cortex-demo/again.md", Data: []byte("again"), Mode: 0o600}}})
+	must(t, err)
+	if snapshot.Manifest.Version != manifestVersion {
+		t.Fatalf("all-existing snapshot version = %d", snapshot.Manifest.Version)
+	}
 }
 func TestApplyOperationsWithDirectoriesRejectsInvalidTargetsBeforeMutation(t *testing.T) {
 	for _, setup := range []func(t *testing.T, root string){
@@ -196,5 +202,206 @@ func TestApplyOperationsWithDirectoriesRejectsPreflightMutations(t *testing.T) {
 				t.Fatalf("backup was created: %v", err)
 			}
 		})
+	}
+}
+
+func TestApplyOperationsWithDirectoriesPreimage(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	deps, captures := defaultApplyDependencies(), 0
+	deps.captureDirectoryPreimage = func(source, backup, name string, paths []string, absent []Directory) (Snapshot, error) {
+		captures++
+		if _, err := os.Lstat(filepath.Join(root, "made")); !os.IsNotExist(err) {
+			t.Fatalf("mkdir preceded capture: %v", err)
+		}
+		return captureWithDirectoryPreimage(source, backup, name, paths, absent)
+	}
+	snapshot, err := applyOperationsWithDirectories(deps, root, backups, "batch", []Directory{{Path: "made", Mode: 0o700}, {Path: "made/nested", Mode: 0o750}}, []Operation{{Create: &Create{Path: "made/nested/file", Data: []byte("new"), Mode: 0o600}}})
+	must(t, err)
+	if captures != 1 || snapshot.Manifest.Version != manifestV2 || len(snapshot.Manifest.AbsentDirectories) != 2 {
+		t.Fatalf("captures = %d, snapshot = %#v", captures, snapshot.Manifest)
+	}
+}
+
+func TestApplyOperationsWithDirectoriesPreimageRefusesChanges(t *testing.T) {
+	for _, name := range []string{"capture failure", "mkdir race", "existing drift"} {
+		t.Run(name, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			directories := []Directory{{Path: "made", Mode: 0o700}}
+			if name == "existing drift" {
+				must(t, os.Mkdir(filepath.Join(root, "stable"), 0o700))
+				directories = append([]Directory{{Path: "stable", Mode: 0o700}}, directories...)
+			}
+			deps := defaultApplyDependencies()
+			deps.captureDirectoryPreimage = func(source, backup, batch string, paths []string, absent []Directory) (Snapshot, error) {
+				if name == "capture failure" {
+					return Snapshot{}, errors.New("injected capture failure")
+				}
+				snapshot, err := captureWithDirectoryPreimage(source, backup, batch, paths, absent)
+				if err != nil {
+					return Snapshot{}, err
+				}
+				if name == "mkdir race" {
+					must(t, os.Mkdir(filepath.Join(root, "made"), 0o700))
+				} else {
+					if len(absent) != 1 || absent[0].Path != "made" {
+						t.Fatalf("preimage directories = %#v", absent)
+					}
+					replaceDirectoryWithDistinctIdentity(t, root, "stable")
+				}
+				return snapshot, nil
+			}
+			_, err := applyOperationsWithDirectories(deps, root, backups, "batch", directories, []Operation{{Create: &Create{Path: "made/file", Data: []byte("new"), Mode: 0o600}}})
+			if err == nil {
+				t.Fatal("applyOperationsWithDirectories() error = nil")
+			}
+			if name == "mkdir race" {
+				if info, statErr := os.Lstat(filepath.Join(root, "made")); statErr != nil || !isRealDirectory(info) {
+					t.Fatalf("raced directory = %v", statErr)
+				}
+				return
+			}
+			if _, statErr := os.Lstat(filepath.Join(root, "made")); !os.IsNotExist(statErr) {
+				t.Fatalf("owned directory remains: %v", statErr)
+			}
+			if name == "existing drift" && !strings.Contains(err.Error(), "existing directory changed") {
+				t.Fatalf("drift error = %v", err)
+			}
+		})
+	}
+}
+
+func TestApplyOperationsWithDirectoriesFinalVerificationRollbackPreservesReplacement(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(strconv.FormatBool(replacement), func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			deps := defaultApplyDependencies()
+			deps.finalVerify = func() error {
+				if replacement {
+					replaceDirectoryWithDistinctIdentity(t, root, "owned")
+				}
+				return errors.New("injected final verification failure")
+			}
+			_, err := applyOperationsWithDirectories(deps, root, backups, "batch", []Directory{{Path: "owned", Mode: 0o700}, {Path: "owned/child", Mode: 0o700}}, []Operation{{Create: &Create{Path: "outside", Data: []byte("new"), Mode: 0o600}}})
+			if err == nil || (replacement && !strings.Contains(err.Error(), "caller intervention required")) {
+				t.Fatalf("applyOperationsWithDirectories() error = %v", err)
+			}
+			if _, statErr := os.Lstat(filepath.Join(root, "owned")); replacement != (statErr == nil) {
+				t.Fatalf("replacement = %t, directory error = %v", replacement, statErr)
+			}
+		})
+	}
+}
+
+func TestApplyOperationsWithDirectoriesFinalizerReceivesAcceptedDirectories(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	var finalized Snapshot
+	_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+		[]Directory{{Path: "z-dir", Mode: 0o710}, {Path: "a-dir", Mode: 0o750}},
+		[]Operation{{Create: &Create{Path: "a-dir/file", Data: []byte("a"), Mode: 0o600}}, {Create: &Create{Path: "z-dir/file", Data: []byte("z"), Mode: 0o600}}},
+		func() error { return nil },
+		func(snapshot Snapshot) error { finalized = snapshot; return nil },
+	)
+	must(t, err)
+	if finalized.Manifest.Version != manifestV3 || len(finalized.Manifest.AcceptedDirectories) != 2 {
+		t.Fatalf("finalized manifest = %#v", finalized.Manifest)
+	}
+	for index, want := range []Directory{{Path: "a-dir", Mode: 0o750}, {Path: "z-dir", Mode: 0o710}} {
+		got := finalized.Manifest.AcceptedDirectories[index]
+		if got.Path != want.Path || got.Mode != uint32(want.Mode) || got.Inode == 0 {
+			t.Fatalf("accepted directory %d = %#v", index, got)
+		}
+	}
+}
+
+func TestApplyOperationsWithDirectoriesRejectsPostVerificationDirectoryDrift(t *testing.T) {
+	for _, drift := range []string{"replacement", "mode"} {
+		t.Run(drift, func(t *testing.T) {
+			root, backups := t.TempDir(), t.TempDir()
+			finalized := false
+			_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+				[]Directory{{Path: "owned", Mode: 0o700}, {Path: "owned/child", Mode: 0o700}},
+				[]Operation{{Create: &Create{Path: "outside", Data: []byte("new"), Mode: 0o600}}},
+				func() error {
+					if drift == "replacement" {
+						replaceDirectoryWithDistinctIdentity(t, root, "owned")
+						return nil
+					}
+					return os.Chmod(filepath.Join(root, "owned"), 0o755)
+				},
+				func(Snapshot) error { finalized = true; return nil },
+			)
+			if err == nil || finalized || !strings.Contains(err.Error(), "accepted directory") || !strings.Contains(err.Error(), "caller intervention required") {
+				t.Fatalf("error = %v, finalized = %t", err, finalized)
+			}
+			if _, statErr := os.Lstat(filepath.Join(root, "outside")); !os.IsNotExist(statErr) {
+				t.Fatalf("operation remains: %v", statErr)
+			}
+			if info, statErr := os.Lstat(filepath.Join(root, "owned")); statErr != nil || !isRealDirectory(info) {
+				t.Fatalf("drifted directory = %v", statErr)
+			}
+		})
+	}
+}
+
+func replaceDirectoryWithDistinctIdentity(t *testing.T, root, name string) {
+	t.Helper()
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		t.Fatalf("directory name is not a direct child: %q", name)
+	}
+	originalPath := filepath.Join(root, name)
+	original, err := os.Lstat(originalPath)
+	must(t, err)
+	if !isRealDirectory(original) {
+		t.Fatalf("original is not a real directory: %s", name)
+	}
+	retiredPath := filepath.Join(root, "."+name+"-retired")
+	t.Cleanup(func() {
+		if err := os.RemoveAll(retiredPath); err != nil {
+			t.Errorf("remove retired directory: %v", err)
+		}
+	})
+	must(t, os.Rename(originalPath, retiredPath))
+	must(t, os.Mkdir(originalPath, original.Mode().Perm()))
+	replacement, err := os.Lstat(originalPath)
+	must(t, err)
+	if !isRealDirectory(replacement) || replacement.Mode().Perm() != original.Mode().Perm() {
+		t.Fatalf("replacement directory = %#v, want real directory with mode %#o", replacement, original.Mode().Perm())
+	}
+	if os.SameFile(original, replacement) {
+		t.Fatal("replacement retained the original directory identity")
+	}
+}
+
+func TestRewriteManifestStrictPersistsV3(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	snapshot, err := captureWithDirectoryPreimage(root, backups, "batch", []string{"made/file"}, []Directory{{Path: "made", Mode: 0o700}})
+	must(t, err)
+	manifest := snapshot.Manifest
+	manifest.Version = manifestV3
+	manifest.AcceptedDirectories = []AcceptedDirectory{{Path: "made", Inode: 1, Mode: 0o700}}
+	must(t, rewriteManifestStrict(snapshot.Dir, manifest))
+	reloaded, err := reloadAndVerify(backups, "batch")
+	must(t, err)
+	if !reflect.DeepEqual(reloaded.Manifest, manifest) || fileMode(t, filepath.Join(snapshot.Dir, manifestName)) != 0o600 {
+		t.Fatalf("reloaded manifest = %#v", reloaded.Manifest)
+	}
+	if _, err := os.Lstat(filepath.Join(snapshot.Dir, ".manifest.json.strict.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("strict temporary remains: %v", err)
+	}
+}
+
+func TestApplyOperationsWithExistingDirectoriesFinalizerKeepsV1(t *testing.T) {
+	root, backups := t.TempDir(), t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "existing"), 0o700))
+	var finalized Snapshot
+	_, err := ApplyOperationsWithDirectoriesAndFinalize(root, backups, "batch",
+		[]Directory{{Path: "existing", Mode: 0o700}},
+		[]Operation{{Create: &Create{Path: "existing/file", Data: []byte("new"), Mode: 0o600}}},
+		func() error { return nil },
+		func(snapshot Snapshot) error { finalized = snapshot; return nil },
+	)
+	must(t, err)
+	if finalized.Manifest.Version != manifestVersion || len(finalized.Manifest.AcceptedDirectories) != 0 {
+		t.Fatalf("finalized manifest = %#v", finalized.Manifest)
 	}
 }

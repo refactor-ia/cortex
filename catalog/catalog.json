@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "families": {
+    "reasoning": "families/reasoning/family.json",
+    "model-intelligence": "families/model-intelligence/family.json",
+    "execution": "families/execution/family.json",
+    "quality-assurance": "families/quality-assurance/family.json",
+    "web": "families/web/family.json",
+    "mobile": "families/mobile/family.json",
+    "pcsoft": "families/pcsoft/family.json",
+    "services": "families/services/family.json",
+    "personal": "families/personal/family.json",
+    "memory-integration": "families/memory-integration/family.json",
+    "documentation": "families/documentation/family.json"
+  }
+}

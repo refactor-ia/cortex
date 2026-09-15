@@ -1,0 +1,564 @@
+package filetxn
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+
+	"github.com/refactor-ia/cortex/internal/atomicfile"
+	"github.com/refactor-ia/cortex/internal/safepath"
+)
+
+func Open(backupRoot, name string) (Snapshot, error) {
+	snapshot, err := reloadAndVerify(backupRoot, name)
+	if err != nil {
+		return Snapshot{}, errors.New("open snapshot failed")
+	}
+	return snapshot, nil
+}
+
+func (snapshot Snapshot) Payload(path string) ([]byte, error) {
+	if validateManifest(snapshot.Manifest) != nil || !validManifestPath(path) {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	var entry *Entry
+	for index := range snapshot.Manifest.Entries {
+		candidate := &snapshot.Manifest.Entries[index]
+		if candidate.Path != path {
+			continue
+		}
+		if entry != nil || !candidate.Exists {
+			return nil, errors.New("snapshot payload is unavailable")
+		}
+		entry = candidate
+	}
+	if entry == nil {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	payloadDir, err := safepath.Resolve(snapshot.Dir, "payloads")
+	if err != nil {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	payloadDigest := sha256.Sum256([]byte(path))
+	payload, err := safepath.Resolve(payloadDir, hex.EncodeToString(payloadDigest[:]))
+	if err != nil {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	info, err := os.Lstat(payload)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	data, err := os.ReadFile(payload)
+	digest := sha256.Sum256(data)
+	if err != nil || hex.EncodeToString(digest[:]) != entry.SHA256 {
+		return nil, errors.New("snapshot payload is unavailable")
+	}
+	return bytes.Clone(data), nil
+}
+
+type restartLeaf struct {
+	before After
+	after  After
+}
+
+type restartDirectory struct {
+	before directoryEntry
+	after  AcceptedDirectory
+	status restartStatus
+}
+
+type restartPlan struct {
+	snapshot    Snapshot
+	leaves      []restartLeaf
+	directories []restartDirectory
+}
+
+func planRestartEvidence(snapshot Snapshot, after []After) (restartPlan, error) {
+	if validateManifest(snapshot.Manifest) != nil {
+		return restartPlan{}, errors.New("restart evidence is invalid")
+	}
+	snapshot = cloneRestartSnapshot(snapshot)
+	byPath := make(map[string]After, len(after))
+	for _, value := range after {
+		detached, err := NewAfter(value.Path(), value.Exists(), value.Data(), value.Mode())
+		if err != nil {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		if _, exists := byPath[detached.path]; exists {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		byPath[detached.path] = detached
+	}
+	if len(byPath) != len(snapshot.Manifest.Entries) {
+		return restartPlan{}, errors.New("restart evidence is invalid")
+	}
+	ordered := make([]After, len(snapshot.Manifest.Entries))
+	for index, entry := range snapshot.Manifest.Entries {
+		value, exists := byPath[entry.Path]
+		if !exists {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		ordered[index] = value
+	}
+	leaves := make([]restartLeaf, len(ordered))
+	for index, entry := range snapshot.Manifest.Entries {
+		before, err := restartBefore(snapshot, entry)
+		if err != nil || sameRestartEvidence(before, ordered[index]) {
+			return restartPlan{}, errors.New("restart evidence is invalid")
+		}
+		leaves[index] = restartLeaf{before: before, after: ordered[index]}
+	}
+	directories := restartDirectories(snapshot.Manifest)
+	return restartPlan{snapshot: snapshot, leaves: leaves, directories: directories}, nil
+}
+
+func cloneRestartSnapshot(snapshot Snapshot) Snapshot {
+	manifest := snapshot.Manifest
+	manifest.Entries = append([]Entry{}, snapshot.Manifest.Entries...)
+	manifest.AbsentDirectories = append([]directoryEntry{}, snapshot.Manifest.AbsentDirectories...)
+	manifest.AcceptedDirectories = append([]AcceptedDirectory{}, snapshot.Manifest.AcceptedDirectories...)
+	return Snapshot{Dir: snapshot.Dir, Manifest: manifest}
+}
+
+func restartDirectories(manifest Manifest) []restartDirectory {
+	directories := make([]restartDirectory, len(manifest.AbsentDirectories))
+	for index, before := range manifest.AbsentDirectories {
+		directories[index].before = before
+		if manifest.Version == manifestV3 {
+			directories[index].after = manifest.AcceptedDirectories[index]
+		}
+	}
+	return directories
+}
+
+func restartBefore(snapshot Snapshot, entry Entry) (After, error) {
+	if !entry.Exists {
+		return NewAfter(entry.Path, false, nil, 0)
+	}
+	data, err := snapshot.Payload(entry.Path)
+	if err != nil {
+		return After{}, err
+	}
+	return NewAfter(entry.Path, true, data, os.FileMode(entry.Mode))
+}
+
+func sameRestartEvidence(before, after After) bool {
+	return before.exists == after.exists && before.mode == after.mode && bytes.Equal(before.data, after.data)
+}
+
+type restartStatus string
+
+const (
+	exactBefore         restartStatus = "exact-before"
+	exactAfter          restartStatus = "exact-after"
+	unresolvedDirectory restartStatus = "unresolved-directory"
+)
+
+func classifyRestartLeaves(sourceRoot string, plan restartPlan) (restartPlan, []restartStatus, error) {
+	if validateManifest(plan.snapshot.Manifest) != nil || len(plan.leaves) != len(plan.snapshot.Manifest.Entries) {
+		return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+	}
+	plan = cloneRestartPlan(plan)
+	statuses := make([]restartStatus, len(plan.leaves))
+	for index, leaf := range plan.leaves {
+		status, err := classifyRestartLeaf(sourceRoot, plan.snapshot, leaf)
+		if err != nil {
+			return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+		}
+		statuses[index] = status
+	}
+	return plan, statuses, nil
+}
+
+func cloneRestartPlan(plan restartPlan) restartPlan {
+	clone := restartPlan{
+		snapshot:    cloneRestartSnapshot(plan.snapshot),
+		leaves:      make([]restartLeaf, len(plan.leaves)),
+		directories: append([]restartDirectory{}, plan.directories...),
+	}
+	for index, leaf := range plan.leaves {
+		clone.leaves[index] = restartLeaf{
+			before: After{path: leaf.before.path, exists: leaf.before.exists, data: bytes.Clone(leaf.before.data), mode: leaf.before.mode},
+			after:  After{path: leaf.after.path, exists: leaf.after.exists, data: bytes.Clone(leaf.after.data), mode: leaf.after.mode},
+		}
+	}
+	return clone
+}
+
+func classifyRestartLeaf(sourceRoot string, snapshot Snapshot, leaf restartLeaf) (restartStatus, error) {
+	source, err := safepath.Resolve(sourceRoot, leaf.before.Path())
+	if err != nil {
+		if !leaf.before.Exists() && declaredMissingParent(sourceRoot, snapshot, leaf.before.Path()) {
+			return unresolvedDirectory, nil
+		}
+		return "", err
+	}
+	info, err := os.Lstat(source)
+	if os.IsNotExist(err) {
+		return classifyRestartEvidence(leaf, After{path: leaf.before.Path()})
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("restart leaf is unsafe")
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return "", err
+	}
+	observed, err := NewAfter(leaf.before.Path(), true, data, info.Mode().Perm())
+	if err != nil {
+		return "", err
+	}
+	return classifyRestartEvidence(leaf, observed)
+}
+
+func classifyRestartEvidence(leaf restartLeaf, observed After) (restartStatus, error) {
+	if sameRestartEvidence(leaf.before, observed) {
+		return exactBefore, nil
+	}
+	if sameRestartEvidence(leaf.after, observed) {
+		return exactAfter, nil
+	}
+	return "", errors.New("restart leaf drifted")
+}
+
+func classifyRestart(sourceRoot string, plan restartPlan) (restartPlan, []restartStatus, error) {
+	classified, statuses, err := classifyRestartLeaves(sourceRoot, plan)
+	if err != nil {
+		return restartPlan{}, nil, err
+	}
+	classified, err = classifyRestartDirectories(sourceRoot, classified)
+	if err != nil {
+		return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+	}
+	for index, status := range statuses {
+		if status != unresolvedDirectory {
+			continue
+		}
+		for _, directory := range classified.directories {
+			if strings.HasPrefix(classified.leaves[index].before.Path(), directory.before.Path+"/") && directory.status == exactBefore {
+				statuses[index] = exactBefore
+				break
+			}
+		}
+		if statuses[index] == unresolvedDirectory {
+			return restartPlan{}, nil, errors.New("restart source evidence is invalid")
+		}
+	}
+	return classified, statuses, nil
+}
+
+func preflightRestartDirectoryContents(sourceRoot string, plan restartPlan, statuses []restartStatus) error {
+	if plan.snapshot.Manifest.Version != manifestV3 {
+		return nil
+	}
+	if validateManifest(plan.snapshot.Manifest) != nil || !validRestartDirectories(plan) || len(statuses) != len(plan.leaves) {
+		return errors.New("restart directory contents are invalid")
+	}
+	for _, status := range statuses {
+		if status != exactBefore && status != exactAfter {
+			return errors.New("restart directory contents are invalid")
+		}
+	}
+	for _, directory := range plan.directories {
+		if directory.status != exactBefore && directory.status != exactAfter {
+			return errors.New("restart directory contents are invalid")
+		}
+		if directory.status != exactAfter {
+			continue
+		}
+		children, err := restartDirectoryChildren(plan, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		handle, err := os.Open(target)
+		if err != nil {
+			return errors.New("restart directory contents are invalid")
+		}
+		entries, readErr := handle.ReadDir(len(children) + 1)
+		closeErr := handle.Close()
+		if (readErr != nil && !errors.Is(readErr, io.EOF)) || closeErr != nil || len(entries) > len(children) {
+			return errors.New("restart directory contents are invalid")
+		}
+		for _, entry := range entries {
+			childDirectory, exists := children[entry.Name()]
+			if !exists || entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("restart directory contents are invalid")
+			}
+			if childDirectory && entry.Type()&os.ModeType != 0 && !entry.Type().IsDir() {
+				return errors.New("restart directory contents are invalid")
+			}
+			if !childDirectory && entry.Type()&os.ModeType != 0 {
+				return errors.New("restart directory contents are invalid")
+			}
+		}
+	}
+	return nil
+}
+
+func restartDirectoryChildren(plan restartPlan, parent string) (map[string]bool, error) {
+	children := make(map[string]bool)
+	add := func(candidate string, directory bool) error {
+		candidateParent, name := restartDirectParent(candidate)
+		if candidateParent != parent {
+			return nil
+		}
+		if existing, exists := children[name]; exists && existing != directory {
+			return errors.New("restart directory child is ambiguous")
+		}
+		children[name] = directory
+		return nil
+	}
+	for _, leaf := range plan.leaves {
+		if err := add(leaf.before.Path(), false); err != nil {
+			return nil, err
+		}
+	}
+	for _, directory := range plan.directories {
+		if err := add(directory.before.Path, true); err != nil {
+			return nil, err
+		}
+	}
+	return children, nil
+}
+
+func restartDirectParent(value string) (string, string) {
+	index := strings.LastIndex(value, "/")
+	if index < 0 {
+		return "", value
+	}
+	return value[:index], value[index+1:]
+}
+
+// RollbackRestart restores only files and directories that match accepted restart evidence.
+func RollbackRestart(sourceRoot string, snapshot Snapshot, after []After) error {
+	plan, err := planRestartEvidence(snapshot, after)
+	if err != nil {
+		return errors.New("restart rollback evidence is invalid")
+	}
+	classified, statuses, err := classifyRestart(sourceRoot, plan)
+	if err != nil {
+		return errors.New("restart rollback source evidence is invalid")
+	}
+	if err := preflightRestartDirectoryContents(sourceRoot, classified, statuses); err != nil {
+		return errors.New("restart rollback directory contents are invalid")
+	}
+	if err := rollbackRestartLeaves(sourceRoot, classified); err != nil {
+		return err
+	}
+	classified, _, err = classifyRestart(sourceRoot, classified)
+	if err != nil {
+		return errors.New("restart rollback source evidence is invalid")
+	}
+	if err := rollbackRestartDirectories(sourceRoot, classified); err != nil {
+		return err
+	}
+	classified, statuses, err = classifyRestart(sourceRoot, classified)
+	if err != nil || !restartIsBefore(classified, statuses) {
+		return errors.New("restart rollback did not restore before state")
+	}
+	return nil
+}
+
+func rollbackRestartDirectories(sourceRoot string, plan restartPlan) error {
+	if plan.snapshot.Manifest.Version != manifestV3 {
+		return nil
+	}
+	for index := len(plan.directories) - 1; index >= 0; index-- {
+		directory := plan.directories[index]
+		if directory.status == exactBefore {
+			continue
+		}
+		if directory.status != exactAfter {
+			return errors.New("restart directory evidence is invalid")
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return errors.New("restart directory evidence is invalid")
+		}
+		info, err := os.Lstat(target)
+		if err != nil || !isRealDirectory(info) || !restartDirectoryMatchesAccepted(info, directory.after) {
+			return errors.New("restart directory changed")
+		}
+		if err := os.Remove(target); err != nil {
+			return errors.New("restart directory removal failed")
+		}
+		if err := syncDirectoryStrict(filepath.Dir(target)); err != nil {
+			return errors.New("restart directory parent sync failed")
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			return errors.New("restart directory remains")
+		}
+	}
+	return nil
+}
+
+func restartDirectoryMatchesAccepted(info os.FileInfo, accepted AcceptedDirectory) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Ino != 0 && uint64(stat.Dev) == accepted.Device && uint64(stat.Ino) == accepted.Inode && uint32(info.Mode().Perm()) == accepted.Mode
+}
+
+func restartIsBefore(plan restartPlan, statuses []restartStatus) bool {
+	if len(statuses) != len(plan.leaves) {
+		return false
+	}
+	for _, status := range statuses {
+		if status != exactBefore {
+			return false
+		}
+	}
+	for _, directory := range plan.directories {
+		if directory.status != exactBefore {
+			return false
+		}
+	}
+	return true
+}
+
+func rollbackRestartLeaves(sourceRoot string, plan restartPlan) error {
+	classified, statuses, err := classifyRestart(sourceRoot, plan)
+	if err != nil {
+		return errors.New("restart source evidence is invalid")
+	}
+	for index := len(classified.leaves) - 1; index >= 0; index-- {
+		if statuses[index] != exactAfter {
+			continue
+		}
+		leaf := classified.leaves[index]
+		if err := restoreRestartLeaf(sourceRoot, leaf); err != nil {
+			return errors.New("restart leaf restoration failed")
+		}
+	}
+	return nil
+}
+
+func restoreRestartLeaf(sourceRoot string, leaf restartLeaf) error {
+	switch {
+	case leaf.before.Exists() && leaf.after.Exists():
+		return atomicfile.ReplaceIfMatches(sourceRoot, leaf.before.Path(), leaf.after.Data(), leaf.after.Mode(), leaf.before.Data(), leaf.before.Mode())
+	case !leaf.before.Exists() && leaf.after.Exists():
+		return atomicfile.RemoveIfExact(sourceRoot, leaf.before.Path(), leaf.after.Data(), leaf.after.Mode())
+	case leaf.before.Exists() && !leaf.after.Exists():
+		return restoreIfAbsent(sourceRoot, leaf.before.Path(), leaf.before.Data(), leaf.before.Mode())
+	default:
+		return errors.New("restart leaf evidence is invalid")
+	}
+}
+
+func classifyRestartDirectories(sourceRoot string, plan restartPlan) (restartPlan, error) {
+	if validateManifest(plan.snapshot.Manifest) != nil || !validRestartDirectories(plan) {
+		return restartPlan{}, errors.New("restart directory evidence is invalid")
+	}
+	plan = cloneRestartPlan(plan)
+	for index := range plan.directories {
+		directory := &plan.directories[index]
+		for parent := 0; parent < index; parent++ {
+			if strings.HasPrefix(directory.before.Path, plan.directories[parent].before.Path+"/") && plan.directories[parent].status == exactBefore {
+				directory.status = exactBefore
+				break
+			}
+		}
+		if directory.status == exactBefore {
+			continue
+		}
+		target, err := safepath.Resolve(sourceRoot, directory.before.Path)
+		if err != nil {
+			return restartPlan{}, err
+		}
+		info, err := os.Lstat(target)
+		if os.IsNotExist(err) {
+			directory.status = exactBefore
+			continue
+		}
+		if err != nil || !isRealDirectory(info) || plan.snapshot.Manifest.Version == manifestV2 {
+			return restartPlan{}, errors.New("restart directory is unsafe")
+		}
+		if !restartDirectoryMatchesAccepted(info, directory.after) {
+			return restartPlan{}, errors.New("restart directory drifted")
+		}
+		directory.status = exactAfter
+	}
+	return plan, nil
+}
+
+func validRestartDirectories(plan restartPlan) bool {
+	if len(plan.directories) != len(plan.snapshot.Manifest.AbsentDirectories) {
+		return false
+	}
+	for index, directory := range plan.directories {
+		if directory.before != plan.snapshot.Manifest.AbsentDirectories[index] {
+			return false
+		}
+		if plan.snapshot.Manifest.Version == manifestV3 && directory.after != plan.snapshot.Manifest.AcceptedDirectories[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func declaredMissingParent(sourceRoot string, snapshot Snapshot, leaf string) bool {
+	if snapshot.Manifest.Version != manifestV2 && snapshot.Manifest.Version != manifestV3 {
+		return false
+	}
+	parts := strings.Split(leaf, "/")
+	prefix := ""
+	for _, component := range parts[:len(parts)-1] {
+		if prefix == "" {
+			prefix = component
+		} else {
+			prefix += "/" + component
+		}
+		candidate, err := safepath.Resolve(sourceRoot, prefix)
+		if err != nil {
+			return false
+		}
+		info, err := os.Lstat(candidate)
+		if os.IsNotExist(err) {
+			for _, directory := range snapshot.Manifest.AbsentDirectories {
+				if directory.Path == prefix {
+					return true
+				}
+			}
+			return false
+		}
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return false
+}
+
+type After struct {
+	path   string
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+func NewAfter(path string, exists bool, data []byte, mode os.FileMode) (After, error) {
+	if !validManifestPath(path) || mode&^os.FileMode(0o777) != 0 {
+		return After{}, errors.New("restart after evidence is invalid")
+	}
+	if exists {
+		if data == nil {
+			return After{}, errors.New("restart after evidence is invalid")
+		}
+	} else if data != nil || mode != 0 {
+		return After{}, errors.New("restart after evidence is invalid")
+	}
+	return After{path: path, exists: exists, data: bytes.Clone(data), mode: mode}, nil
+}
+
+func (after After) Path() string      { return after.path }
+func (after After) Exists() bool      { return after.exists }
+func (after After) Data() []byte      { return bytes.Clone(after.data) }
+func (after After) Mode() os.FileMode { return after.mode }

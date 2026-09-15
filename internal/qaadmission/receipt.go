@@ -7,6 +7,10 @@ import (
 	"github.com/refactor-ia/cortex/internal/qarole"
 )
 
+// ToolPolicyNone is the only admitted tool policy: report-mode Pi runs launch
+// with --no-tools, so the assistant can neither read nor execute anything.
+const ToolPolicyNone = "none"
+
 const Contract = "cortex.qa.actor-admission.v1"
 
 type Status string

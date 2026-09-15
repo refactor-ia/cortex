@@ -11,7 +11,8 @@ import (
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-var allowedTools = []string{"read", "grep", "find", "ls"}
+// allowedTools is empty: report-mode runs launch Pi with --no-tools.
+var allowedTools = []string{}
 
 // ExpectedBindings identifies the skill and actor-artifact inputs that a caller
 // already bound. It intentionally does not describe an executable invocation.
@@ -64,6 +65,7 @@ type loadedSkill struct {
 type parserFacts struct {
 	SkillPaths               []string   `json:"skillPaths"`
 	Tools                    string     `json:"tools"`
+	NoTools                  bool       `json:"noTools"`
 	AppendSystemPromptSHA256 string     `json:"appendSystemPromptSHA256"`
 	UnknownFlags             [][]string `json:"unknownFlags"`
 }
@@ -111,7 +113,7 @@ func validObservation(observed qualificationPacket, expected ExpectedBindings) b
 	if len(observed.SDK.LoadedSkills) != 1 || observed.SDK.LoadedSkills[0].Name != expected.SkillName {
 		return false
 	}
-	if len(observed.CLIParser.SkillPaths) != 1 || observed.CLIParser.SkillPaths[0] == "" || observed.CLIParser.Tools != "read,grep,find,ls" || observed.CLIParser.AppendSystemPromptSHA256 != expected.ActorArtifactInputSHA256 {
+	if len(observed.CLIParser.SkillPaths) != 1 || observed.CLIParser.SkillPaths[0] == "" || observed.CLIParser.Tools != "" || !observed.CLIParser.NoTools || observed.CLIParser.AppendSystemPromptSHA256 != expected.ActorArtifactInputSHA256 {
 		return false
 	}
 	provenance := observed.DerivedInputProvenance

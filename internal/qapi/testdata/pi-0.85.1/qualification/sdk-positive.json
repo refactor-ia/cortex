@@ -1,18 +1,14 @@
 {
   "sdk": {
     "packageVersion": "0.85.1",
-    "activeToolNames": ["read", "grep", "find", "ls"],
-    "toolDefinitions": [
-      {"name": "read", "sourceInfo": {"path": "<builtin:read>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
-      {"name": "grep", "sourceInfo": {"path": "<builtin:grep>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
-      {"name": "find", "sourceInfo": {"path": "<builtin:find>", "source": "builtin", "scope": "temporary", "origin": "top-level"}},
-      {"name": "ls", "sourceInfo": {"path": "<builtin:ls>", "source": "builtin", "scope": "temporary", "origin": "top-level"}}
-    ],
+    "activeToolNames": [],
+    "toolDefinitions": [],
     "loadedSkills": [{"name": "cortex-requirements-analyst", "description": "Assess requirements for ambiguity, completeness, consistency, and testability.", "source": "<temp-skill>"}]
   },
   "cliParser": {
     "skillPaths": ["<temp-skill>"],
-    "tools": "read,grep,find,ls",
+    "tools": "",
+    "noTools": true,
     "appendSystemPromptSHA256": "a03bdc9e854328c092528fd1c2ae68e12227abc4990cbff893f7f370965a80ce",
     "unknownFlags": [["unknown-flag", "x"]]
   },

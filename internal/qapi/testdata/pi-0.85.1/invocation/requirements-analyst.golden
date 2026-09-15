@@ -16,5 +16,4 @@ json
 --no-session
 --no-extensions
 --no-context-files
---tools
-read,grep,find,ls
+--no-tools

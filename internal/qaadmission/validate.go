@@ -127,7 +127,7 @@ func validateRoute(receipt Receipt) error {
 	return nil
 }
 func validateExecution(facts ExecutionFacts) error {
-	if !oneOf(facts.InvocationContract, "", "cortex.qa.pi-admission.v1") || !oneOf(facts.ToolPolicy, "", "read,grep,find,ls") || (facts.RenderedInputSHA256 != "" && !hex64.MatchString(facts.RenderedInputSHA256)) || !oneOf(facts.Stop, "", "none", "launch_failed", "execution_timed_out", "execution_failed", "output_silent", "output_truncated", "normalization_failed", "observed_identity_mismatch", "fallback_observed", "policy_violation", "binding_stale") || !oneOf(facts.Usage, "", "unavailable") {
+	if !oneOf(facts.InvocationContract, "", "cortex.qa.pi-admission.v1") || !oneOf(facts.ToolPolicy, "", ToolPolicyNone) || (facts.RenderedInputSHA256 != "" && !hex64.MatchString(facts.RenderedInputSHA256)) || !oneOf(facts.Stop, "", "none", "launch_failed", "execution_timed_out", "execution_failed", "output_silent", "output_truncated", "normalization_failed", "observed_identity_mismatch", "fallback_observed", "policy_violation", "binding_stale") || !oneOf(facts.Usage, "", "unavailable") {
 		return fmt.Errorf("invalid execution facts")
 	}
 	if facts.Completeness == "" && facts.Truncation == "" {
@@ -144,7 +144,7 @@ func validateExecution(facts ExecutionFacts) error {
 func hasAdmittedEvidence(receipt Receipt) bool {
 	return receipt.Availability == (AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}) &&
 		receipt.Execution.InvocationContract == "cortex.qa.pi-admission.v1" &&
-		receipt.Execution.ToolPolicy == "read,grep,find,ls" &&
+		receipt.Execution.ToolPolicy == ToolPolicyNone &&
 		hex64.MatchString(receipt.Execution.RenderedInputSHA256) &&
 		receipt.Execution.Stop == "none" &&
 		receipt.Execution.Usage == "unavailable" &&

@@ -115,7 +115,7 @@ func minimumCandidate(basis Receipt, code Code, attempted bool) Receipt {
 	if code == CodeAdmitted {
 		candidate.Status = StatusAdmitted
 		candidate.Availability = AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}
-		candidate.Execution = ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: "read,grep,find,ls", RenderedInputSHA256: "0000000000000000000000000000000000000000000000000000000000000000", Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"}
+		candidate.Execution = ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: ToolPolicyNone, RenderedInputSHA256: "0000000000000000000000000000000000000000000000000000000000000000", Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"}
 		candidate.Route.Observed.Provider = candidate.Route.Resolved.Provider
 		candidate.Route.Observed.Model = candidate.Route.Resolved.Model
 	}

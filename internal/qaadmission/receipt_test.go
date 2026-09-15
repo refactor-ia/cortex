@@ -19,7 +19,7 @@ func testReceipt() Receipt {
 		Binary:       BinaryIdentity{Contract: BinaryContract, SHA256: hash, SizeBytes: 1},
 		Route:        RouteIdentity{Requested: RequestedIdentity{Provider: "nan", Model: "qwen3.6", Effort: "low"}, Resolved: qaroute.ResolvedRoute{PolicyVersion: qaroute.PolicyVersion, Role: qarole.TestRunner, Backend: "pi", Provider: "nan", Model: "qwen3.6", Effort: "low", ProfileID: "role-default", OverrideFields: []string{"provider", "model", "effort"}}, Observed: ObservedIdentity{Provider: "nan", Model: "qwen3.6", Effort: UnobservableEffort()}},
 		Availability: AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"},
-		Execution:    ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: "read,grep,find,ls", RenderedInputSHA256: hash, Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"},
+		Execution:    ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: ToolPolicyNone, RenderedInputSHA256: hash, Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"},
 		Bounds:       FixedBounds(), Diagnostic: &BoundedDiagnostic{Source: "stderr", Redaction: "none", ObservedBytes: "0", RetainedBytes: "0", RetainedSHA256: hash, Truncation: "none", Completeness: "complete"},
 	}
 	receipt.ReceiptID = ReceiptID(receipt)

@@ -9,8 +9,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
-const readOnlyToolToken = "read,grep,find,ls"
-
 // BoundInvocationPaths is one preflight-verified, in-memory path binding.
 type BoundInvocationPaths struct {
 	role                      qarole.RoleID
@@ -71,7 +69,7 @@ func BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) 
 			"--no-session",
 			"--no-extensions",
 			"--no-context-files",
-			"--tools", readOnlyToolToken,
+			"--no-tools",
 		},
 	}, nil
 }

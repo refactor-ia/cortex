@@ -218,6 +218,26 @@ func TestRuntimeBindingRejectsVersionCaptures(t *testing.T) {
 	}
 }
 
+func TestRuntimeBindingSupportsSymlinkEntrypoint(t *testing.T) {
+	original := executeVersionCommand
+	var executed string
+	executeVersionCommand = func(_ context.Context, path, _ string) versionCapture {
+		executed = path
+		return successfulVersion()
+	}
+	t.Cleanup(func() { executeVersionCommand = original })
+
+	target := runtimeBinary(t, "target")
+	entrypoint := runtimeSymlinkTo(t, runtimeSymlinkTo(t, target))
+	bound, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: entrypoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.path != target || executed != target {
+		t.Fatalf("bound path = %q, executed path = %q, want canonical target %q", bound.path, executed, target)
+	}
+}
+
 func TestRuntimeBindingRejectsUnsafeInputs(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -228,13 +248,99 @@ func TestRuntimeBindingRejectsUnsafeInputs(t *testing.T) {
 		{name: "nil context", resolver: &runtimeResolver{}, context: nil},
 		{name: "missing binary", resolver: &runtimeResolver{path: filepath.Join(t.TempDir(), "missing")}, context: context.Background()},
 		{name: "nonregular binary", resolver: &runtimeResolver{path: runtimeDirectory(t)}, context: context.Background()},
-		{name: "symlink binary", resolver: &runtimeResolver{path: runtimeSymlink(t)}, context: context.Background()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := bindPi(test.context, runtimeDirectory(t), test.resolver); err == nil {
 				t.Fatal("bindPi() succeeded")
 			}
 		})
+	}
+}
+
+func TestRuntimeBindingRejectsUnsafeSymlinkEntrypoints(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(*testing.T) string
+	}{
+		{name: "dangling target", path: func(t *testing.T) string {
+			return runtimeSymlinkTo(t, filepath.Join(t.TempDir(), "missing"))
+		}},
+		{name: "cyclic target", path: func(t *testing.T) string {
+			directory := t.TempDir()
+			first, second := filepath.Join(directory, "first"), filepath.Join(directory, "second")
+			if err := os.Symlink(second, first); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(first, second); err != nil {
+				t.Fatal(err)
+			}
+			return first
+		}},
+		{name: "directory target", path: func(t *testing.T) string {
+			return runtimeSymlinkTo(t, runtimeDirectory(t))
+		}},
+		{name: "nonexecutable target", path: func(t *testing.T) string {
+			return runtimeSymlinkTo(t, runtimeNonExecutableBinary(t))
+		}},
+		{name: "oversized target", path: func(t *testing.T) string {
+			return runtimeSymlinkTo(t, runtimeOversizedBinary(t))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: test.path(t)})
+			if err == nil {
+				t.Fatal("bindPi() succeeded")
+			}
+		})
+	}
+}
+
+func TestRuntimeBindingEntrypointRetargetKeepsCanonicalTarget(t *testing.T) {
+	original := executeVersionCommand
+	t.Cleanup(func() { executeVersionCommand = original })
+
+	target := runtimeBinary(t, "target")
+	replacement := runtimeBinary(t, "replacement")
+	entrypoint := runtimeSymlinkTo(t, target)
+	var executed string
+	executeVersionCommand = func(_ context.Context, path, _ string) versionCapture {
+		executed = path
+		if err := os.Remove(entrypoint); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, entrypoint); err != nil {
+			t.Fatal(err)
+		}
+		return successfulVersion()
+	}
+
+	bound, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: entrypoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != target || bound.path != target {
+		t.Fatalf("executed path = %q, bound path = %q, want original canonical target %q", executed, bound.path, target)
+	}
+}
+
+func TestRuntimeBindingRejectsCanonicalTargetReplacement(t *testing.T) {
+	original := executeVersionCommand
+	t.Cleanup(func() { executeVersionCommand = original })
+
+	target := runtimeBinary(t, "target")
+	entrypoint := runtimeSymlinkTo(t, target)
+	var executed string
+	executeVersionCommand = func(_ context.Context, path, _ string) versionCapture {
+		executed = path
+		mutateRuntimeBinary(t, target, "identity")
+		return successfulVersion()
+	}
+
+	if _, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: entrypoint}); err == nil {
+		t.Fatal("bindPi() succeeded")
+	}
+	if executed != target {
+		t.Fatalf("executed path = %q, want canonical target %q", executed, target)
 	}
 }
 
@@ -276,6 +382,27 @@ func runtimeBinary(t *testing.T, name string) string {
 	return runtimePath(t, path)
 }
 
+func runtimeNonExecutableBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "nonexecutable")
+	if err := os.WriteFile(path, []byte("binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runtimeOversizedBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "oversized")
+	if err := os.WriteFile(path, []byte("binary"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxPiBinaryBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func runtimeDirectory(t *testing.T) string {
 	t.Helper()
 	return runtimePath(t, t.TempDir())
@@ -290,9 +417,8 @@ func runtimePath(t *testing.T, path string) string {
 	return canonical
 }
 
-func runtimeSymlink(t *testing.T) string {
+func runtimeSymlinkTo(t *testing.T, target string) string {
 	t.Helper()
-	target := runtimeBinary(t, "target")
 	path := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
@@ -338,7 +464,9 @@ func buildVersionHelper(t *testing.T, mode, cwd string) string {
 import ("bytes"; "fmt"; "os"; "os/exec"; "strings"; "time")
 func checkEnvironment() {
  if cwd, _ := os.Getwd(); cwd != %q { os.Exit(4) }
- for _, key := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"} { if os.Getenv(key) != "" { os.Exit(5) } }
+ if os.Getenv("PATH") != %q { os.Exit(5) }
+ if os.Getenv("HOME") == "" { os.Exit(5) }
+ for _, key := range []string{"XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR", "NODE_OPTIONS", "CORTEX_TEST_SECRET"} { if os.Getenv(key) != "" { os.Exit(5) } }
  if os.Getenv("LC_ALL") != "C" || os.Getenv("LANG") != "C" || os.Getenv("NO_COLOR") != "1" || os.Getenv("TERM") != "dumb" { os.Exit(6) }
 }
 func record(value string) { file, err := os.OpenFile(os.Args[0]+".trace", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); if err != nil { os.Exit(9) }; defer file.Close(); fmt.Fprintln(file, value) }
@@ -382,7 +510,7 @@ func main() {
  case "drain": child := exec.Command(os.Args[0], "--child"); child.Stdout = os.Stdout; child.Stderr = os.Stderr; if child.Start() != nil { os.Exit(8) }
  }
 }
-`, cwd, mode)
+`, cwd, os.Getenv("PATH"), mode)
 	if err := os.WriteFile(source, []byte(program), 0600); err != nil {
 		t.Fatal(err)
 	}

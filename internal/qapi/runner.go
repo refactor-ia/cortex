@@ -76,7 +76,9 @@ func validInvocation(invocation Invocation) bool {
 
 func minimalEnvironment() []string {
 	environment := []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb"}
-	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+	// HOME is required: Pi resolves its config under the home directory and
+	// provider API keys configured as shell commands may expand $HOME.
+	for _, name := range []string{"PATH", "HOME", "TMPDIR", "TMP", "TEMP"} {
 		if value, ok := os.LookupEnv(name); ok {
 			environment = append(environment, name+"="+value)
 		}

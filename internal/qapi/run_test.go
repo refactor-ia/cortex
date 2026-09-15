@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,19 +27,89 @@ func TestCappedWriterAndMinimalEnvironment(t *testing.T) {
 	t.Setenv("TMP", "/synthetic/tmp")
 	t.Setenv("TEMP", "/synthetic/temp")
 	t.Setenv("PATH", "/synthetic/path")
+	t.Setenv("HOME", "/synthetic/home")
 	t.Setenv("PI_OFFLINE", "1")
 	got := strings.Join(minimalEnvironment(), "\n")
-	for _, expected := range []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "TMPDIR=/synthetic/tmpdir", "TMP=/synthetic/tmp", "TEMP=/synthetic/temp"} {
+	for _, expected := range []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "TMPDIR=/synthetic/tmpdir", "TMP=/synthetic/tmp", "TEMP=/synthetic/temp", "PATH=/synthetic/path", "HOME=/synthetic/home"} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("minimal environment omitted %q: %q", expected, got)
 		}
 	}
-	if strings.Contains(got, "PATH=") || strings.Contains(got, "PI_OFFLINE=") {
+	if strings.Contains(got, "PI_OFFLINE=") {
 		t.Fatalf("minimal environment leaked ambient variables: %q", got)
 	}
 }
 
+func TestMinimalEnvironmentPathPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		present     bool
+	}{{"present", "/fixture/bin:/other/bin", true}, {"empty", "", true}, {"unset", "", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", tc.value)
+			if !tc.present {
+				if err := os.Unsetenv("PATH"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			count := 0
+			for _, entry := range minimalEnvironment() {
+				if strings.HasPrefix(entry, "PATH=") {
+					count++
+					if entry != "PATH="+tc.value {
+						t.Fatalf("unexpected PATH: %q", entry)
+					}
+				}
+			}
+			if (count == 1) != tc.present || count > 1 {
+				t.Fatalf("PATH entries=%d, present=%t", count, tc.present)
+			}
+		})
+	}
+}
+
+func TestShebangEnvironmentVersionAndRun(t *testing.T) {
+	if runtime.GOOS == "windows" || testing.Short() {
+		t.Skip("Unix subprocess shebang fixture")
+	}
+	directory := t.TempDir()
+	if err := os.Symlink("/bin/sh", filepath.Join(directory, "cortex-fixture-interpreter")); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(directory, "pi-fixture")
+	program := "#!/usr/bin/env cortex-fixture-interpreter\n" +
+		"[ \"$HOME\" = /synthetic/home ] || exit 9\n" +
+		"[ -z \"${NODE_OPTIONS+x}${CORTEX_TEST_SECRET+x}\" ] || exit 9\n" +
+		"case \"$1\" in\n--version) printf '0.85.1\\n';;\nrun) printf 'fixture-run-ok\\n';;\n*) exit 8;;\nesac\n"
+	if err := os.WriteFile(script, []byte(program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	t.Setenv("HOME", "/synthetic/home")
+	t.Setenv("NODE_OPTIONS", "--synthetic-forbidden-option")
+	t.Setenv("CORTEX_TEST_SECRET", "must-not-reach-child")
+	capture := runVersionCommand(context.Background(), script, directory)
+	if version, valid := parseVersion(capture); !valid || version != RuntimeVersion {
+		t.Fatalf("shebang version failed: %#v, stderr=%q", capture, capture.stderr)
+	}
+	invocation := Invocation{binary: script, cwd: directory, argv: []string{"run"}}
+	facts := runOnce(context.Background(), invocation, []byte("fixture request"), 30*time.Second)
+	if facts.invalid || facts.launchFailed || facts.timedOut || facts.exitNonZero || facts.waitFailed || facts.stdoutTruncated || facts.stderrTruncated || string(facts.stdout) != "fixture-run-ok\n" {
+		t.Fatalf("shebang run failed: %#v, stderr=%q", facts, facts.stderr)
+	}
+	t.Setenv("PATH", t.TempDir())
+	capture = runVersionCommand(context.Background(), script, directory)
+	if _, valid := parseVersion(capture); valid || !capture.started || capture.exitCode == 0 {
+		t.Fatalf("missing interpreter accepted: %#v", capture)
+	}
+	facts = runOnce(context.Background(), invocation, []byte("fixture request"), 30*time.Second)
+	if !facts.exitNonZero || len(facts.stdout) != 0 {
+		t.Fatalf("missing interpreter run accepted: %#v", facts)
+	}
+}
+
 func TestRun(t *testing.T) {
+	t.Setenv("PATH", "/synthetic/path")
 	frame := []byte("framed request")
 	for _, tc := range []struct {
 		name     string
@@ -173,7 +244,7 @@ func TestRunHelper(t *testing.T) {
 		if err != nil {
 			os.Exit(2)
 		}
-		fmt.Printf("stdin=%x cwd=%x fixed=%t path=%t\n", sha256.Sum256(input), sha256.Sum256([]byte(cwd)), fixedEnvironment(), os.Getenv("PATH") == "")
+		fmt.Printf("stdin=%x cwd=%x fixed=%t path=%t\n", sha256.Sum256(input), sha256.Sum256([]byte(cwd)), fixedEnvironment(), os.Getenv("PATH") == "/synthetic/path")
 	case "nonzero":
 		fmt.Fprintln(os.Stderr, "nonzero=true")
 		os.Exit(7)

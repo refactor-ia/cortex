@@ -34,3 +34,5 @@ coverage/
 .vscode/
 *.swp
 *~
+.qa-test-cache/
+.qa-test-tmp/

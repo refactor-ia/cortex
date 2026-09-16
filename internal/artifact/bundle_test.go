@@ -104,6 +104,42 @@ func TestBindOrdersAndPreservesProjection(t *testing.T) {
 	}
 }
 
+func TestBindAcceptsOnlyProvenancedLocalUncertifiedTarget(t *testing.T) {
+	contents := map[string][]byte{"families/router": []byte("local")}
+	manifest := bundleManifest(t, runtimematrix.RuntimePi, projection.Exact, "", contents)
+	observations := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	assessment, err := projection.NewAssessment(runtimematrix.RuntimePi, fingerprint, projection.Exact, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localBase, err := adapterplan.BuildLocalUpdate(fingerprint, observations, runtimematrix.RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := projection.BuildPlan(localBase, []projection.Assessment{assessment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle, err := Bind(manifest, local, []PayloadInput{{LogicalID: "families/router", Content: contents["families/router"]}}); err != nil || zeroBundle(bundle) {
+		t.Fatalf("local Bind() = (%#v, %v)", bundle, err)
+	}
+	strictBase, err := adapterplan.Build(fingerprint, observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict, err := projection.BuildPlan(strictBase, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle, err := Bind(manifest, strict, []PayloadInput{{LogicalID: "families/router", Content: contents["families/router"]}}); err == nil || !zeroBundle(bundle) {
+		t.Fatalf("strict Bind() = (%#v, %v)", bundle, err)
+	}
+}
+
 func TestBindRejectsInvalidBindingsWithoutLeaks(t *testing.T) {
 	contents := map[string][]byte{"families/router": []byte("safe")}
 	manifest := bundleManifest(t, runtimematrix.RuntimePi, projection.Exact, "", contents)

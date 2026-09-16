@@ -36,10 +36,11 @@ const (
 type Outcome string
 
 const (
-	OutcomePresentCompatible Outcome = "present_compatible"
-	OutcomeAbsent            Outcome = "absent"
-	OutcomeKnownIncompatible Outcome = "known_incompatible"
-	OutcomeUnknownVersion    Outcome = "unknown_version"
+	OutcomePresentCompatible  Outcome = "present_compatible"
+	OutcomePresentUncertified Outcome = "present_uncertified"
+	OutcomeAbsent             Outcome = "absent"
+	OutcomeKnownIncompatible  Outcome = "known_incompatible"
+	OutcomeUnknownVersion     Outcome = "unknown_version"
 )
 
 // Observation is a future adapter's report about one supported runtime.
@@ -96,6 +97,37 @@ func Decide(observations []Observation) (Matrix, error) {
 	return matrix, nil
 }
 
+// DecideLocalUpdate narrows strict decisions to exactly one selected runtime.
+// A present normalized uncertified version is eligible only for this explicit
+// local update; strict Decide never emits or authorizes this outcome.
+func DecideLocalUpdate(observations []Observation, target RuntimeID) (Matrix, error) {
+	matrix, err := Decide(observations)
+	if err != nil || !isSupported(target) {
+		return Matrix{}, errors.New("invalid local update input")
+	}
+	for index := range matrix.Decisions {
+		decision := &matrix.Decisions[index]
+		if decision.ID != target {
+			decision.IncludeInTransaction = false
+			decision.TouchAllowed = false
+			continue
+		}
+		for _, observation := range observations {
+			if observation.ID == target && observation.Present && observation.Version != "" && observation.Compatibility == CompatibilityUnknown {
+				decision.Outcome = OutcomePresentUncertified
+				decision.Action = Configure
+				decision.IncludeInTransaction = true
+				decision.TouchAllowed = true
+			}
+		}
+	}
+	matrix.HasCompatible = false
+	for _, decision := range matrix.Decisions {
+		matrix.HasCompatible = matrix.HasCompatible || decision.IncludeInTransaction
+	}
+	return matrix, nil
+}
+
 func isSupported(id RuntimeID) bool {
 	for _, supported := range runtimeOrder {
 		if id == supported {
@@ -118,9 +150,7 @@ func validate(observation Observation) error {
 
 	switch observation.Compatibility {
 	case CompatibilityUnknown:
-		if observation.Version != "" {
-			return errors.New("known version requires adapter compatibility")
-		}
+		// A normalized observed version may remain uncertified.
 	case Compatible, Incompatible:
 		if observation.Version == "" {
 			return errors.New("unknown version cannot have adapter compatibility")

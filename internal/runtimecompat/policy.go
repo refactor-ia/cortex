@@ -91,12 +91,13 @@ func newEntry(source Entry) (entry, error) {
 	return current, nil
 }
 
-// BuiltInPolicy returns the production policy.
+// BuiltInPolicy returns the production policy. Certification requires an explicit
+// source and test change after real runtime smoke evidence is merged.
 func BuiltInPolicy() Policy {
 	policy, err := NewPolicy([]Entry{
-		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"0.85.1"}},
-		{ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{"1.18.25"}},
-		{ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{"2.1.251"}},
+		{ID: runtimematrix.RuntimePi},
+		{ID: runtimematrix.RuntimeOpenCode},
+		{ID: runtimematrix.RuntimeClaudeCode},
 	})
 	if err != nil {
 		panic(err)
@@ -139,11 +140,14 @@ func (p Policy) evaluateReport(index int, report runtimeprobe.Report) (runtimema
 		if !validVersion(version) {
 			return runtimematrix.Observation{}, errors.New("invalid runtime compatibility input")
 		}
-		observation.Present = true
+		// Keep a parsed normalized version distinct from exact release
+		// certification. Strict callers retain unknown compatibility unless this
+		// policy names the exact version.
+		observation.Present, observation.Version = true, version
 		if _, ok := p.entries[index].compatible[version]; ok {
-			observation.Version, observation.Compatibility = version, runtimematrix.Compatible
+			observation.Compatibility = runtimematrix.Compatible
 		} else if _, ok := p.entries[index].incompatible[version]; ok {
-			observation.Version, observation.Compatibility = version, runtimematrix.Incompatible
+			observation.Compatibility = runtimematrix.Incompatible
 		}
 		return observation, nil
 	case runtimeprobe.UnrecognizedOutput, runtimeprobe.CommandFailed, runtimeprobe.TimedOut:

@@ -18,9 +18,47 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
-// reportRequirement is the report-mode result contract: a substantive
-// plain-text report, never an admission identity echo.
+// reportRequirement is the requirements-analyst report-mode result contract:
+// a substantive plain-text report, never an admission identity echo. It is
+// preserved byte-for-byte; the other resolved roles carry their own result
+// contracts below.
 const reportRequirement = "Return one plain-text requirements analysis report. Quote every supplied requirement verbatim, flag every inconsistency explicitly, and request an explicit resolution for each conflict without inventing policy. Do not echo identity facts and do not call tools."
+
+// Role-specific report-mode result contracts. Every new instruction keeps the
+// shared prohibitions against identity echoes, tool calls, and unsupported
+// execution claims, without imposing requirements-analysis directives on
+// unrelated roles.
+const (
+	reportTestDesignerInstruction      = "Return one plain-text test design report. Propose test conditions and coverage rationale within the supplied scope without inventing requirements. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+	reportExploratoryTesterInstruction = "Return one plain-text exploratory assessment report. Assess the supplied behavior evidence, keep recorded observations separate from proposed checks, and never invent observations or claim live investigation. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+	reportAdversarialTesterInstruction = "Return one plain-text adversarial review report. Examine assumptions, boundaries, and failure behavior, keeping every hypothesis explicitly distinguished from observed findings without inventing findings. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+	reportTestRunnerInstruction        = "Return one plain-text test assessment report. Assess the supplied test evidence with explicit attribution and uncertainty; never claim to have run tests, and when evidence is missing report that the outcome cannot be determined rather than inventing pass or fail. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+	reportEvidenceAuditorInstruction   = "Return one plain-text evidence audit report. Assess the sufficiency, attribution, and uncertainty of the supplied evidence without fabricating evidence or conclusions. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+)
+
+// reportInstruction selects the report-mode result contract for one resolved
+// role. It fails closed on any unsupported role: callers never emit an empty
+// instruction and never fall back to another role's contract. The selected
+// instruction drives both the request size bound and the emitted result
+// section.
+func reportInstruction(role qarole.RoleID) (string, bool) {
+	switch role {
+	case qarole.RequirementsAnalyst:
+		return reportRequirement, true
+	case qarole.TestDesigner:
+		return reportTestDesignerInstruction, true
+	case qarole.ExploratoryTester:
+		return reportExploratoryTesterInstruction, true
+	case qarole.AdversarialTester:
+		return reportAdversarialTesterInstruction, true
+	case qarole.TestRunner:
+		return reportTestRunnerInstruction, true
+	case qarole.EvidenceAuditor:
+		return reportEvidenceAuditorInstruction, true
+	default:
+		return "", false
+	}
+}
 
 // ReportRequest is one closed local QA report request. The catalog and install
 // roots are explicit caller inputs; Cortex never infers them from ambient state.
@@ -149,6 +187,10 @@ func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 str
 	if !validRoute(route) || !validProfile(route) || !lowerSHA256(actorSHA256) || !lowerSHA256(skillSHA256) || !validTask(task) {
 		return nil, fmt.Errorf("invalid Pi report input")
 	}
+	instruction, ok := reportInstruction(route.Role)
+	if !ok {
+		return nil, fmt.Errorf("invalid Pi report input")
+	}
 	identity := []byte(strings.Join([]string{
 		"input_contract " + InputContract,
 		"role " + string(route.Role),
@@ -165,7 +207,7 @@ func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 str
 		"route_profile_sha256 " + route.ProfileSHA256,
 		"route_override_fields " + strings.Join(route.OverrideFields, ","),
 	}, "\n"))
-	size := len("/skill:cortex-") + len(route.Role) + 1 + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(reportRequirement))
+	size := len("/skill:cortex-") + len(route.Role) + 1 + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction))
 	if size > qaadmission.MaxRequestBytes {
 		return nil, fmt.Errorf("Pi report input exceeds bound")
 	}
@@ -175,7 +217,7 @@ func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 str
 	frame = append(frame, '\n')
 	frame = appendSection(frame, "identity", identity)
 	frame = appendSection(frame, "task", task)
-	return appendSection(frame, "result", []byte(reportRequirement)), nil
+	return appendSection(frame, "result", []byte(instruction)), nil
 }
 
 // parseReportStream extracts one substantive report from a Pi JSON event

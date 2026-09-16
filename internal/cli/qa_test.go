@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,7 @@ func fakePi() int {
 	case err != nil:
 		return 2
 	case string(bytes.TrimSpace(scenario)) == "report":
+		qaRecordRoleEvidence()
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": fixtureReport}},
@@ -77,6 +79,32 @@ func fakePi() int {
 	return 2
 }
 
+// qaReportRoleEvidencePath is the bounded evidence file the fake Pi subprocess
+// writes for one report run: line 1 is the first line of the framed input it
+// received on stdin and line 2 is the --append-system-prompt actor path it was
+// launched with.
+const qaReportRoleEvidencePath = "qa-report-role-evidence"
+
+// qaRecordRoleEvidence captures the role binding the CLI actually passed to
+// this fake Pi subprocess. Recording is best-effort: it never alters the
+// report stream, exit code, or anything outside the subprocess working
+// directory, and the parent test asserts on the file only after the success
+// path already passed.
+func qaRecordRoleEvidence() {
+	frame, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return
+	}
+	firstLine, _, _ := bytes.Cut(frame, []byte("\n"))
+	actorPath := ""
+	for index, argument := range os.Args {
+		if argument == "--append-system-prompt" && index+1 < len(os.Args) {
+			actorPath = os.Args[index+1]
+		}
+	}
+	_ = os.WriteFile(qaReportRoleEvidencePath, []byte(string(firstLine)+"\n"+actorPath+"\n"), 0o600)
+}
+
 const fixtureTask = "Requirements to analyze:\n" +
 	"Password minimum length is 8 characters\n" +
 	"Passwords shorter than 12 characters must be rejected\n"
@@ -103,12 +131,20 @@ type fixturePi struct{ path string }
 
 func (fixture fixturePi) ResolvePi(context.Context) (string, error) { return fixture.path, nil }
 
-// reportFixture materializes one installed requirements-analyst role from the
+// reportFixture materializes the installed requirements-analyst role from the
 // production catalog and points the command at it with the fake Pi binary.
 func reportFixture(t *testing.T) []string {
+	return roleReportFixture(t, qarole.RequirementsAnalyst)
+}
+
+// roleReportFixture materializes one installed QA role from the production
+// catalog — its actor file, its skill file, and the full six-role install
+// state — and points the command at it with the fake Pi binary.
+func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	t.Helper()
+	roleName := string(role)
 	snapshot := must(catalog.BuildCatalogSnapshot("../../catalog", "catalog.json", catalog.AdmissionPolicy{}))
-	expected := must(qapi.CatalogAdmissionBinding(snapshot, qarole.RequirementsAnalyst, "pi"))
+	expected := must(qapi.CatalogAdmissionBinding(snapshot, role, "pi"))
 	sources := must(qaactor.Sources(snapshot))
 	binding := must(qaactor.Bind(must(qaactor.ProjectPi(must(qaactor.Render(sources))))))
 	neutral := must(skillrender.Render(snapshot))
@@ -116,34 +152,37 @@ func reportFixture(t *testing.T) []string {
 	var actor qaactor.ProjectedActor
 	var skill skillprojection.ProjectedSkill
 	for _, candidate := range binding.Actors() {
-		if candidate.RoleID() == qarole.RequirementsAnalyst {
+		if candidate.RoleID() == role {
 			actor = candidate
 		}
 	}
 	for _, candidate := range skills.Skills() {
-		if candidate.CapabilityID() == "requirements-analyst" && candidate.LogicalID() == "skills/requirements-analyst" {
+		if candidate.CapabilityID() == roleName && candidate.LogicalID() == "skills/"+roleName {
 			skill = candidate
 		}
+	}
+	if actor.RoleID() != role || skill.LogicalID() != "skills/"+roleName {
+		t.Fatalf("catalog projection does not contain role %q", roleName)
 	}
 	root := must(filepath.EvalSymlinks(t.TempDir()))
 	cwd := must(filepath.EvalSymlinks(t.TempDir()))
 	installRoot := filepath.Join(root, ".pi", "agent")
 	const installation = installstate.InstallationID("000102030405060708090a0b0c0d0e0f")
-	inputs := []installstate.V2ArtifactInput{{LogicalID: "skills/requirements-analyst", Kind: installstate.KindSkill, CapabilityID: "requirements-analyst", RelativePath: "skills/cortex-requirements-analyst/SKILL.md", SHA256: expected.SkillSHA256, InstallationID: installation}}
-	for _, role := range qarole.Catalog() {
+	inputs := []installstate.V2ArtifactInput{{LogicalID: "skills/" + roleName, Kind: installstate.KindSkill, CapabilityID: roleName, RelativePath: "skills/cortex-" + roleName + "/SKILL.md", SHA256: expected.SkillSHA256, InstallationID: installation}}
+	for _, entry := range qarole.Catalog() {
 		actorHash := strings.Repeat("a", 64)
-		if role.ID == qarole.RequirementsAnalyst {
+		if entry.ID == role {
 			actorHash = expected.ActorSHA256
 		}
-		inputs = append(inputs, installstate.V2ArtifactInput{LogicalID: "actors/" + string(role.ID), Kind: installstate.KindPiActor, RoleID: role.ID, ActorContractVersion: qaactor.ActorContractVersion, RelativePath: "agents/cortex-" + string(role.ID) + ".md", SHA256: actorHash, InstallationID: installation})
+		inputs = append(inputs, installstate.V2ArtifactInput{LogicalID: "actors/" + string(entry.ID), Kind: installstate.KindPiActor, RoleID: entry.ID, ActorContractVersion: qaactor.ActorContractVersion, RelativePath: "agents/cortex-" + string(entry.ID) + ".md", SHA256: actorHash, InstallationID: installation})
 	}
 	state := must(installstate.NewV2(runtimematrix.RuntimePi, skilldest.RootKindPiUserAgent, snapshot.Fingerprint(), installation, inputs))
 	mustOK(os.MkdirAll(filepath.Join(installRoot, ".cortex"), 0o700))
 	mustOK(os.MkdirAll(filepath.Join(installRoot, "agents"), 0o700))
-	mustOK(os.MkdirAll(filepath.Join(installRoot, "skills", "cortex-requirements-analyst"), 0o700))
+	mustOK(os.MkdirAll(filepath.Join(installRoot, "skills", "cortex-"+roleName), 0o700))
 	mustOK(os.WriteFile(filepath.Join(installRoot, ".cortex", "install-state.json"), must(installstate.Encode(state)), 0o600))
-	mustOK(os.WriteFile(filepath.Join(installRoot, "agents", "cortex-requirements-analyst.md"), actor.Content(), 0o600))
-	mustOK(os.WriteFile(filepath.Join(installRoot, "skills", "cortex-requirements-analyst", "SKILL.md"), skill.Content(), 0o600))
+	mustOK(os.WriteFile(filepath.Join(installRoot, "agents", "cortex-"+roleName+".md"), actor.Content(), 0o600))
+	mustOK(os.WriteFile(filepath.Join(installRoot, "skills", "cortex-"+roleName, "SKILL.md"), skill.Content(), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "requirements.txt"), []byte(fixtureTask), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "qa-report-scenario"), []byte("report"), 0o600))
 	catalogRoot := must(filepath.Abs("../../catalog"))
@@ -152,7 +191,7 @@ func reportFixture(t *testing.T) []string {
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = nil })
 	t.Chdir(cwd)
-	return []string{"qa", "run", "--role", "requirements-analyst", "--request", "requirements.txt", "--catalog", catalogRoot}
+	return []string{"qa", "run", "--role", roleName, "--request", "requirements.txt", "--catalog", catalogRoot}
 }
 
 func TestQARunReport(t *testing.T) {
@@ -217,4 +256,68 @@ func TestQARunReport(t *testing.T) {
 			t.Fatalf("usage = %d stderr %q", code, stderr.String())
 		}
 	})
+}
+
+// TestQARunSelectsEveryKnownRole exercises the closed six-role catalog through
+// the CLI: each installed role must run the report fixture successfully and
+// propagate its selected role into both the framed input and the bound actor.
+func TestQARunSelectsEveryKnownRole(t *testing.T) {
+	for _, role := range qarole.Catalog() {
+		t.Run(string(role.ID), func(t *testing.T) {
+			args := roleReportFixture(t, role.ID)
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK {
+				t.Fatalf("Run(%s) = %d, stderr %q", role.ID, code, stderr.String())
+			}
+			for _, expected := range []string{
+				"Password minimum length is 8 characters",
+				"Passwords shorter than 12 characters must be rejected",
+				"Inconsistency:", "Resolution requested:",
+			} {
+				if !strings.Contains(stdout.String(), expected) {
+					t.Fatalf("%s report is missing %q: %q", role.ID, expected, stdout.String())
+				}
+			}
+			if strings.Contains(stdout.String(), "admitted") || stderr.Len() != 0 {
+				t.Fatalf("%s success claimed admission: stdout %q stderr %q", role.ID, stdout.String(), stderr.String())
+			}
+			evidence, err := os.ReadFile(qaReportRoleEvidencePath)
+			if err != nil {
+				t.Fatalf("%s role evidence was not recorded: %v", role.ID, err)
+			}
+			lines := strings.Split(strings.TrimSuffix(string(evidence), "\n"), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("%s role evidence is malformed: %q", role.ID, string(evidence))
+			}
+			if lines[0] != "/skill:cortex-"+string(role.ID) {
+				t.Fatalf("%s role did not propagate into the framed input: %q", role.ID, lines[0])
+			}
+			if expectedActor := "agents/cortex-" + string(role.ID) + ".md"; !strings.HasSuffix(lines[1], expectedActor) {
+				t.Fatalf("%s actor was not bound to the invocation: %q", role.ID, lines[1])
+			}
+		})
+	}
+}
+
+// TestQARunRejectsUnknownAndEmptyRoles pins the argument-validation contract:
+// role values outside the closed catalog and empty role values are rejected as
+// invalid arguments with usage, before any request, catalog, or runtime work.
+func TestQARunRejectsUnknownAndEmptyRoles(t *testing.T) {
+	cases := []struct {
+		name string
+		role string
+	}{
+		{name: "unknown role is rejected", role: "nonexistent-role"},
+		{name: "empty role is rejected", role: ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			args := []string{"qa", "run", "--role", tt.role, "--request", "requirements.txt", "--catalog", "catalog"}
+			if code := Run(context.Background(), args, stdout, stderr, nil); code != exitUsage ||
+				stdout.Len() != 0 || !strings.Contains(stderr.String(), "error=invalid_arguments") || !strings.Contains(stderr.String(), "usage:") {
+				t.Fatalf("role %q = %d stdout %q stderr %q", tt.role, code, stdout.String(), stderr.String())
+			}
+		})
+	}
 }

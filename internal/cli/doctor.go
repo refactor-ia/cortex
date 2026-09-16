@@ -98,7 +98,7 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 }
 
 const (
-	qaUsage = "usage: cortex qa run --role requirements-analyst --request <file> --catalog <dir>\n"
+	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir>\n"
 	// qaReportNote surfaces the honest runtime prerequisites on every failure.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
 	// no model fallback and owns no automatic configuration.
@@ -112,7 +112,13 @@ var qaPiResolver qapi.PiPathResolver
 // runQA executes one local QA report command. It never mutates user
 // configuration and never claims admission.
 func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[2] != string(qarole.RequirementsAnalyst) || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+		writeError(stderr, "invalid_arguments")
+		_, _ = io.WriteString(stderr, qaUsage)
+		return exitUsage
+	}
+	role := qarole.RoleID(args[2])
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{role}); err != nil {
 		writeError(stderr, "invalid_arguments")
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage
@@ -131,7 +137,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return qaFailure(stderr, "actor_unavailable")
 	}
 	report, code, err := qapi.RunLocalReport(ctx, qapi.ReportRequest{
-		Role: qarole.RequirementsAnalyst, CatalogRoot: catalogRoot, InstallRoot: installRoot,
+		Role: role, CatalogRoot: catalogRoot, InstallRoot: installRoot,
 		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
 	}, qaPiResolver)
 	if err != nil || code != "" {

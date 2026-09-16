@@ -25,6 +25,7 @@ type Plan struct {
 	transactionTargets  []runtimematrix.RuntimeID
 	allOrNothing        bool
 	reportOnly          bool
+	localUpdateTarget   runtimematrix.RuntimeID
 }
 
 // SnapshotFingerprint returns the catalog snapshot bound to the plan.
@@ -45,6 +46,11 @@ func (plan Plan) AllOrNothing() bool { return plan.allOrNothing }
 
 // ReportOnly reports whether no runtime can join the final transaction.
 func (plan Plan) ReportOnly() bool { return plan.reportOnly }
+
+// LocalUpdateTarget returns the private local-planning provenance, if present.
+func (plan Plan) LocalUpdateTarget() (runtimematrix.RuntimeID, bool) {
+	return plan.localUpdateTarget, plan.localUpdateTarget != ""
+}
 
 // BuildPlan refines a valid adapter plan using bound projection assessments.
 func BuildPlan(base adapterplan.Plan, assessments []Assessment) (Plan, error) {
@@ -97,12 +103,14 @@ func BuildPlan(base adapterplan.Plan, assessments []Assessment) (Plan, error) {
 		}
 		results = append(results, result)
 	}
+	localTarget, _ := base.LocalUpdateTarget()
 	return Plan{
 		snapshotFingerprint: base.SnapshotFingerprint,
 		results:             results,
 		transactionTargets:  finalTargets,
 		allOrNothing:        len(finalTargets) > 0,
 		reportOnly:          len(finalTargets) == 0,
+		localUpdateTarget:   localTarget,
 	}, nil
 }
 

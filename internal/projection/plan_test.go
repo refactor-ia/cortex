@@ -79,6 +79,25 @@ func TestBuildPlanReportOnlyCases(t *testing.T) {
 	}
 }
 
+func TestBuildPlanPropagatesLocalTargetWithoutCertification(t *testing.T) {
+	observations := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	base, err := adapterplan.BuildLocalUpdate(testFingerprint, observations, runtimematrix.RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(base, []Assessment{projectionAssessment(t, runtimematrix.RuntimePi, Exact, "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := plan.LocalUpdateTarget(); !ok || target != runtimematrix.RuntimePi || plan.Results()[0].Outcome != runtimematrix.OutcomePresentUncertified {
+		t.Fatalf("local projection plan = %#v", plan)
+	}
+}
+
 func TestBuildPlanOrderInputsAndOutputsAreImmutable(t *testing.T) {
 	base := projectionBase(t, compatibleProjectionObservations())
 	baseOriginal := cloneProjectionBase(base)

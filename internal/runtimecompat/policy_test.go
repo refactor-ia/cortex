@@ -82,16 +82,16 @@ func TestEvaluateUsesExactVersionsInCanonicalOrder(t *testing.T) {
 			want: []runtimematrix.Observation{
 				{ID: runtimematrix.RuntimePi, Present: true, Version: "1.2.3", Compatibility: runtimematrix.Compatible},
 				{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.3.4", Compatibility: runtimematrix.Incompatible},
-				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.4.5", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 		{
 			name:    "near versions do not match",
 			reports: reports(t, detected("1.2.4"), detected("2.3.5"), claudeDetected("3.4.6")),
 			want: []runtimematrix.Observation{
-				{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
-				{ID: runtimematrix.RuntimeOpenCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
-				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimePi, Present: true, Version: "1.2.4", Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.3.5", Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.4.6", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 	} {
@@ -170,33 +170,16 @@ func TestEvaluateKeepsAbsentAndProbeFailuresUnknown(t *testing.T) {
 	}
 }
 
-func TestBuiltInPolicyCertifiesOnlyExactVersions(t *testing.T) {
-	for _, tt := range []struct {
-		name    string
-		reports []runtimeprobe.Report
-		want    []runtimematrix.Compatibility
-	}{
-		{
-			name:    "certified versions",
-			reports: reports(t, detected("0.85.1"), detected("1.18.25"), claudeDetected("2.1.251")),
-			want:    []runtimematrix.Compatibility{runtimematrix.Compatible, runtimematrix.Compatible, runtimematrix.Compatible},
-		},
-		{
-			name:    "adjacent and unlisted versions",
-			reports: reports(t, detected("0.85.2"), detected("1.18.24"), claudeDetected("2.1.252")),
-			want:    []runtimematrix.Compatibility{runtimematrix.CompatibilityUnknown, runtimematrix.CompatibilityUnknown, runtimematrix.CompatibilityUnknown},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := runtimecompat.BuiltInPolicy().Evaluate(tt.reports)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for index, observation := range got {
-				if observation.Compatibility != tt.want[index] {
-					t.Fatalf("BuiltInPolicy() %s = %s, want %s", observation.ID, observation.Compatibility, tt.want[index])
-				}
-			}
-		})
+func TestBuiltInPolicyDoesNotCertifyObservedCandidates(t *testing.T) {
+	got, err := runtimecompat.BuiltInPolicy().Evaluate(reports(t,
+		detected("0.84.3"), detected("1.18.21"), claudeDetected("2.1.243"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, observation := range got {
+		if observation.Compatibility != runtimematrix.CompatibilityUnknown || observation.Version == "" {
+			t.Fatalf("BuiltInPolicy() changed strict certification or lost version: %#v", observation)
+		}
 	}
 }

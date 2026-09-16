@@ -15,6 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/projection"
+	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
@@ -22,6 +23,92 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
+
+// actorAwarePiCandidate builds the canonical detached v2 Pi candidate from the
+// repository's real catalog; it mutates no filesystem state outside TempDir roots.
+func actorAwarePiCandidate(t *testing.T) installplan.Plan {
+	t.Helper()
+	snapshot := value(catalog.BuildCatalogSnapshot(filepath.Join("..", "..", "catalog"), "catalog.json", catalog.AdmissionPolicy{}))
+	sources := value(skillrender.Render(snapshot))
+	assessments := make([]projection.Assessment, 0, 3)
+	observations := make([]runtimematrix.Observation, 0, 3)
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+		projected := value(skillprojection.Build(id, sources))
+		assessments = append(assessments, projected.Assessment())
+		observations = append(observations, runtimematrix.Observation{ID: id, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible})
+	}
+	final := value(projection.BuildPlan(value(adapterplan.Build(snapshot.Fingerprint(), observations)), assessments))
+	binding := value(skillartifact.Build(value(skillprojection.Build(runtimematrix.RuntimePi, sources)), final))
+	resolved := value(skillroot.Resolve(value(skilldest.Build(binding)), skillroot.Inputs{Home: t.TempDir()}))
+	skills := value(installplan.BuildWithBundle(resolved, mustBundle(t, binding)))
+	actors := value(qaactor.Bind(value(qaactor.ProjectPi(value(qaactor.Render(value(qaactor.Sources(snapshot))))))))
+	plan := value(installplan.BuildActorAware(skills, actors, "000102030405060708090a0b0c0d0e0f"))
+	must(t, os.MkdirAll(plan.RootPath(), 0o700))
+	return plan
+}
+
+func actorAwareObservations() []runtimematrix.Observation {
+	return []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+}
+
+func TestPreflightClassifiesActorAwarePiCandidate(t *testing.T) {
+	plan := actorAwarePiCandidate(t)
+	observation := value(installobserve.Observe(plan, installobserve.DefaultOptions()))
+	observations := actorAwareObservations()
+	report, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: plan, Observation: observation}})
+	if err != nil || !report.Ready() {
+		t.Fatalf("Preflight() = (%#v, %v)", report, err)
+	}
+	status := report.Statuses()[0]
+	if len(status.Actions()) != len(plan.Files()) || status.Evidence().Create != len(plan.Files()) {
+		t.Fatalf("actor-aware actions = %#v, want %d creates", status.Actions(), len(plan.Files()))
+	}
+	for _, file := range plan.Files() {
+		if file.Role() == "actor" {
+			must(t, os.MkdirAll(filepath.Dir(file.AbsolutePath()), 0o700))
+			must(t, os.WriteFile(file.AbsolutePath(), []byte("user-owned"), 0o600))
+			break
+		}
+	}
+	drifted := value(installobserve.Observe(plan, installobserve.DefaultOptions()))
+	driftedReport, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: plan, Observation: drifted}})
+	if err != nil || driftedReport.Ready() || driftedReport.Statuses()[0].Ready() {
+		t.Fatalf("Preflight() = (%#v, %v), want actor drift conflict", driftedReport, err)
+	}
+	other := actorAwarePiCandidate(t)
+	mismatched, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: other, Observation: drifted}})
+	if !errors.Is(err, installcoord.ErrInvalid) || mismatched.Ready() {
+		t.Fatalf("Preflight() = (%#v, %v), want ErrInvalid for a mismatched actor-aware unit", mismatched, err)
+	}
+}
+
+func value[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func TestPreflightLocalUpdateDoesNotAlterStrictPreflight(t *testing.T) {
+	plan := actorAwarePiCandidate(t)
+	observation := value(installobserve.Observe(plan, installobserve.DefaultOptions()))
+	observations := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	if report, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: plan, Observation: observation}}); !errors.Is(err, installcoord.ErrInvalid) || report.Ready() {
+		t.Fatalf("strict Preflight() = (%#v, %v)", report, err)
+	}
+	report, err := installcoord.PreflightLocalUpdate(observations, runtimematrix.RuntimePi, []installcoord.Unit{{Plan: plan, Observation: observation}})
+	if err != nil || !report.Ready() || report.Statuses()[0].Outcome != runtimematrix.OutcomePresentUncertified {
+		t.Fatalf("local Preflight() = (%#v, %v)", report, err)
+	}
+}
 
 func TestPreflightAllCleanIsCanonicalAndReadOnly(t *testing.T) {
 	observations, plans := compatible(), candidates(t, "one")

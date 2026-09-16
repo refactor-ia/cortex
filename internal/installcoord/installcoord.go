@@ -92,6 +92,20 @@ func Preflight(observations []runtimematrix.Observation, units []Unit) (Report, 
 	if err != nil {
 		return Report{}, ErrInvalid
 	}
+	return preflight(matrix, units)
+}
+
+// PreflightLocalUpdate preserves strict preflight evidence except for one
+// explicitly selected local target derived by local planning.
+func PreflightLocalUpdate(observations []runtimematrix.Observation, target runtimematrix.RuntimeID, units []Unit) (Report, error) {
+	matrix, err := runtimematrix.DecideLocalUpdate(observations, target)
+	if err != nil {
+		return Report{}, ErrInvalid
+	}
+	return preflight(matrix, units)
+}
+
+func preflight(matrix runtimematrix.Matrix, units []Unit) (Report, error) {
 	byRuntime := make(map[runtimematrix.RuntimeID]Unit, len(units))
 	for _, unit := range units {
 		id := unit.Plan.RuntimeID()
@@ -125,7 +139,7 @@ func Preflight(observations []runtimematrix.Observation, units []Unit) (Report, 
 		} else if snapshot != unit.Plan.SnapshotFingerprint() {
 			return Report{}, ErrInvalid
 		}
-		classified, err := installobserve.Classify(unit.Plan, unit.Observation.PriorState(), unit.Observation.Slots())
+		classified, err := Classify(unit.Plan, unit.Observation)
 		if err != nil {
 			return Report{}, ErrInvalid
 		}
@@ -136,6 +150,10 @@ func Preflight(observations []runtimematrix.Observation, units []Unit) (Report, 
 		}
 		status.actions = actions(ownershipPlan.Decisions(), classified.StateAction())
 		status.ready = ownershipPlan.Ready()
+		if unit.Plan.InstalledState().SchemaVersion() == 2 {
+			status.actions = classifiedActions(classified)
+			status.ready = classifiedReady(classified)
+		}
 		ready = ready && status.ready
 		participants++
 		statuses = append(statuses, status)
@@ -152,13 +170,55 @@ func Preflight(observations []runtimematrix.Observation, units []Unit) (Report, 
 	return Report{statuses: statuses, ready: ready}, nil
 }
 
+// Classify dispatches the canonical classification path for one bound candidate:
+// the v1 in-memory API for skill-only plans and the filesystem API for
+// actor-aware v2 plans. The observation must already match the candidate.
+func Classify(plan installplan.Plan, observation installobserve.FilesystemObservation) (installobserve.Result, error) {
+	if plan.InstalledState().SchemaVersion() == 1 {
+		return installobserve.Classify(plan, observation.PriorState(), observation.Slots())
+	}
+	return installobserve.ClassifyFilesystem(plan, observation)
+}
+
+// classifiedActions reports every classified artifact decision plus the state action.
+func classifiedActions(classified installobserve.Result) []Action {
+	decisions := classified.ArtifactDecisions()
+	actions := make([]Action, 0, len(decisions)+1)
+	for _, decision := range decisions {
+		actions = append(actions, decision.Action)
+	}
+	return append(actions, classified.StateAction())
+}
+
+// classifiedReady reports conflict-free v2 evidence: the state action must be
+// materializable and no classified artifact decision may conflict.
+func classifiedReady(classified installobserve.Result) bool {
+	state := classified.StateAction()
+	if state != ownership.Create && state != ownership.Replace && state != ownership.Unchanged {
+		return false
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if decision.Action == ownership.Conflict {
+			return false
+		}
+	}
+	return true
+}
+
 func validUnit(unit Unit) bool {
 	bundle, bound := unit.Plan.Bundle()
 	if !bound || !unit.Observation.MatchesCandidate(unit.Plan) || bundle.Manifest().RuntimeID() != unit.Plan.RuntimeID() || bundle.Manifest().SnapshotFingerprint() != unit.Plan.SnapshotFingerprint() {
 		return false
 	}
-	files, artifacts := unit.Plan.Files(), bundle.Artifacts()
-	if len(files) != len(artifacts)+1 {
+	artifacts, files := bundle.Artifacts(), unit.Plan.Files()
+	if unit.Plan.InstalledState().SchemaVersion() == 2 {
+		// Actor-aware v2 candidates carry actor files beyond the bound skill
+		// bundle; structural actor, state, path, and mode checks are already
+		// enforced by the observation binding.
+		if len(files) < len(artifacts)+2 {
+			return false
+		}
+	} else if len(files) != len(artifacts)+1 {
 		return false
 	}
 	for index, artifact := range artifacts {

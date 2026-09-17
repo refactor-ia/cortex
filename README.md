@@ -8,7 +8,7 @@ Cortex is intended to become one curated open-source distribution of agent capab
 
 | Status | Scope |
 | --- | --- |
-| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime admission stays limited to the exact versions in the evidence table below. |
+| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime certification stays limited to the exact versions in the evidence table below, and a present runtime whose version is not certified is admitted only under the explicit `--allow-uncertified` opt-in. |
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
 | **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, agent prompts, and model-profile definitions. |
 

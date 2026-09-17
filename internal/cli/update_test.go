@@ -242,6 +242,15 @@ func TestUpdateRejectsDriftedOwnedFileWithoutWrites(t *testing.T) {
 		if code != exitConflict || !strings.Contains(stdout, "status=conflict") {
 			t.Fatalf("drifted update (apply=%t) = (%d, %q, %q)", apply, code, stdout, stderr)
 		}
+		// A refusal must report the mode the caller asked for. Reporting an
+		// apply refusal as a plan misstates what ran.
+		wantMode := "mode=plan"
+		if apply {
+			wantMode = "mode=apply"
+		}
+		if !strings.Contains(stdout, wantMode) {
+			t.Fatalf("drifted update (apply=%t) reported the wrong mode: %q", apply, stdout)
+		}
 		if string(must(os.ReadFile(statePath))) != string(stateBefore) || string(must(os.ReadFile(drifted))) != "user-overwrite" {
 			t.Fatal("drifted root changed without authorization")
 		}

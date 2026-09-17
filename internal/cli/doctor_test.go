@@ -105,6 +105,30 @@ func TestRunDoctor(t *testing.T) {
 			},
 		},
 		{
+			name:     "identified uncertified runtimes are admissible so the host is not uncertain",
+			runner:   readyRunner(),
+			wantCode: exitOK,
+			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied\n" +
+				"runtime=opencode presence=present compatibility=uncertified action=configure touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied\n",
+			assert: func(t *testing.T, _ *fakeRunner, output string) {
+				t.Helper()
+				for _, forbidden := range []string{"1.2.3", "2.3.4", "3.4.5", "/private/"} {
+					if strings.Contains(output, forbidden) {
+						t.Fatalf("doctor output leaks %q: %q", forbidden, output)
+					}
+				}
+			},
+		},
+		{
+			name:     "an unidentified version keeps the host uncertain",
+			runner:   unidentifiedRunner(),
+			wantCode: exitUnknown,
+			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+		},
+		{
 			name: "mixed present unknown and absent",
 			runner: &fakeRunner{
 				lookup: map[string]error{"opencode": exec.ErrNotFound},

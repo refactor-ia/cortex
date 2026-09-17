@@ -96,8 +96,13 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		writeError(stderr, "output_failed")
 		return exitFailure
 	}
+	// The exit code answers whether an install can proceed, not whether every
+	// runtime is certified. An admitted uncertified version is disclosed in the
+	// report and does not make the host uncertain.
 	for _, decision := range matrix.Decisions {
-		if decision.Outcome != runtimematrix.OutcomeAbsent && decision.Outcome != runtimematrix.OutcomePresentCompatible {
+		switch decision.Outcome {
+		case runtimematrix.OutcomeAbsent, runtimematrix.OutcomePresentCompatible, runtimematrix.OutcomePresentUncertified:
+		default:
 			return exitUnknown
 		}
 	}

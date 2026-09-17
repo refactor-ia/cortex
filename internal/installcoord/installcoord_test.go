@@ -93,16 +93,19 @@ func value[T any](v T, err error) T {
 	return v
 }
 
-func TestPreflightLocalUpdateDoesNotAlterStrictPreflight(t *testing.T) {
+// TestPreflightLocalUpdateNarrowsToTheSelectedRuntime pins the single-target
+// fence: the default preflight expects a unit for every admitted runtime, while
+// the local update admits only its selected target.
+func TestPreflightLocalUpdateNarrowsToTheSelectedRuntime(t *testing.T) {
 	plan := actorAwarePiCandidate(t)
 	observation := value(installobserve.Observe(plan, installobserve.DefaultOptions()))
 	observations := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
-		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	if report, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: plan, Observation: observation}}); !errors.Is(err, installcoord.ErrInvalid) || report.Ready() {
-		t.Fatalf("strict Preflight() = (%#v, %v)", report, err)
+		t.Fatalf("default Preflight() = (%#v, %v), want an admitted runtime without a unit refused", report, err)
 	}
 	report, err := installcoord.PreflightLocalUpdate(observations, runtimematrix.RuntimePi, []installcoord.Unit{{Plan: plan, Observation: observation}})
 	if err != nil || !report.Ready() || report.Statuses()[0].Outcome != runtimematrix.OutcomePresentUncertified {

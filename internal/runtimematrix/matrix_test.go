@@ -42,6 +42,34 @@ func TestDecide(t *testing.T) {
 			compatible: true,
 		},
 		{
+			name: "present uncertified runtimes are admitted by default",
+			observations: []Observation{
+				{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
+				{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: CompatibilityUnknown},
+				{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: CompatibilityUnknown},
+			},
+			want: []Decision{
+				{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeOpenCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeClaudeCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+			},
+			compatible: true,
+		},
+		{
+			name: "only a known-incompatible adapter is refused while others apply",
+			observations: []Observation{
+				{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
+				{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: Incompatible},
+				{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: Compatible},
+			},
+			want: []Decision{
+				{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeOpenCode, Outcome: OutcomeKnownIncompatible, Action: Skip, IncludeInTransaction: false, TouchAllowed: false},
+				{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+			},
+			compatible: true,
+		},
+		{
 			name: "no compatible runtimes",
 			observations: []Observation{
 				{ID: RuntimePi, Present: false, Compatibility: CompatibilityUnknown},
@@ -95,36 +123,6 @@ func TestDecideIsIndependentOfObservationOrder(t *testing.T) {
 		{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 	}) {
 		t.Errorf("Decisions = %#v, want deterministic runtime order", got)
-	}
-}
-
-func TestDecideLocalUpdateKeepsStrictCertificationSeparate(t *testing.T) {
-	observations := []Observation{
-		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
-		{ID: RuntimeOpenCode, Present: true, Version: "1.18.21", Compatibility: Incompatible},
-		{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
-	}
-	strict, err := Decide(observations)
-	if err != nil || strict.HasCompatible || strict.Decisions[0].Outcome != OutcomeUnknownVersion || strict.Decisions[0].IncludeInTransaction {
-		t.Fatalf("strict decision = (%#v, %v)", strict, err)
-	}
-	local, err := DecideLocalUpdate(observations, RuntimePi)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := local.Decisions[0]; got.Outcome != OutcomePresentUncertified || got.Action != Configure || !got.IncludeInTransaction || !got.TouchAllowed {
-		t.Fatalf("local selected decision = %#v", got)
-	}
-	for _, index := range []int{1, 2} {
-		if local.Decisions[index].IncludeInTransaction || local.Decisions[index].TouchAllowed {
-			t.Fatalf("local decision authorized non-target %#v", local.Decisions[index])
-		}
-	}
-	for _, target := range []RuntimeID{RuntimeOpenCode, RuntimeClaudeCode} {
-		matrix, err := DecideLocalUpdate(observations, target)
-		if err != nil || matrix.HasCompatible {
-			t.Fatalf("ineligible local target %q = (%#v, %v)", target, matrix, err)
-		}
 	}
 }
 
@@ -193,53 +191,88 @@ func TestDecideRejectsInvalidObservations(t *testing.T) {
 	}
 }
 
-func TestDecideUncertifiedAdmissionPromotesOnlyEligibleRuntimes(t *testing.T) {
+func TestDecideLocalUpdateAdmitsOnlyTheSelectedRuntime(t *testing.T) {
 	observations := []Observation{
 		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
 		{ID: RuntimeOpenCode, Present: true, Version: "1.18.21", Compatibility: Incompatible},
-		{ID: RuntimeClaudeCode, Present: true, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeClaudeCode, Present: true, Version: "2.1.251", Compatibility: CompatibilityUnknown},
 	}
-	strict, err := Decide(observations)
-	if err != nil || strict.HasCompatible {
-		t.Fatalf("strict decision = (%#v, %v)", strict, err)
+	// The default decision admits both uncertified runtimes; the local update
+	// must still narrow the transaction to exactly one selected target.
+	base, err := Decide(observations)
+	if err != nil || len(transactionTargets(base)) != 2 {
+		t.Fatalf("default decision = (%#v, %v)", base, err)
 	}
-	for _, decision := range strict.Decisions {
-		if decision.Outcome == OutcomePresentUncertified {
-			t.Fatalf("strict Decide emitted an uncertified outcome: %#v", decision)
-		}
-	}
-	admitted, err := DecideUncertifiedAdmission(observations)
+	local, err := DecideLocalUpdate(observations, RuntimePi)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !admitted.HasCompatible {
-		t.Fatal("admission matrix reported no transaction targets")
+	if got := local.Decisions[0]; got.Outcome != OutcomePresentUncertified || got.Action != Configure || !got.IncludeInTransaction || !got.TouchAllowed {
+		t.Fatalf("local selected decision = %#v", got)
 	}
-	if got := admitted.Decisions[0]; got.Outcome != OutcomePresentUncertified || got.Action != Configure || !got.IncludeInTransaction || !got.TouchAllowed {
-		t.Fatalf("eligible uncertified decision = %#v", got)
+	if got := transactionTargets(local); len(got) != 1 || got[0] != RuntimePi {
+		t.Fatalf("local transaction targets = %#v, want exactly the selected runtime", got)
 	}
-	if got := admitted.Decisions[1]; got.Outcome != OutcomeKnownIncompatible || got.Action != Skip || got.IncludeInTransaction || got.TouchAllowed {
-		t.Fatalf("known-incompatible decision was promoted: %#v", got)
+	// A known-incompatible target stays refused; an admissible one is the only
+	// runtime the narrowed matrix includes.
+	if matrix, err := DecideLocalUpdate(observations, RuntimeOpenCode); err != nil || matrix.HasCompatible {
+		t.Fatalf("known-incompatible local target = (%#v, %v)", matrix, err)
 	}
-	if got := admitted.Decisions[2]; got.Outcome != OutcomeUnknownVersion || got.Action != Warn || got.IncludeInTransaction || got.TouchAllowed {
-		t.Fatalf("present but unversioned decision was promoted: %#v", got)
+	if matrix, err := DecideLocalUpdate(observations, RuntimeClaudeCode); err != nil || !matrix.HasCompatible || len(transactionTargets(matrix)) != 1 {
+		t.Fatalf("selected local target = (%#v, %v)", matrix, err)
 	}
 }
 
-func TestDecideUncertifiedAdmissionPromotesEveryPresentUncertifiedRuntime(t *testing.T) {
-	matrix, err := DecideUncertifiedAdmission([]Observation{
-		{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
-		{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: CompatibilityUnknown},
-		{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: CompatibilityUnknown},
+func TestDecideLocalUpdateRefusesAnUnparseableSelectedVersion(t *testing.T) {
+	matrix, err := DecideLocalUpdate([]Observation{
+		{ID: RuntimePi, Present: true, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: false, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
+	}, RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matrix.HasCompatible || matrix.Decisions[0].Outcome != OutcomeUnknownVersion {
+		t.Fatalf("unparseable local target = %#v", matrix)
+	}
+}
+
+func TestDecideLocalUpdateRejectsAnUnsupportedTarget(t *testing.T) {
+	observations := []Observation{
+		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: false, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
+	}
+	if matrix, err := DecideLocalUpdate(observations, RuntimeID("other")); err == nil || !reflect.DeepEqual(matrix, Matrix{}) {
+		t.Fatalf("unsupported local target = (%#v, %v)", matrix, err)
+	}
+}
+
+func TestDecideRefusesPresentRuntimeWithoutAnIdentifiedVersion(t *testing.T) {
+	matrix, err := Decide([]Observation{
+		{ID: RuntimePi, Present: true, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: true, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeClaudeCode, Present: true, Compatibility: CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(matrix.Decisions, []Decision{
-		{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
-		{ID: RuntimeOpenCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
-		{ID: RuntimeClaudeCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
-	}) || !matrix.HasCompatible {
-		t.Fatalf("Decisions = %#v, want every runtime admitted", matrix.Decisions)
+	if matrix.HasCompatible {
+		t.Fatalf("unidentified runtimes were admitted: %#v", matrix)
 	}
+	for _, decision := range matrix.Decisions {
+		if decision.Outcome != OutcomeUnknownVersion || decision.Action != Warn || decision.IncludeInTransaction || decision.TouchAllowed {
+			t.Fatalf("unidentified decision = %#v", decision)
+		}
+	}
+}
+
+func transactionTargets(matrix Matrix) []RuntimeID {
+	targets := make([]RuntimeID, 0, len(matrix.Decisions))
+	for _, decision := range matrix.Decisions {
+		if decision.IncludeInTransaction {
+			targets = append(targets, decision.ID)
+		}
+	}
+	return targets
 }

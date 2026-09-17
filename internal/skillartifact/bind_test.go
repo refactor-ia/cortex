@@ -78,7 +78,7 @@ func TestBuildTranslatedAndUnrepresentableDormant(t *testing.T) {
 		t.Fatal("unrepresentable result has bundle")
 	}
 }
-func TestBuildLocalUncertifiedOutcomeRequiresProvenance(t *testing.T) {
+func TestBuildUncertifiedOutcomeRequiresProvenance(t *testing.T) {
 	projected, _ := skillPipeline(t, false, false, runtimematrix.RuntimePi)
 	fingerprint := projected.Assessment().SnapshotFingerprint()
 	piUnknown := []runtimematrix.Observation{
@@ -101,16 +101,22 @@ func TestBuildLocalUncertifiedOutcomeRequiresProvenance(t *testing.T) {
 		t.Fatalf("local binding = (%#v, %v)", binding, err)
 	}
 
-	strictBase, err := adapterplan.Build(fingerprint, piUnknown)
+	// A present runtime whose version could not be identified is never admitted,
+	// so no plan carries provenance for it and Build must refuse.
+	unidentifiedBase, err := adapterplan.Build(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	strictFinal, err := projection.BuildPlan(strictBase, nil)
+	unidentifiedFinal, err := projection.BuildPlan(unidentifiedBase, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding, err := Build(projected, strictFinal); err == nil || binding.HasArtifacts() {
-		t.Fatalf("strict plan promoted uncertified target: (%#v, %v)", binding, err)
+	if binding, err := Build(projected, unidentifiedFinal); err == nil || binding.HasArtifacts() {
+		t.Fatalf("plan promoted an unidentified runtime: (%#v, %v)", binding, err)
 	}
 
 	openUnknown := []runtimematrix.Observation{
@@ -241,7 +247,7 @@ func writeFile(t *testing.T, root, path, content string) {
 	}
 }
 
-func TestBuildAdmitsEveryUncertifiedRuntimeUnderExplicitAdmission(t *testing.T) {
+func TestBuildAdmitsEveryUncertifiedRuntimeByDefault(t *testing.T) {
 	projected, _ := skillPipeline(t, false, false, runtimematrix.RuntimePi)
 	fingerprint := projected.Assessment().SnapshotFingerprint()
 	allUncertified := []runtimematrix.Observation{
@@ -249,7 +255,7 @@ func TestBuildAdmitsEveryUncertifiedRuntimeUnderExplicitAdmission(t *testing.T) 
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
-	base, err := adapterplan.BuildUncertifiedAdmission(fingerprint, allUncertified)
+	base, err := adapterplan.Build(fingerprint, allUncertified)
 	if err != nil {
 		t.Fatal(err)
 	}

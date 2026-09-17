@@ -83,15 +83,17 @@ func TestBuildNoCompatibleIsReportOnly(t *testing.T) {
 	}
 }
 
-func TestBuildLocalUpdateCarriesOnlySelectedUncertifiedTarget(t *testing.T) {
+func TestBuildLocalUpdateCarriesOnlyTheSelectedTarget(t *testing.T) {
 	observations := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},
 	}
-	strict, err := Build(fingerprint, observations)
-	if err != nil || !reflect.DeepEqual(strict.TransactionTargets, []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode}) {
-		t.Fatalf("strict Build() = (%#v, %v)", strict, err)
+	// The default plan admits both present runtimes; the local update must
+	// still narrow the transaction to the single selected target.
+	base, err := Build(fingerprint, observations)
+	if err != nil || !reflect.DeepEqual(base.TransactionTargets, []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}) {
+		t.Fatalf("default Build() = (%#v, %v)", base, err)
 	}
 	local, err := BuildLocalUpdate(fingerprint, observations, runtimematrix.RuntimeOpenCode)
 	if err != nil {
@@ -134,8 +136,8 @@ func TestUncertifiedAdmittedIsDetached(t *testing.T) {
 	}
 }
 
-func TestBuildUncertifiedAdmissionPromotesEveryPresentUncertifiedRuntime(t *testing.T) {
-	plan, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+func TestBuildAdmitsEveryPresentUncertifiedRuntimeByDefault(t *testing.T) {
+	plan, err := Build(fingerprint, []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
@@ -155,8 +157,8 @@ func TestBuildUncertifiedAdmissionPromotesEveryPresentUncertifiedRuntime(t *test
 	}
 }
 
-func TestBuildUncertifiedAdmissionLeavesIneligibleRuntimesUnpromoted(t *testing.T) {
-	plan, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+func TestBuildLeavesIneligibleRuntimesUnadmitted(t *testing.T) {
+	plan, err := Build(fingerprint, []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
@@ -181,7 +183,7 @@ func TestBuildUncertifiedAdmissionLeavesIneligibleRuntimesUnpromoted(t *testing.
 }
 
 func TestValidateRejectsTamperedAdmissionSetInBothDirections(t *testing.T) {
-	admitted, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+	admitted, err := Build(fingerprint, []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.Compatible},

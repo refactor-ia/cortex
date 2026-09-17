@@ -60,7 +60,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if len(args) > 0 && args[0] == "model-routing" {
 		return runModelProfile(args[1:], stdout, stderr)
 	}
-	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" && args[0] != "install" {
+	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
@@ -75,14 +75,9 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 		if len(args) > 1 {
 			return runUpdate(ctx, args, stdout, stderr, runner)
 		}
-		return runInstall(ctx, stdout, stderr, runner, args[0], false, install)
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "install":
-		allowUncertified, ok := parseInstallArgs(args[1:])
-		if !ok {
-			writeError(stderr, "invalid_command")
-			return exitUsage
-		}
-		return runInstall(ctx, stdout, stderr, runner, args[0], allowUncertified, install)
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:

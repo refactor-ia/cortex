@@ -104,7 +104,10 @@ func TestBindOrdersAndPreservesProjection(t *testing.T) {
 	}
 }
 
-func TestBindAcceptsOnlyProvenancedLocalUncertifiedTarget(t *testing.T) {
+// TestBindAcceptsOnlyAdmittedUncertifiedTargets pins the provenance fence: a
+// runtime admitted by a plan can bind, and a runtime the plan never admitted
+// cannot.
+func TestBindAcceptsOnlyAdmittedUncertifiedTargets(t *testing.T) {
 	contents := map[string][]byte{"families/router": []byte("local")}
 	manifest := bundleManifest(t, runtimematrix.RuntimePi, projection.Exact, "", contents)
 	observations := []runtimematrix.Observation{
@@ -127,16 +130,22 @@ func TestBindAcceptsOnlyProvenancedLocalUncertifiedTarget(t *testing.T) {
 	if bundle, err := Bind(manifest, local, []PayloadInput{{LogicalID: "families/router", Content: contents["families/router"]}}); err != nil || zeroBundle(bundle) {
 		t.Fatalf("local Bind() = (%#v, %v)", bundle, err)
 	}
-	strictBase, err := adapterplan.Build(fingerprint, observations)
+	// A present runtime whose version could not be identified is never admitted,
+	// so no plan carries provenance for it and Bind must refuse.
+	unidentifiedBase, err := adapterplan.Build(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	strict, err := projection.BuildPlan(strictBase, nil)
+	unidentified, err := projection.BuildPlan(unidentifiedBase, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bundle, err := Bind(manifest, strict, []PayloadInput{{LogicalID: "families/router", Content: contents["families/router"]}}); err == nil || !zeroBundle(bundle) {
-		t.Fatalf("strict Bind() = (%#v, %v)", bundle, err)
+	if bundle, err := Bind(manifest, unidentified, []PayloadInput{{LogicalID: "families/router", Content: contents["families/router"]}}); err == nil || !zeroBundle(bundle) {
+		t.Fatalf("unidentified Bind() = (%#v, %v)", bundle, err)
 	}
 }
 

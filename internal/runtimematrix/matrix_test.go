@@ -98,6 +98,36 @@ func TestDecideIsIndependentOfObservationOrder(t *testing.T) {
 	}
 }
 
+func TestDecideLocalUpdateKeepsStrictCertificationSeparate(t *testing.T) {
+	observations := []Observation{
+		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: true, Version: "1.18.21", Compatibility: Incompatible},
+		{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
+	}
+	strict, err := Decide(observations)
+	if err != nil || strict.HasCompatible || strict.Decisions[0].Outcome != OutcomeUnknownVersion || strict.Decisions[0].IncludeInTransaction {
+		t.Fatalf("strict decision = (%#v, %v)", strict, err)
+	}
+	local, err := DecideLocalUpdate(observations, RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := local.Decisions[0]; got.Outcome != OutcomePresentUncertified || got.Action != Configure || !got.IncludeInTransaction || !got.TouchAllowed {
+		t.Fatalf("local selected decision = %#v", got)
+	}
+	for _, index := range []int{1, 2} {
+		if local.Decisions[index].IncludeInTransaction || local.Decisions[index].TouchAllowed {
+			t.Fatalf("local decision authorized non-target %#v", local.Decisions[index])
+		}
+	}
+	for _, target := range []RuntimeID{RuntimeOpenCode, RuntimeClaudeCode} {
+		matrix, err := DecideLocalUpdate(observations, target)
+		if err != nil || matrix.HasCompatible {
+			t.Fatalf("ineligible local target %q = (%#v, %v)", target, matrix, err)
+		}
+	}
+}
+
 func TestDecideRejectsInvalidObservations(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -147,15 +177,6 @@ func TestDecideRejectsInvalidObservations(t *testing.T) {
 				{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
 			},
 			wantError: "unknown version cannot have adapter compatibility",
-		},
-		{
-			name: "known version has unknown compatibility",
-			observations: []Observation{
-				{ID: RuntimePi, Present: true, Version: "1.0.0", Compatibility: CompatibilityUnknown},
-				{ID: RuntimeOpenCode, Present: false, Compatibility: CompatibilityUnknown},
-				{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
-			},
-			wantError: "known version requires adapter compatibility",
 		},
 	}
 

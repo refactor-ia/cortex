@@ -60,7 +60,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if len(args) > 0 && args[0] == "model-routing" {
 		return runModelProfile(args[1:], stdout, stderr)
 	}
-	if len(args) == 0 || len(args) != 1 && args[0] != "qa" {
+	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
@@ -69,7 +69,14 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 		return runDoctor(ctx, stdout, stderr, runner, install.policy)
 	case "qa":
 		return runQA(ctx, args[1:], stdout, stderr)
-	case "install", "update":
+	case "update":
+		// Bare update keeps the all-runtime transaction; any argument selects
+		// the explicit single-runtime update, which owns its own flag parsing.
+		if len(args) > 1 {
+			return runUpdate(ctx, args, stdout, stderr, runner)
+		}
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
+	case "install":
 		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)

@@ -82,6 +82,33 @@ func TestBuildNoCompatibleIsReportOnly(t *testing.T) {
 	}
 }
 
+func TestBuildLocalUpdateCarriesOnlySelectedUncertifiedTarget(t *testing.T) {
+	observations := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},
+	}
+	strict, err := Build(fingerprint, observations)
+	if err != nil || !reflect.DeepEqual(strict.TransactionTargets, []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode}) {
+		t.Fatalf("strict Build() = (%#v, %v)", strict, err)
+	}
+	local, err := BuildLocalUpdate(fingerprint, observations, runtimematrix.RuntimeOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := local.LocalUpdateTarget(); !ok || target != runtimematrix.RuntimeOpenCode || !reflect.DeepEqual(local.TransactionTargets, []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode}) || local.Results[1].Outcome != runtimematrix.OutcomePresentUncertified {
+		t.Fatalf("local plan = %#v", local)
+	}
+	if err := Validate(local); err != nil {
+		t.Fatalf("Validate(local) = %v", err)
+	}
+	forged := local
+	forged.localUpdateTarget = ""
+	if err := Validate(forged); err == nil {
+		t.Fatal("Validate() accepted uncertified result without local provenance")
+	}
+}
+
 func TestBuildBindsOnlyTheValidFingerprint(t *testing.T) {
 	observations := compatibleObservations()
 	otherFingerprint := strings.Repeat("b", 64)

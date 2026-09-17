@@ -114,18 +114,22 @@ func validFinal(plan projection.Plan) bool {
 		return false
 	}
 	results, targets := plan.Results(), plan.TransactionTargets()
+	localTarget, local := plan.LocalUpdateTarget()
 	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
 	if len(results) != len(ids) {
 		return false
 	}
 	expected := make([]runtimematrix.RuntimeID, 0, len(ids))
 	for index, result := range results {
-		if result.ID != ids[index] || !validResult(result) {
+		if result.ID != ids[index] || !validResult(result, localTarget) {
 			return false
 		}
 		if result.IncludeInTransaction {
 			expected = append(expected, result.ID)
 		}
+	}
+	if local && (localTarget == "" || len(targets) != 1 || targets[0] != localTarget) {
+		return false
 	}
 	if len(targets) != len(expected) {
 		return false
@@ -137,8 +141,11 @@ func validFinal(plan projection.Plan) bool {
 	}
 	return plan.AllOrNothing() == (len(targets) > 0) && plan.ReportOnly() == (len(targets) == 0)
 }
-func validResult(result projection.RuntimeResult) bool {
-	if result.Outcome == runtimematrix.OutcomePresentCompatible {
+func validResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID) bool {
+	if result.Outcome == runtimematrix.OutcomePresentCompatible && localTarget != "" && result.ID != localTarget {
+		return result.ProjectionResult == "" && result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && !result.IncludeInTransaction && !result.TouchAllowed
+	}
+	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && result.ID == localTarget {
 		switch result.ProjectionResult {
 		case projection.Exact:
 			return result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
@@ -161,9 +168,11 @@ func validResult(result projection.RuntimeResult) bool {
 	return false
 }
 func matchesFinal(assessment projection.Assessment, plan projection.Plan) bool {
+	localTarget, local := plan.LocalUpdateTarget()
 	for _, result := range plan.Results() {
 		if result.ID == assessment.RuntimeID() {
-			return result.Outcome == runtimematrix.OutcomePresentCompatible && result.ProjectionResult == assessment.Result() && result.TranslationDisclosure == assessment.TranslationDisclosure()
+			eligible := result.Outcome == runtimematrix.OutcomePresentCompatible || local && result.ID == localTarget && result.Outcome == runtimematrix.OutcomePresentUncertified
+			return eligible && result.ProjectionResult == assessment.Result() && result.TranslationDisclosure == assessment.TranslationDisclosure()
 		}
 	}
 	return false

@@ -23,6 +23,13 @@ type Plan struct {
 	TransactionTargets  []runtimematrix.RuntimeID
 	AllOrNothing        bool
 	ReportOnly          bool
+	localUpdateTarget   runtimematrix.RuntimeID
+}
+
+// LocalUpdateTarget returns the sole target produced by BuildLocalUpdate.
+// The provenance is in-memory only and unavailable to strict plans.
+func (plan Plan) LocalUpdateTarget() (runtimematrix.RuntimeID, bool) {
+	return plan.localUpdateTarget, plan.localUpdateTarget != ""
 }
 
 // Validate confirms that a plan retains the canonical adapter contract shape.
@@ -39,7 +46,7 @@ func Validate(plan Plan) error {
 	targets := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
 	for index, id := range orderedIDs {
 		result := plan.Results[index]
-		if result.ID != id || !validResult(result) {
+		if result.ID != id || !validResult(result, plan.localUpdateTarget) {
 			return errors.New("adapter plan: invalid plan")
 		}
 		if result.IncludeInTransaction {
@@ -56,6 +63,9 @@ func Validate(plan Plan) error {
 		}
 	}
 
+	if plan.localUpdateTarget != "" && (!supportedLocalTarget(plan.localUpdateTarget) || len(targets) != 1 || targets[0] != plan.localUpdateTarget) {
+		return errors.New("adapter plan: invalid plan")
+	}
 	if len(targets) > 0 && (!plan.AllOrNothing || plan.ReportOnly) {
 		return errors.New("adapter plan: invalid plan")
 	}
@@ -65,10 +75,15 @@ func Validate(plan Plan) error {
 	return nil
 }
 
-func validResult(result RuntimeResult) bool {
+func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID) bool {
 	switch result.Outcome {
 	case runtimematrix.OutcomePresentCompatible:
+		if localTarget != "" && result.ID != localTarget {
+			return result.Action == runtimematrix.Configure && !result.IncludeInTransaction && !result.TouchAllowed
+		}
 		return result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
+	case runtimematrix.OutcomePresentUncertified:
+		return result.ID == localTarget && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
 	case runtimematrix.OutcomeAbsent:
 		return result.Action == runtimematrix.Warn && !result.IncludeInTransaction && !result.TouchAllowed
 	case runtimematrix.OutcomeKnownIncompatible:
@@ -80,15 +95,28 @@ func validResult(result RuntimeResult) bool {
 	}
 }
 
-// Build validates a catalog snapshot fingerprint and derives a pure adapter plan.
+// Build validates a catalog snapshot fingerprint and derives a strict adapter plan.
 func Build(snapshotFingerprint string, observations []runtimematrix.Observation) (Plan, error) {
-	if !validFingerprint(snapshotFingerprint) {
-		return Plan{}, errors.New("adapter plan: invalid snapshot fingerprint")
-	}
-
 	matrix, err := runtimematrix.Decide(observations)
 	if err != nil {
 		return Plan{}, errors.New("adapter plan: invalid runtime observations")
+	}
+	return build(snapshotFingerprint, matrix, "")
+}
+
+// BuildLocalUpdate derives a one-target local plan without certifying the
+// observed version or including any other runtime.
+func BuildLocalUpdate(snapshotFingerprint string, observations []runtimematrix.Observation, target runtimematrix.RuntimeID) (Plan, error) {
+	matrix, err := runtimematrix.DecideLocalUpdate(observations, target)
+	if err != nil {
+		return Plan{}, errors.New("adapter plan: invalid runtime observations")
+	}
+	return build(snapshotFingerprint, matrix, target)
+}
+
+func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget runtimematrix.RuntimeID) (Plan, error) {
+	if !validFingerprint(snapshotFingerprint) {
+		return Plan{}, errors.New("adapter plan: invalid snapshot fingerprint")
 	}
 
 	results := make([]RuntimeResult, 0, len(matrix.Decisions))
@@ -112,7 +140,17 @@ func Build(snapshotFingerprint string, observations []runtimematrix.Observation)
 		TransactionTargets:  targets,
 		AllOrNothing:        len(targets) > 0,
 		ReportOnly:          len(targets) == 0,
+		localUpdateTarget:   localTarget,
 	}, nil
+}
+
+func supportedLocalTarget(target runtimematrix.RuntimeID) bool {
+	switch target {
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+		return true
+	default:
+		return false
+	}
 }
 
 func validFingerprint(value string) bool {

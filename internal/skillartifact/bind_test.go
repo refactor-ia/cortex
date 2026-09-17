@@ -78,6 +78,63 @@ func TestBuildTranslatedAndUnrepresentableDormant(t *testing.T) {
 		t.Fatal("unrepresentable result has bundle")
 	}
 }
+func TestBuildLocalUncertifiedOutcomeRequiresProvenance(t *testing.T) {
+	projected, _ := skillPipeline(t, false, false, runtimematrix.RuntimePi)
+	fingerprint := projected.Assessment().SnapshotFingerprint()
+	piUnknown := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	base, err := adapterplan.BuildLocalUpdate(fingerprint, piUnknown, runtimematrix.RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := projection.BuildPlan(base, []projection.Assessment{projected.Assessment()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, local := final.LocalUpdateTarget(); !local || target != runtimematrix.RuntimePi {
+		t.Fatalf("local provenance = (%q, %t)", target, local)
+	}
+	if binding, err := Build(projected, final); err != nil || !binding.HasArtifacts() {
+		t.Fatalf("local binding = (%#v, %v)", binding, err)
+	}
+
+	strictBase, err := adapterplan.Build(fingerprint, piUnknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strictFinal, err := projection.BuildPlan(strictBase, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding, err := Build(projected, strictFinal); err == nil || binding.HasArtifacts() {
+		t.Fatalf("strict plan promoted uncertified target: (%#v, %v)", binding, err)
+	}
+
+	openUnknown := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	otherBase, err := adapterplan.BuildLocalUpdate(fingerprint, openUnknown, runtimematrix.RuntimeOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAssessment, err := projection.NewAssessment(runtimematrix.RuntimeOpenCode, fingerprint, projection.Exact, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherFinal, err := projection.BuildPlan(otherBase, []projection.Assessment{otherAssessment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding, err := Build(projected, otherFinal); err == nil || binding.HasArtifacts() {
+		t.Fatalf("mismatched local provenance bound artifacts: (%#v, %v)", binding, err)
+	}
+}
+
 func TestBuildEmptyExactAndRejectsMismatches(t *testing.T) {
 	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
 		projected, final := skillPipeline(t, false, true, runtime)

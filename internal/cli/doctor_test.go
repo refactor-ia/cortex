@@ -76,12 +76,12 @@ func TestRunDoctor(t *testing.T) {
 				"runtime=claude-code presence=absent action=warn touch=denied\n",
 		},
 		{
-			name:     "certified runtimes are compatible in canonical order",
+			name:     "present runtimes are unknown under default policy in canonical order",
 			runner:   certifiedRunner(),
-			wantCode: 0,
-			wantStdout: "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
-				"runtime=opencode presence=present compatibility=compatible action=configure touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied\n",
+			wantCode: exitUnknown,
+			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
 			assert: func(t *testing.T, runner *fakeRunner, output string) {
 				t.Helper()
 				if !reflect.DeepEqual(runner.calls, []string{"/private/pi --version", "/private/opencode --version", "/private/claude --version"}) {

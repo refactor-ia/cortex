@@ -8,11 +8,11 @@ Cortex is intended to become one curated open-source distribution of agent capab
 
 | Status | Scope |
 | --- | --- |
-| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime certification stays limited to the exact versions in the evidence table below, and a present runtime whose version is not certified is admitted only under the explicit `--allow-uncertified` opt-in. |
+| **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle; real-runtime certification stays limited to the exact versions in the evidence table below, and a present runtime whose version is identified but not certified is admitted by default with that uncertified admission disclosed. |
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
 | **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, agent prompts, and model-profile definitions. |
 
-Only the exact runtime versions in the evidence table below are certified. A present runtime whose version is not certified is reported as uncertified and is admitted only under an explicit `--allow-uncertified` opt-in, which discloses that the admission is not certified; without that opt-in it stays report-only. A known-incompatible adapter is skipped on its own and does not block the other runtimes. An unrepresentable projection is always refused, opt-in or not. There are intentionally no installation instructions or quick-start path in this README.
+Certification is evidence, not a gate. Only the exact runtime versions in the evidence table below are certified; a present runtime whose version is identified but not certified is reported as uncertified and is admitted by default, with the uncertified admission disclosed. A known-incompatible adapter is the only refusal: it is skipped on its own and does not block the other runtimes. A present runtime whose version cannot be identified is never admitted, and an unrepresentable projection is always refused. There are intentionally no installation instructions or quick-start path in this README.
 
 ## The product direction
 

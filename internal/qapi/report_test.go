@@ -3,7 +3,13 @@ package qapi
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/refactor-ia/cortex/internal/qaadmission"
+	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 // reportAssistantStartLine is the assistant message_start line shared by the
@@ -145,6 +151,147 @@ func TestParseReportStreamDiagnostic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// reportRouteFixture resolves one valid role-default route fixture for the
+// report encoder, mirroring the route resolution used by admission bindings.
+func reportRouteFixture(t *testing.T, role qarole.RoleID) qaroute.ResolvedRoute {
+	t.Helper()
+	route, failure := qaroute.Resolve(qaroute.Request{Role: role, Backend: "pi"}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("qaroute.Resolve(%s) failed: %s", role, failure.Code)
+	}
+	return route
+}
+
+// reportResultSection extracts the final "result <len>\n<value>\n" section from
+// one encoded report frame and validates the declared length against the value.
+func reportResultSection(t *testing.T, frame []byte) string {
+	t.Helper()
+	if len(frame) == 0 || frame[len(frame)-1] != '\n' {
+		t.Fatalf("frame is not newline terminated: %q", frame)
+	}
+	body := frame[:len(frame)-1]
+	header := bytes.LastIndex(body, []byte("\nresult "))
+	if header < 0 {
+		t.Fatalf("frame has no result section: %q", frame)
+	}
+	value := body[header+len("\nresult "):]
+	endl := bytes.IndexByte(value, '\n')
+	if endl < 0 {
+		t.Fatalf("result section header is unterminated: %q", frame)
+	}
+	length, err := strconv.Atoi(string(value[:endl]))
+	if err != nil {
+		t.Fatalf("result section length %q is not a number: %v", value[:endl], err)
+	}
+	carried := value[endl+1:]
+	if len(carried) != length {
+		t.Fatalf("result section declares %d bytes, carries %d", length, len(carried))
+	}
+	return string(carried)
+}
+
+// TestEncodeReportInput pins the role-aware report result contract: every
+// resolved role carries its own substantive plain-text instruction in the
+// result section, requirements directives stay exclusive to the requirements
+// analyst, and unsupported roles fail closed instead of emitting a fallback.
+// The expected instructions are synthetic contract pins, not Pi observations.
+func TestEncodeReportInput(t *testing.T) {
+	const taskText = "fixture report task"
+	const requirements = "Return one plain-text requirements analysis report. Quote every supplied requirement verbatim, flag every inconsistency explicitly, and request an explicit resolution for each conflict without inventing policy. Do not echo identity facts and do not call tools."
+	requirementsDirectives := []string{
+		"Quote every supplied requirement verbatim",
+		"flag every inconsistency explicitly",
+		"request an explicit resolution for each conflict",
+	}
+	executionLimits := []string{
+		"Do not echo identity facts",
+		"do not call tools",
+		"do not claim execution you did not perform",
+	}
+	for _, tc := range []struct {
+		name         string
+		role         qarole.RoleID
+		instruction  string
+		requirements bool
+	}{
+		{"requirements analyst keeps the requirements contract", qarole.RequirementsAnalyst, requirements, true},
+		{"test designer contracts conditions and coverage rationale", qarole.TestDesigner, "Return one plain-text test design report. Propose test conditions and coverage rationale within the supplied scope without inventing requirements. Do not echo identity facts, do not call tools, and do not claim execution you did not perform.", false},
+		{"exploratory tester separates observations from proposed checks", qarole.ExploratoryTester, "Return one plain-text exploratory assessment report. Assess the supplied behavior evidence, keep recorded observations separate from proposed checks, and never invent observations or claim live investigation. Do not echo identity facts, do not call tools, and do not claim execution you did not perform.", false},
+		{"adversarial tester separates hypotheses from observed findings", qarole.AdversarialTester, "Return one plain-text adversarial review report. Examine assumptions, boundaries, and failure behavior, keeping every hypothesis explicitly distinguished from observed findings without inventing findings. Do not echo identity facts, do not call tools, and do not claim execution you did not perform.", false},
+		{"test runner reports undetermined without evidence", qarole.TestRunner, "Return one plain-text test assessment report. Assess the supplied test evidence with explicit attribution and uncertainty; never claim to have run tests, and when evidence is missing report that the outcome cannot be determined rather than inventing pass or fail. Do not echo identity facts, do not call tools, and do not claim execution you did not perform.", false},
+		{"evidence auditor forbids fabricated evidence", qarole.EvidenceAuditor, "Return one plain-text evidence audit report. Assess the sufficiency, attribution, and uncertainty of the supplied evidence without fabricating evidence or conclusions. Do not echo identity facts, do not call tools, and do not claim execution you did not perform.", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := []byte(taskText)
+			frame, err := EncodeReportInput(reportRouteFixture(t, tc.role), strings.Repeat("a", 64), strings.Repeat("b", 64), task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prefix := "/skill:cortex-" + string(tc.role); !bytes.HasPrefix(frame, []byte(prefix+"\n")) {
+				t.Fatalf("frame does not address %s: %q", tc.role, frame)
+			}
+			section := reportResultSection(t, frame)
+			if section != tc.instruction {
+				t.Fatalf("result section = %q, want %q", section, tc.instruction)
+			}
+			for _, directive := range requirementsDirectives {
+				if strings.Contains(section, directive) != tc.requirements {
+					t.Fatalf("requirements directive %q presence = %t, want %t: %q", directive, !tc.requirements, tc.requirements, section)
+				}
+			}
+			if !tc.requirements {
+				for _, limit := range executionLimits {
+					if !strings.Contains(section, limit) {
+						t.Fatalf("result section lacks execution limit %q: %q", limit, section)
+					}
+				}
+			}
+			// The selected instruction drives the framing: the whole frame
+			// decomposes exactly into prefix, identity, task, and result
+			// sections, with the result section sized to the expected contract.
+			prefix := len("/skill:cortex-"+string(tc.role)) + 1
+			rest := frame[prefix:]
+			if !bytes.HasPrefix(rest, []byte("identity ")) {
+				t.Fatalf("frame does not open with the identity section: %q", frame)
+			}
+			headerEnd := bytes.IndexByte(rest, '\n')
+			if headerEnd < 0 {
+				t.Fatalf("identity section header is unterminated: %q", frame)
+			}
+			identityLength, err := strconv.Atoi(string(rest[len("identity "):headerEnd]))
+			if err != nil {
+				t.Fatalf("identity section length is not a number: %v", err)
+			}
+			identity := rest[headerEnd+1 : headerEnd+1+identityLength]
+			// appendSection terminates every section value with one closing
+			// newline beyond sectionSize's header accounting, so each section
+			// contributes sectionSize + 1 bytes to the frame.
+			want := prefix + (sectionSize("identity", identity) + 1) + (sectionSize("task", task) + 1) + (sectionSize("result", []byte(tc.instruction)) + 1)
+			if len(frame) != want {
+				t.Fatalf("frame length = %d, want %d from prefix + identity + task + result sections", len(frame), want)
+			}
+		})
+	}
+	t.Run("unsupported role fails closed", func(t *testing.T) {
+		route := reportRouteFixture(t, qarole.RequirementsAnalyst)
+		route.Role = "unknown-role"
+		frame, err := EncodeReportInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte(taskText))
+		if err == nil || frame != nil {
+			t.Fatalf("EncodeReportInput() = %q, %v; want closed rejection", frame, err)
+		}
+	})
+	t.Run("largest valid task stays within the frame bound", func(t *testing.T) {
+		task := bytes.Repeat([]byte("x"), qaadmission.MaxTaskBytes)
+		frame, err := EncodeReportInput(reportRouteFixture(t, qarole.EvidenceAuditor), strings.Repeat("a", 64), strings.Repeat("b", 64), task)
+		if err != nil {
+			t.Fatalf("EncodeReportInput() rejected the largest valid task: %v", err)
+		}
+		if len(frame) > qaadmission.MaxRequestBytes {
+			t.Fatalf("frame length %d exceeds the %d byte bound", len(frame), qaadmission.MaxRequestBytes)
+		}
+	})
 }
 
 // TestParseReportStreamPromptEcho pins the runAgentLoop input echo contract:

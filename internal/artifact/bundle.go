@@ -120,13 +120,14 @@ func validBundlePlan(plan projection.Plan) bool {
 	}
 	results := plan.Results()
 	localTarget, local := plan.LocalUpdateTarget()
+	admitted := plan.UncertifiedAdmitted()
 	expected := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
 	if len(results) != len(expected) {
 		return false
 	}
 	targets := make([]runtimematrix.RuntimeID, 0, len(results))
 	for index, result := range results {
-		if result.ID != expected[index] || !validBundleResult(result, localTarget) {
+		if result.ID != expected[index] || !validBundleResult(result, localTarget, admitted) {
 			return false
 		}
 		if result.IncludeInTransaction {
@@ -148,11 +149,11 @@ func validBundlePlan(plan projection.Plan) bool {
 	return plan.AllOrNothing() == (len(targets) > 0) && plan.ReportOnly() == (len(targets) == 0)
 }
 
-func validBundleResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID) bool {
+func validBundleResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID, admitted []runtimematrix.RuntimeID) bool {
 	if result.Outcome == runtimematrix.OutcomePresentCompatible && localTarget != "" && result.ID != localTarget {
 		return result.ProjectionResult == "" && result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && !result.IncludeInTransaction && !result.TouchAllowed
 	}
-	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && result.ID == localTarget {
+	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && admitsUncertified(admitted, result.ID) {
 		switch result.ProjectionResult {
 		case projection.Exact:
 			return result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
@@ -176,15 +177,24 @@ func validBundleResult(result projection.RuntimeResult, localTarget runtimematri
 	}
 }
 
+func admitsUncertified(admitted []runtimematrix.RuntimeID, id runtimematrix.RuntimeID) bool {
+	for _, candidate := range admitted {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
 func matchesPlan(manifest Manifest, plan projection.Plan) bool {
-	localTarget, local := plan.LocalUpdateTarget()
+	admitted := plan.UncertifiedAdmitted()
 	matches := 0
 	for _, result := range plan.Results() {
 		if result.ID != manifest.RuntimeID() {
 			continue
 		}
 		matches++
-		eligible := result.Outcome == runtimematrix.OutcomePresentCompatible || local && result.ID == localTarget && result.Outcome == runtimematrix.OutcomePresentUncertified
+		eligible := result.Outcome == runtimematrix.OutcomePresentCompatible || admitsUncertified(admitted, result.ID) && result.Outcome == runtimematrix.OutcomePresentUncertified
 		if !eligible || result.ProjectionResult != manifest.ProjectionResult() || result.TranslationDisclosure != manifest.TranslationDisclosure() || result.Action != runtimematrix.Configure || !result.IncludeInTransaction || !result.TouchAllowed {
 			return false
 		}

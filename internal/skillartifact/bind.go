@@ -115,13 +115,14 @@ func validFinal(plan projection.Plan) bool {
 	}
 	results, targets := plan.Results(), plan.TransactionTargets()
 	localTarget, local := plan.LocalUpdateTarget()
+	admitted := plan.UncertifiedAdmitted()
 	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
 	if len(results) != len(ids) {
 		return false
 	}
 	expected := make([]runtimematrix.RuntimeID, 0, len(ids))
 	for index, result := range results {
-		if result.ID != ids[index] || !validResult(result, localTarget) {
+		if result.ID != ids[index] || !validResult(result, localTarget, admitted) {
 			return false
 		}
 		if result.IncludeInTransaction {
@@ -141,11 +142,11 @@ func validFinal(plan projection.Plan) bool {
 	}
 	return plan.AllOrNothing() == (len(targets) > 0) && plan.ReportOnly() == (len(targets) == 0)
 }
-func validResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID) bool {
+func validResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID, admitted []runtimematrix.RuntimeID) bool {
 	if result.Outcome == runtimematrix.OutcomePresentCompatible && localTarget != "" && result.ID != localTarget {
 		return result.ProjectionResult == "" && result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && !result.IncludeInTransaction && !result.TouchAllowed
 	}
-	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && result.ID == localTarget {
+	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && admits(admitted, result.ID) {
 		switch result.ProjectionResult {
 		case projection.Exact:
 			return result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
@@ -167,11 +168,19 @@ func validResult(result projection.RuntimeResult, localTarget runtimematrix.Runt
 	}
 	return false
 }
+func admits(admitted []runtimematrix.RuntimeID, id runtimematrix.RuntimeID) bool {
+	for _, candidate := range admitted {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
 func matchesFinal(assessment projection.Assessment, plan projection.Plan) bool {
-	localTarget, local := plan.LocalUpdateTarget()
+	admitted := plan.UncertifiedAdmitted()
 	for _, result := range plan.Results() {
 		if result.ID == assessment.RuntimeID() {
-			eligible := result.Outcome == runtimematrix.OutcomePresentCompatible || local && result.ID == localTarget && result.Outcome == runtimematrix.OutcomePresentUncertified
+			eligible := result.Outcome == runtimematrix.OutcomePresentCompatible || admits(admitted, result.ID) && result.Outcome == runtimematrix.OutcomePresentUncertified
 			return eligible && result.ProjectionResult == assessment.Result() && result.TranslationDisclosure == assessment.TranslationDisclosure()
 		}
 	}

@@ -240,3 +240,38 @@ func writeFile(t *testing.T, root, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestBuildAdmitsEveryUncertifiedRuntimeUnderExplicitAdmission(t *testing.T) {
+	projected, _ := skillPipeline(t, false, false, runtimematrix.RuntimePi)
+	fingerprint := projected.Assessment().SnapshotFingerprint()
+	allUncertified := []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
+	}
+	base, err := adapterplan.BuildUncertifiedAdmission(fingerprint, allUncertified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessments := []projection.Assessment{projected.Assessment()}
+	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+		assessment, err := projection.NewAssessment(runtime, fingerprint, projection.Exact, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		assessments = append(assessments, assessment)
+	}
+	final, err := projection.BuildPlan(base, assessments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, local := final.LocalUpdateTarget(); local || target != "" {
+		t.Fatalf("admission plan carried local provenance (%q, %t)", target, local)
+	}
+	if got := final.UncertifiedAdmitted(); len(got) != 3 {
+		t.Fatalf("admitted = %#v, want all three runtimes", got)
+	}
+	if binding, err := Build(projected, final); err != nil || !binding.HasArtifacts() {
+		t.Fatalf("admitted binding = (%#v, %v)", binding, err)
+	}
+}

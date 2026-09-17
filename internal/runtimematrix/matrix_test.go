@@ -192,3 +192,54 @@ func TestDecideRejectsInvalidObservations(t *testing.T) {
 		})
 	}
 }
+
+func TestDecideUncertifiedAdmissionPromotesOnlyEligibleRuntimes(t *testing.T) {
+	observations := []Observation{
+		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: true, Version: "1.18.21", Compatibility: Incompatible},
+		{ID: RuntimeClaudeCode, Present: true, Compatibility: CompatibilityUnknown},
+	}
+	strict, err := Decide(observations)
+	if err != nil || strict.HasCompatible {
+		t.Fatalf("strict decision = (%#v, %v)", strict, err)
+	}
+	for _, decision := range strict.Decisions {
+		if decision.Outcome == OutcomePresentUncertified {
+			t.Fatalf("strict Decide emitted an uncertified outcome: %#v", decision)
+		}
+	}
+	admitted, err := DecideUncertifiedAdmission(observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !admitted.HasCompatible {
+		t.Fatal("admission matrix reported no transaction targets")
+	}
+	if got := admitted.Decisions[0]; got.Outcome != OutcomePresentUncertified || got.Action != Configure || !got.IncludeInTransaction || !got.TouchAllowed {
+		t.Fatalf("eligible uncertified decision = %#v", got)
+	}
+	if got := admitted.Decisions[1]; got.Outcome != OutcomeKnownIncompatible || got.Action != Skip || got.IncludeInTransaction || got.TouchAllowed {
+		t.Fatalf("known-incompatible decision was promoted: %#v", got)
+	}
+	if got := admitted.Decisions[2]; got.Outcome != OutcomeUnknownVersion || got.Action != Warn || got.IncludeInTransaction || got.TouchAllowed {
+		t.Fatalf("present but unversioned decision was promoted: %#v", got)
+	}
+}
+
+func TestDecideUncertifiedAdmissionPromotesEveryPresentUncertifiedRuntime(t *testing.T) {
+	matrix, err := DecideUncertifiedAdmission([]Observation{
+		{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: CompatibilityUnknown},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(matrix.Decisions, []Decision{
+		{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+		{ID: RuntimeOpenCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+		{ID: RuntimeClaudeCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+	}) || !matrix.HasCompatible {
+		t.Fatalf("Decisions = %#v, want every runtime admitted", matrix.Decisions)
+	}
+}

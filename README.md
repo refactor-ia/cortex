@@ -103,7 +103,9 @@ Cortex targets one curated distribution rather than separately released packs. I
 
 Remaining work includes populating and migrating the catalog, establishing full 11×3 runtime-family parity evidence beyond the delivered lifecycle coverage, and passing release certification gates. No delivery date is promised.
 
-For the full intended contract — including the target agent roster, model-routing representation, and ownership rules — see the [architecture overview](docs/architecture/overview.md). It is the authority; this page is the introduction.
+User model profiles are not a Cortex capability: gentle-shell owns them, exposed as `/gentle:profiles`.
+
+For the full intended contract — including the target agent roster, representation results, and ownership rules — see the [architecture overview](docs/architecture/overview.md). It is the authority; this page is the introduction.
 
 ## Runtime admission evidence
 

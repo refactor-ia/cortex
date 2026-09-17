@@ -304,7 +304,9 @@ func writeUpdateOperations(stdout io.Writer, header string, classified installob
 // revalidated through installcoord.Preflight; the existing transaction
 // primitives own backup capture, ordered writes, final readback, and rollback.
 func applyUpdate(stdout, stderr io.Writer, plan installplan.Plan, observation installobserve.FilesystemObservation, classified installobserve.Result, observations []runtimematrix.Observation, warning string) int {
-	header := fmt.Sprintf("runtime=%s root=%s mode=plan%s", plan.RuntimeID(), plan.RootPath(), warning)
+	// The header reports the mode the caller asked for. A refusal on this path
+	// is still an apply attempt, and reporting it as a plan misstates what ran.
+	header := fmt.Sprintf("runtime=%s root=%s mode=apply%s", plan.RuntimeID(), plan.RootPath(), warning)
 	report, err := installcoord.PreflightLocalUpdate(observations, plan.RuntimeID(), []installcoord.Unit{{Plan: plan, Observation: observation}})
 	if err != nil {
 		writeError(stderr, "preflight_failed")

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 feature: runtime-adapter-contract
 purpose: Declarative rules for Cortex runtime-adapter operations.
 
@@ -22,7 +22,14 @@ runtime_outcomes:
     touch_adapter: false
   unknown_version:
     action: warn_and_report_uncertainty
-  no_compatible:
+  present_uncertified:
+    action: include_in_transaction
+    scope: every present uncertified runtime
+    all_or_nothing: true
+    requires_explicit_opt_in: true
+    disclosed: true
+    certified: false
+  no_admitted_runtime:
     action: report_only
     install: false
     block_ordinary_work: false

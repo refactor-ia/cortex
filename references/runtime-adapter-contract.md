@@ -17,7 +17,8 @@ configuration.
 | Runtime is absent | Warn, do not install it, and continue. |
 | Adapter is known incompatible | Skip and report only that adapter; do not touch it. |
 | Runtime version is unknown | Warn and report the uncertainty. |
-| No compatible runtime is present | Report the result without installing, blocking ordinary work, or changing unrelated configuration. |
+| Present runtime version is uncertified | Admit it only under an explicit operator opt-in. Include every present uncertified runtime in the same all-or-nothing transaction and disclose that the admission is not certified. |
+| No runtime is admitted | Report the result without installing, blocking ordinary work, or changing unrelated configuration. |
 
 ## Safe mutations
 

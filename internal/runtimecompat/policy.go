@@ -91,13 +91,23 @@ func newEntry(source Entry) (entry, error) {
 	return current, nil
 }
 
+// Certified runtime versions. Each one is admitted only on an exact match and
+// is backed by the merged real-runtime smoke evidence recorded in the root
+// README evidence table. TestBuiltInPolicyMatchesPublishedEvidence pins these
+// constants to that table so the two cannot drift apart.
+const (
+	CertifiedPiVersion         = "0.85.1"
+	CertifiedOpenCodeVersion   = "1.18.25"
+	CertifiedClaudeCodeVersion = "2.1.251"
+)
+
 // BuiltInPolicy returns the production policy. Certification requires an explicit
 // source and test change after real runtime smoke evidence is merged.
 func BuiltInPolicy() Policy {
 	policy, err := NewPolicy([]Entry{
-		{ID: runtimematrix.RuntimePi},
-		{ID: runtimematrix.RuntimeOpenCode},
-		{ID: runtimematrix.RuntimeClaudeCode},
+		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{CertifiedPiVersion}},
+		{ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{CertifiedOpenCodeVersion}},
+		{ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{CertifiedClaudeCodeVersion}},
 	})
 	if err != nil {
 		panic(err)

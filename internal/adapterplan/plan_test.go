@@ -26,8 +26,9 @@ func TestBuildMixedOutcomes(t *testing.T) {
 			{ID: runtimematrix.RuntimeOpenCode, Outcome: runtimematrix.OutcomeKnownIncompatible, Action: runtimematrix.Skip},
 			{ID: runtimematrix.RuntimeClaudeCode, Outcome: runtimematrix.OutcomePresentCompatible, Action: runtimematrix.Configure, IncludeInTransaction: true, TouchAllowed: true},
 		},
-		TransactionTargets: []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode},
-		AllOrNothing:       true,
+		TransactionTargets:  []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode},
+		AllOrNothing:        true,
+		uncertifiedAdmitted: []runtimematrix.RuntimeID{},
 	}
 	if !reflect.DeepEqual(plan, want) {
 		t.Errorf("Build() = %#v, want %#v", plan, want)
@@ -102,10 +103,101 @@ func TestBuildLocalUpdateCarriesOnlySelectedUncertifiedTarget(t *testing.T) {
 	if err := Validate(local); err != nil {
 		t.Fatalf("Validate(local) = %v", err)
 	}
+	if admitted := local.UncertifiedAdmitted(); !reflect.DeepEqual(admitted, []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode}) {
+		t.Fatalf("local admitted set = %#v, want only the selected target", admitted)
+	}
 	forged := local
 	forged.localUpdateTarget = ""
+	forged.uncertifiedAdmitted = nil
 	if err := Validate(forged); err == nil {
-		t.Fatal("Validate() accepted uncertified result without local provenance")
+		t.Fatal("Validate() accepted uncertified result without admission provenance")
+	}
+	stillForged := local
+	stillForged.uncertifiedAdmitted = nil
+	if err := Validate(stillForged); err == nil {
+		t.Fatal("Validate() accepted uncertified result absent from the admitted set")
+	}
+}
+
+func TestUncertifiedAdmittedIsDetached(t *testing.T) {
+	local, err := BuildLocalUpdate(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+	}, runtimematrix.RuntimePi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.UncertifiedAdmitted()[0] = "changed"
+	if got := local.UncertifiedAdmitted(); got[0] != runtimematrix.RuntimePi {
+		t.Fatalf("UncertifiedAdmitted() shared its backing array: %#v", got)
+	}
+}
+
+func TestBuildUncertifiedAdmissionPromotesEveryPresentUncertifiedRuntime(t *testing.T) {
+	plan, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	if !reflect.DeepEqual(plan.UncertifiedAdmitted(), all) || !reflect.DeepEqual(plan.TransactionTargets, all) {
+		t.Fatalf("admission plan = %#v", plan)
+	}
+	if target, local := plan.LocalUpdateTarget(); local || target != "" {
+		t.Fatalf("admission plan carried local provenance (%q, %t)", target, local)
+	}
+	if err := Validate(plan); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestBuildUncertifiedAdmissionLeavesIneligibleRuntimesUnpromoted(t *testing.T) {
+	plan, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.UncertifiedAdmitted(), []runtimematrix.RuntimeID{runtimematrix.RuntimePi}) {
+		t.Fatalf("admitted = %#v, want only the eligible uncertified runtime", plan.UncertifiedAdmitted())
+	}
+	incompatible := plan.Results[1]
+	if incompatible.Outcome != runtimematrix.OutcomeKnownIncompatible || incompatible.Action != runtimematrix.Skip || incompatible.IncludeInTransaction || incompatible.TouchAllowed {
+		t.Fatalf("known-incompatible runtime was promoted: %#v", incompatible)
+	}
+	unversioned := plan.Results[2]
+	if unversioned.Outcome != runtimematrix.OutcomeUnknownVersion || unversioned.Action != runtimematrix.Warn || unversioned.IncludeInTransaction || unversioned.TouchAllowed {
+		t.Fatalf("present but unversioned runtime was promoted: %#v", unversioned)
+	}
+	if err := Validate(plan); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestValidateRejectsTamperedAdmissionSetInBothDirections(t *testing.T) {
+	admitted, err := BuildUncertifiedAdmission(fingerprint, []runtimematrix.Observation{
+		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.Compatible},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped := clonePlan(admitted)
+	dropped.uncertifiedAdmitted = dropped.uncertifiedAdmitted[:1]
+	if err := Validate(dropped); err == nil {
+		t.Fatal("Validate() accepted an uncertified result missing from the admitted set")
+	}
+	claimed := clonePlan(admitted)
+	claimed.uncertifiedAdmitted = append(claimed.uncertifiedAdmitted, runtimematrix.RuntimeClaudeCode)
+	if err := Validate(claimed); err == nil {
+		t.Fatal("Validate() accepted an admitted runtime that is not uncertified")
 	}
 }
 
@@ -358,6 +450,9 @@ func clonePlan(plan Plan) Plan {
 	}
 	if plan.TransactionTargets != nil {
 		clone.TransactionTargets = append(make([]runtimematrix.RuntimeID, 0, len(plan.TransactionTargets)), plan.TransactionTargets...)
+	}
+	if plan.uncertifiedAdmitted != nil {
+		clone.uncertifiedAdmitted = append(make([]runtimematrix.RuntimeID, 0, len(plan.uncertifiedAdmitted)), plan.uncertifiedAdmitted...)
 	}
 	return clone
 }

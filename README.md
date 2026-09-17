@@ -12,7 +12,7 @@ Cortex is intended to become one curated open-source distribution of agent capab
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
 | **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, agent prompts, and model-profile definitions. |
 
-Only the exact runtime versions in the evidence table below are admitted; unknown versions remain fail-closed and report-only. There are intentionally no installation instructions or quick-start path in this README.
+Only the exact runtime versions in the evidence table below are certified. A present runtime whose version is not certified is reported as uncertified and is admitted only under an explicit `--allow-uncertified` opt-in, which discloses that the admission is not certified; without that opt-in it stays report-only. A known-incompatible adapter is skipped on its own and does not block the other runtimes. An unrepresentable projection is always refused, opt-in or not. There are intentionally no installation instructions or quick-start path in this README.
 
 ## The product direction
 

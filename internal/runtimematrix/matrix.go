@@ -128,6 +128,32 @@ func DecideLocalUpdate(observations []Observation, target RuntimeID) (Matrix, er
 	return matrix, nil
 }
 
+// DecideUncertifiedAdmission promotes every present, normalized, uncertified
+// runtime under an explicit operator opt-in. Strict Decide never emits or
+// authorizes this outcome.
+func DecideUncertifiedAdmission(observations []Observation) (Matrix, error) {
+	matrix, err := Decide(observations)
+	if err != nil {
+		return Matrix{}, err
+	}
+	for index := range matrix.Decisions {
+		decision := &matrix.Decisions[index]
+		for _, observation := range observations {
+			if observation.ID == decision.ID && observation.Present && observation.Version != "" && observation.Compatibility == CompatibilityUnknown {
+				decision.Outcome = OutcomePresentUncertified
+				decision.Action = Configure
+				decision.IncludeInTransaction = true
+				decision.TouchAllowed = true
+			}
+		}
+	}
+	matrix.HasCompatible = false
+	for _, decision := range matrix.Decisions {
+		matrix.HasCompatible = matrix.HasCompatible || decision.IncludeInTransaction
+	}
+	return matrix, nil
+}
+
 func isSupported(id RuntimeID) bool {
 	for _, supported := range runtimeOrder {
 		if id == supported {

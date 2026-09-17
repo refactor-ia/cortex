@@ -24,12 +24,20 @@ type Plan struct {
 	AllOrNothing        bool
 	ReportOnly          bool
 	localUpdateTarget   runtimematrix.RuntimeID
+	uncertifiedAdmitted []runtimematrix.RuntimeID
 }
 
 // LocalUpdateTarget returns the sole target produced by BuildLocalUpdate.
 // The provenance is in-memory only and unavailable to strict plans.
 func (plan Plan) LocalUpdateTarget() (runtimematrix.RuntimeID, bool) {
 	return plan.localUpdateTarget, plan.localUpdateTarget != ""
+}
+
+// UncertifiedAdmitted returns a detached copy of the runtimes admitted under an
+// explicit uncertified opt-in, in canonical order. The provenance is in-memory
+// only and unavailable to strict plans.
+func (plan Plan) UncertifiedAdmitted() []runtimematrix.RuntimeID {
+	return append([]runtimematrix.RuntimeID{}, plan.uncertifiedAdmitted...)
 }
 
 // Validate confirms that a plan retains the canonical adapter contract shape.
@@ -44,13 +52,26 @@ func Validate(plan Plan) error {
 		runtimematrix.RuntimeClaudeCode,
 	}
 	targets := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
+	admitted := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
 	for index, id := range orderedIDs {
 		result := plan.Results[index]
-		if result.ID != id || !validResult(result, plan.localUpdateTarget) {
+		if result.ID != id || !validResult(result, plan.localUpdateTarget, plan.uncertifiedAdmitted) {
 			return errors.New("adapter plan: invalid plan")
 		}
 		if result.IncludeInTransaction {
 			targets = append(targets, id)
+		}
+		if result.Outcome == runtimematrix.OutcomePresentUncertified {
+			admitted = append(admitted, id)
+		}
+	}
+
+	if len(plan.uncertifiedAdmitted) != len(admitted) {
+		return errors.New("adapter plan: invalid plan")
+	}
+	for index, id := range admitted {
+		if plan.uncertifiedAdmitted[index] != id {
+			return errors.New("adapter plan: invalid plan")
 		}
 	}
 
@@ -75,7 +96,7 @@ func Validate(plan Plan) error {
 	return nil
 }
 
-func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID) bool {
+func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID, admitted []runtimematrix.RuntimeID) bool {
 	switch result.Outcome {
 	case runtimematrix.OutcomePresentCompatible:
 		if localTarget != "" && result.ID != localTarget {
@@ -83,7 +104,7 @@ func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID) bool
 		}
 		return result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
 	case runtimematrix.OutcomePresentUncertified:
-		return result.ID == localTarget && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
+		return admits(admitted, result.ID) && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
 	case runtimematrix.OutcomeAbsent:
 		return result.Action == runtimematrix.Warn && !result.IncludeInTransaction && !result.TouchAllowed
 	case runtimematrix.OutcomeKnownIncompatible:
@@ -93,6 +114,15 @@ func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID) bool
 	default:
 		return false
 	}
+}
+
+func admits(admitted []runtimematrix.RuntimeID, id runtimematrix.RuntimeID) bool {
+	for _, candidate := range admitted {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Build validates a catalog snapshot fingerprint and derives a strict adapter plan.
@@ -114,6 +144,16 @@ func BuildLocalUpdate(snapshotFingerprint string, observations []runtimematrix.O
 	return build(snapshotFingerprint, matrix, target)
 }
 
+// BuildUncertifiedAdmission derives a plan that admits every present
+// uncertified runtime without certifying any observed version.
+func BuildUncertifiedAdmission(snapshotFingerprint string, observations []runtimematrix.Observation) (Plan, error) {
+	matrix, err := runtimematrix.DecideUncertifiedAdmission(observations)
+	if err != nil {
+		return Plan{}, errors.New("adapter plan: invalid runtime observations")
+	}
+	return build(snapshotFingerprint, matrix, "")
+}
+
 func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget runtimematrix.RuntimeID) (Plan, error) {
 	if !validFingerprint(snapshotFingerprint) {
 		return Plan{}, errors.New("adapter plan: invalid snapshot fingerprint")
@@ -121,6 +161,7 @@ func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget 
 
 	results := make([]RuntimeResult, 0, len(matrix.Decisions))
 	targets := make([]runtimematrix.RuntimeID, 0, len(matrix.Decisions))
+	admitted := make([]runtimematrix.RuntimeID, 0, len(matrix.Decisions))
 	for _, decision := range matrix.Decisions {
 		results = append(results, RuntimeResult{
 			ID:                   decision.ID,
@@ -132,6 +173,9 @@ func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget 
 		if decision.IncludeInTransaction {
 			targets = append(targets, decision.ID)
 		}
+		if decision.Outcome == runtimematrix.OutcomePresentUncertified {
+			admitted = append(admitted, decision.ID)
+		}
 	}
 
 	return Plan{
@@ -141,6 +185,7 @@ func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget 
 		AllOrNothing:        len(targets) > 0,
 		ReportOnly:          len(targets) == 0,
 		localUpdateTarget:   localTarget,
+		uncertifiedAdmitted: admitted,
 	}, nil
 }
 

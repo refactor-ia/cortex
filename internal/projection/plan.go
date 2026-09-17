@@ -26,6 +26,7 @@ type Plan struct {
 	allOrNothing        bool
 	reportOnly          bool
 	localUpdateTarget   runtimematrix.RuntimeID
+	uncertifiedAdmitted []runtimematrix.RuntimeID
 }
 
 // SnapshotFingerprint returns the catalog snapshot bound to the plan.
@@ -50,6 +51,12 @@ func (plan Plan) ReportOnly() bool { return plan.reportOnly }
 // LocalUpdateTarget returns the private local-planning provenance, if present.
 func (plan Plan) LocalUpdateTarget() (runtimematrix.RuntimeID, bool) {
 	return plan.localUpdateTarget, plan.localUpdateTarget != ""
+}
+
+// UncertifiedAdmitted returns a detached, non-nil copy of the runtimes admitted
+// under an explicit uncertified opt-in, in canonical order.
+func (plan Plan) UncertifiedAdmitted() []runtimematrix.RuntimeID {
+	return append([]runtimematrix.RuntimeID{}, plan.uncertifiedAdmitted...)
 }
 
 // BuildPlan refines a valid adapter plan using bound projection assessments.
@@ -111,6 +118,7 @@ func BuildPlan(base adapterplan.Plan, assessments []Assessment) (Plan, error) {
 		allOrNothing:        len(finalTargets) > 0,
 		reportOnly:          len(finalTargets) == 0,
 		localUpdateTarget:   localTarget,
+		uncertifiedAdmitted: base.UncertifiedAdmitted(),
 	}, nil
 }
 

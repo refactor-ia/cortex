@@ -94,11 +94,11 @@ A family package contains its manifest, router, subskills, justified agents, ref
 | Services and personal | Postmark v1 is guidance only. Do not promise Coolify until it is implemented. Credentialed or personal capabilities are dormant until configured, with no preconfigured profiles or personal data. `voice` and `learn` remain neutral and dormant until configured. |
 | Memory integration | `kb-feeder` is proposal-first and requires approval before writing. Never absorb `cortex-brains` server, storage, embedding, backup, doctor, or memory-skill responsibilities. |
 
-## Model routing
+## Representation of a Cortex-owned selection
 
-Cortex recognizes `openai`, `nan`, `mixed`, and `anthropic` profiles. Installation MUST NOT auto-select a profile, replace existing user routing, or apply routing outside Cortex-owned roles. Profile application is all-or-nothing across present runtimes that can represent it; an unrepresentable runtime remains untouched. Model status and reasoning status are reported separately.
+User model-profile management is a Gentle AI™ product capability. gentle-shell ships it, exposed as `/gentle:profiles`. Under [functional precedence](#gentle-ai-functional-precedence) Cortex does not implement, project, or report user model profiles, and ships no `model-routing` command; users manage profiles with gentle-shell directly.
 
-Each runtime projection reports one result:
+Cortex still states how a Cortex-owned selection is represented in a runtime, which applies to every projection it does perform:
 
 | Result | Meaning |
 | --- | --- |
@@ -106,7 +106,7 @@ Each runtime projection reports one result:
 | `translated` | The runtime uses a disclosed equivalent projection. |
 | `unrepresentable` | Cortex cannot represent the selection without misrepresentation. |
 
-Claude Code reports `openai`, `nan`, and the current `mixed` profile as `unrepresentable`; `anthropic` may map the model exactly while reasoning support is reported separately. Cortex makes no unverified provider-support claim for Pi or OpenCode.
+Cortex makes no unverified provider-support claim for any runtime.
 
 ## Ownership and safety
 

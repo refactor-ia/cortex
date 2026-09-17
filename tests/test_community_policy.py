@@ -216,19 +216,6 @@ EXPECTED_FILES = {
         "internal/catalog/load_catalog_test.go",
         "internal/catalog/snapshot.go",
         "internal/catalog/snapshot_test.go",
-        "internal/modelprofile/apply.go",
-        "internal/modelprofile/apply_test.go",
-        "internal/modelprofile/catalog.go",
-        "internal/modelprofile/catalog_test.go",
-        "internal/modelprofile/opencode.go",
-        "internal/modelprofile/opencode_test.go",
-        "internal/modelprofile/pi.go",
-        "internal/modelprofile/pi_test.go",
-        "internal/modelprofile/restore.go",
-        "internal/modelprofile/restore_test.go",
-        "internal/modelprofile/rootidentity.go",
-        "internal/modelprofile/rootidentity_unix.go",
-        "internal/modelprofile/rootidentity_unsupported.go",
         "internal/releasecatalog/source.go",
         "internal/releasecatalog/source_test.go",
         "internal/releasecatalog/source_external_test.go",
@@ -263,8 +250,6 @@ EXPECTED_FILES = {
         "internal/cli/doctor.go",
         "internal/cli/doctor_test.go",
         "internal/cli/qa_test.go",
-        "internal/cli/modelprofile.go",
-        "internal/cli/modelprofile_test.go",
         "internal/cli/install.go",
         "internal/cli/install_test.go",
         "internal/cli/lifecycle_e2e_test.go",
@@ -364,8 +349,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 313)
-                self.assertEqual(len(actual_files), 313)
+                self.assertEqual(len(EXPECTED_FILES), 298)
+                self.assertEqual(len(actual_files), 298)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

@@ -273,6 +273,8 @@ EXPECTED_FILES = {
         "internal/cli/opencode_real_smoke_test.go",
         "internal/cli/claude_real_smoke_test.go",
         "internal/cli/uninstall_test.go",
+        "internal/cli/update.go",
+        "internal/cli/update_test.go",
         "internal/lifecycleharness/install_update_parity_test.go",
         "internal/lifecycleharness/uninstall_parity_test.go",
         "internal/skillrender/render.go",
@@ -361,8 +363,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 310)
-                self.assertEqual(len(actual_files), 310)
+                self.assertEqual(len(EXPECTED_FILES), 312)
+                self.assertEqual(len(actual_files), 312)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

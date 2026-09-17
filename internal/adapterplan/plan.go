@@ -33,9 +33,9 @@ func (plan Plan) LocalUpdateTarget() (runtimematrix.RuntimeID, bool) {
 	return plan.localUpdateTarget, plan.localUpdateTarget != ""
 }
 
-// UncertifiedAdmitted returns a detached copy of the runtimes admitted under an
-// explicit uncertified opt-in, in canonical order. The provenance is in-memory
-// only and unavailable to strict plans.
+// UncertifiedAdmitted returns a detached copy of the runtimes admitted without
+// a certified version, in canonical order. The provenance is in-memory only and
+// is derived by Build, never supplied by a caller.
 func (plan Plan) UncertifiedAdmitted() []runtimematrix.RuntimeID {
 	return append([]runtimematrix.RuntimeID{}, plan.uncertifiedAdmitted...)
 }
@@ -104,7 +104,13 @@ func validResult(result RuntimeResult, localTarget runtimematrix.RuntimeID, admi
 		}
 		return result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
 	case runtimematrix.OutcomePresentUncertified:
-		return admits(admitted, result.ID) && result.Action == runtimematrix.Configure && result.IncludeInTransaction && result.TouchAllowed
+		if !admits(admitted, result.ID) || result.Action != runtimematrix.Configure {
+			return false
+		}
+		if localTarget != "" && result.ID != localTarget {
+			return !result.IncludeInTransaction && !result.TouchAllowed
+		}
+		return result.IncludeInTransaction && result.TouchAllowed
 	case runtimematrix.OutcomeAbsent:
 		return result.Action == runtimematrix.Warn && !result.IncludeInTransaction && !result.TouchAllowed
 	case runtimematrix.OutcomeKnownIncompatible:
@@ -125,7 +131,9 @@ func admits(admitted []runtimematrix.RuntimeID, id runtimematrix.RuntimeID) bool
 	return false
 }
 
-// Build validates a catalog snapshot fingerprint and derives a strict adapter plan.
+// Build validates a catalog snapshot fingerprint and derives an adapter plan.
+// Every present runtime with an identified version is admitted; the plan records
+// which admissions were uncertified so callers can disclose them.
 func Build(snapshotFingerprint string, observations []runtimematrix.Observation) (Plan, error) {
 	matrix, err := runtimematrix.Decide(observations)
 	if err != nil {
@@ -142,16 +150,6 @@ func BuildLocalUpdate(snapshotFingerprint string, observations []runtimematrix.O
 		return Plan{}, errors.New("adapter plan: invalid runtime observations")
 	}
 	return build(snapshotFingerprint, matrix, target)
-}
-
-// BuildUncertifiedAdmission derives a plan that admits every present
-// uncertified runtime without certifying any observed version.
-func BuildUncertifiedAdmission(snapshotFingerprint string, observations []runtimematrix.Observation) (Plan, error) {
-	matrix, err := runtimematrix.DecideUncertifiedAdmission(observations)
-	if err != nil {
-		return Plan{}, errors.New("adapter plan: invalid runtime observations")
-	}
-	return build(snapshotFingerprint, matrix, "")
 }
 
 func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget runtimematrix.RuntimeID) (Plan, error) {

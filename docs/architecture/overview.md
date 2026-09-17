@@ -56,8 +56,9 @@ Cortex targets Pi, OpenCode, and Claude Code with contract and function parity t
 | Compatible runtime is present | Configure every compatible present runtime in one transaction. Updates are all-or-nothing across those adapters. |
 | Target runtime is absent | Warn, do not install it, and continue with compatible present runtimes. |
 | Adapter is known incompatible | Skip only that adapter without touching it and report the skip. |
-| Runtime version is unknown | Warn and report the uncertainty. |
-| No compatible runtime is present | Report the result without installing, blocking ordinary work, or modifying unrelated configuration. |
+| Runtime version is identified but uncertified | Configure it alongside the compatible runtimes in the same transaction and disclose that the admission is not certified. |
+| Runtime version is unknown | Warn and report the uncertainty. Cortex cannot identify the runtime, so it does not write to it. |
+| No runtime is admitted | Report the result without installing, blocking ordinary work, or modifying unrelated configuration. |
 
 The core provides canonical catalog and family manifests; install, update, rollback, and uninstall; explicit configuration ownership; verifiable backups; transactional writes with readback; a runtime detection/version matrix; adapter engine; dormant activation; doctor; and a parity harness.
 
@@ -126,7 +127,7 @@ Build and release generate runtime artifacts from catalog/family manifests; the 
 - At least one real runtime smoke invocation for every family and runtime: 11 families x 3 runtimes, at least 33 invocations.
 - Explicit results for absent runtimes, unknown versions, and known-incompatible adapters.
 
-Unknown versions warn. Known-incompatible versions skip only the affected adapter. A parity claim is not published before these gates pass.
+Identified uncertified versions are admitted with disclosure; certification records which versions were verified end to end rather than gating admission. Unknown versions warn and are never written to. Known-incompatible versions skip only the affected adapter. A parity claim is not published before these gates pass.
 
 Catalog admission has hard gates for explicit license, provenance, and redistribution permission. Proposed catalog capabilities SHOULD be evaluated against the current official, supported Gentle AI™ product surface, and material overlap SHOULD be avoided; outcomes are governed by the `Gentle AI™ functional precedence` subsection. Project code uses a permissive license. Cortex-owned content and knowledge use CC BY-SA. Third-party or imported material requires an explicit compatible redistribution license and proven provenance; otherwise it remains out of the catalog.
 

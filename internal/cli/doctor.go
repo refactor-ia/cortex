@@ -60,7 +60,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if len(args) > 0 && args[0] == "model-routing" {
 		return runModelProfile(args[1:], stdout, stderr)
 	}
-	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" && args[0] != "install" {
+	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
@@ -75,14 +75,9 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 		if len(args) > 1 {
 			return runUpdate(ctx, args, stdout, stderr, runner)
 		}
-		return runInstall(ctx, stdout, stderr, runner, args[0], false, install)
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "install":
-		allowUncertified, ok := parseInstallArgs(args[1:])
-		if !ok {
-			writeError(stderr, "invalid_command")
-			return exitUsage
-		}
-		return runInstall(ctx, stdout, stderr, runner, args[0], allowUncertified, install)
+		return runInstall(ctx, stdout, stderr, runner, args[0], install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:
@@ -101,8 +96,13 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		writeError(stderr, "output_failed")
 		return exitFailure
 	}
+	// The exit code answers whether an install can proceed, not whether every
+	// runtime is certified. An admitted uncertified version is disclosed in the
+	// report and does not make the host uncertain.
 	for _, decision := range matrix.Decisions {
-		if decision.Outcome != runtimematrix.OutcomeAbsent && decision.Outcome != runtimematrix.OutcomePresentCompatible {
+		switch decision.Outcome {
+		case runtimematrix.OutcomeAbsent, runtimematrix.OutcomePresentCompatible, runtimematrix.OutcomePresentUncertified:
+		default:
 			return exitUnknown
 		}
 	}

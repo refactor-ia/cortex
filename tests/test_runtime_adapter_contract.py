@@ -15,7 +15,7 @@ class RuntimeAdapterContractTests(unittest.TestCase):
     def test_runtime_outcomes_preserve_ordinary_work(self) -> None:
         contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
 
-        self.assertEqual(contract["schema_version"], 2)
+        self.assertEqual(contract["schema_version"], 3)
         outcomes = contract["runtime_outcomes"]
         self.assertEqual(outcomes["present_compatible"]["action"], "include_in_transaction")
         self.assertTrue(outcomes["present_compatible"]["all_or_nothing"])
@@ -26,7 +26,7 @@ class RuntimeAdapterContractTests(unittest.TestCase):
         self.assertEqual(outcomes["unknown_version"]["action"], "warn_and_report_uncertainty")
         self.assertEqual(outcomes["present_uncertified"]["action"], "include_in_transaction")
         self.assertTrue(outcomes["present_uncertified"]["all_or_nothing"])
-        self.assertTrue(outcomes["present_uncertified"]["requires_explicit_opt_in"])
+        self.assertFalse(outcomes["present_uncertified"]["requires_explicit_opt_in"])
         self.assertTrue(outcomes["present_uncertified"]["disclosed"])
         self.assertFalse(outcomes["present_uncertified"]["certified"])
         self.assertEqual(outcomes["no_admitted_runtime"]["action"], "report_only")

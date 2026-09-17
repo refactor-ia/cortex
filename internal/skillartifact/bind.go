@@ -143,7 +143,11 @@ func validFinal(plan projection.Plan) bool {
 	return plan.AllOrNothing() == (len(targets) > 0) && plan.ReportOnly() == (len(targets) == 0)
 }
 func validResult(result projection.RuntimeResult, localTarget runtimematrix.RuntimeID, admitted []runtimematrix.RuntimeID) bool {
-	if result.Outcome == runtimematrix.OutcomePresentCompatible && localTarget != "" && result.ID != localTarget {
+	// A local update excludes every runtime but its single selected target,
+	// including runtimes the plan would otherwise have admitted.
+	if localTarget != "" && result.ID != localTarget &&
+		(result.Outcome == runtimematrix.OutcomePresentCompatible ||
+			result.Outcome == runtimematrix.OutcomePresentUncertified && admits(admitted, result.ID)) {
 		return result.ProjectionResult == "" && result.TranslationDisclosure == "" && result.Action == runtimematrix.Configure && !result.IncludeInTransaction && !result.TouchAllowed
 	}
 	if result.Outcome == runtimematrix.OutcomePresentCompatible || result.Outcome == runtimematrix.OutcomePresentUncertified && admits(admitted, result.ID) {

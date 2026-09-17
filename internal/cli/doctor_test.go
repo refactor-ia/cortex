@@ -48,6 +48,16 @@ func readyRunner() *fakeRunner {
 	}}
 }
 
+// unidentifiedRunner reports every runtime present with a version Cortex cannot
+// parse, which is the one presence case default admission still refuses.
+func unidentifiedRunner() *fakeRunner {
+	return &fakeRunner{runs: map[string]fakeRun{
+		"/private/pi":       {execution: runtimeprobe.Execution{Stdout: []byte("not-a-version")}},
+		"/private/opencode": {execution: runtimeprobe.Execution{Stdout: []byte("not-a-version")}},
+		"/private/claude":   {execution: runtimeprobe.Execution{Stdout: []byte("not-a-version")}},
+	}}
+}
+
 func certifiedRunner() *fakeRunner {
 	return &fakeRunner{runs: map[string]fakeRun{
 		"/private/pi":       {execution: runtimeprobe.Execution{Stdout: []byte("0.85.1\n")}},
@@ -95,6 +105,30 @@ func TestRunDoctor(t *testing.T) {
 			},
 		},
 		{
+			name:     "identified uncertified runtimes are admissible so the host is not uncertain",
+			runner:   readyRunner(),
+			wantCode: exitOK,
+			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied\n" +
+				"runtime=opencode presence=present compatibility=uncertified action=configure touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied\n",
+			assert: func(t *testing.T, _ *fakeRunner, output string) {
+				t.Helper()
+				for _, forbidden := range []string{"1.2.3", "2.3.4", "3.4.5", "/private/"} {
+					if strings.Contains(output, forbidden) {
+						t.Fatalf("doctor output leaks %q: %q", forbidden, output)
+					}
+				}
+			},
+		},
+		{
+			name:     "an unidentified version keeps the host uncertain",
+			runner:   unidentifiedRunner(),
+			wantCode: exitUnknown,
+			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+		},
+		{
 			name: "mixed present unknown and absent",
 			runner: &fakeRunner{
 				lookup: map[string]error{"opencode": exec.ErrNotFound},
@@ -104,7 +138,7 @@ func TestRunDoctor(t *testing.T) {
 				},
 			},
 			wantCode: 2,
-			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied\n" +
 				"runtime=opencode presence=absent action=warn touch=denied\n" +
 				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
 			assert: func(t *testing.T, _ *fakeRunner, output string) {
@@ -159,7 +193,7 @@ func TestRunDoctorReportsInjectedPolicyCompatibility(t *testing.T) {
 	}
 	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
 		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied\n" +
-		"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"
+		"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied\n"
 	if stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
 	}
@@ -196,7 +230,7 @@ func TestRunDoctorReturnsOKForCompatibleAndAbsentRuntimes(t *testing.T) {
 	}
 }
 
-func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
+func TestRunUnadmissibleInstallAndUpdate(t *testing.T) {
 	tests := []struct {
 		name       string
 		operations []string
@@ -204,9 +238,6 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 		wantCode   int
 		wantStdout string
 		wantStderr string
-		// installOptIn marks hosts where uncertified admission would help, so
-		// only the install refusal names the opt-in.
-		installOptIn bool
 	}{
 		{
 			name:       "all runtimes absent",
@@ -229,13 +260,12 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 				return &fakeRunner{
 					lookup: map[string]error{"opencode": exec.ErrNotFound},
 					runs: map[string]fakeRun{
-						"/private/pi":     {execution: runtimeprobe.Execution{Stdout: []byte("1.2.3\n")}},
+						"/private/pi":     {execution: runtimeprobe.Execution{Stdout: []byte("1.2.3.4.5")}},
 						"/private/claude": {execution: runtimeprobe.Execution{Stderr: []byte("credential=private")}},
 					},
 				}
 			},
-			wantCode:     exitUnknown,
-			installOptIn: true,
+			wantCode: exitUnknown,
 			wantStdout: "operation=install status=not_applied reason=compatibility_uncertified touch=denied\n" +
 				"runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
 				"runtime=opencode presence=absent action=warn touch=denied\n" +
@@ -260,16 +290,13 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 					t.Fatalf("Run() exit code = %d, want %d", got, tt.wantCode)
 				}
 				wantStdout := strings.Replace(tt.wantStdout, "operation=install", "operation="+operation, 1)
-				if tt.installOptIn && operation == "install" {
-					wantStdout = strings.Replace(wantStdout, "touch=denied\n", "touch=denied opt_in=--allow-uncertified\n", 1)
-				}
 				if got := stdout.String(); got != wantStdout {
 					t.Fatalf("stdout = %q, want %q", got, wantStdout)
 				}
 				if got := stderr.String(); got != tt.wantStderr {
 					t.Fatalf("stderr = %q, want %q", got, tt.wantStderr)
 				}
-				for _, forbidden := range []string{"1.2.3", "credential=private", "/private/"} {
+				for _, forbidden := range []string{"1.2.3.4.5", "credential=private", "/private/"} {
 					if strings.Contains(stdout.String(), forbidden) || strings.Contains(stderr.String(), forbidden) {
 						t.Fatalf("output leaks %q", forbidden)
 					}
@@ -279,10 +306,9 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 	}
 }
 
-// TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams pins the
-// no-opt-in refusal for install and update. Only install can name the opt-in;
-// neither operation may touch the filesystem.
-func TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams(t *testing.T) {
+// TestRefusedOperationsDoNotReachUninstallSeams pins that a refused install or
+// update reports without touching the filesystem.
+func TestRefusedOperationsDoNotReachUninstallSeams(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "sentinel")
 	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
@@ -291,12 +317,10 @@ func TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams(t *testing
 	report := "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
 		"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
 		"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"
-	for operation, status := range map[string]string{
-		"install": "status=not_applied reason=compatibility_uncertified touch=denied opt_in=--allow-uncertified\n",
-		"update":  "status=not_applied reason=compatibility_uncertified touch=denied\n",
-	} {
+	status := "status=not_applied reason=compatibility_uncertified touch=denied\n"
+	for _, operation := range []string{"install", "update"} {
 		var stdout, stderr bytes.Buffer
-		if got := runWithUninstallDependencies(context.Background(), []string{operation}, &stdout, &stderr, readyRunner(), uninstallDependencies{}); got != exitUnknown {
+		if got := runWithUninstallDependencies(context.Background(), []string{operation}, &stdout, &stderr, unidentifiedRunner(), uninstallDependencies{}); got != exitUnknown {
 			t.Fatalf("%s exit code = %d, want %d", operation, got, exitUnknown)
 		}
 		if stderr.Len() != 0 {
@@ -314,7 +338,7 @@ func TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams(t *testing
 
 func TestRunInstallAndUpdateRejectFlags(t *testing.T) {
 	for _, operation := range []string{"install", "update"} {
-		for _, flag := range []string{"--catalog", "--root", "--home", "--runtime", "--force", "--compatibility", "--path"} {
+		for _, flag := range []string{"--catalog", "--root", "--home", "--runtime", "--force", "--compatibility", "--path", "--allow-uncertified"} {
 			t.Run(operation+"/"+flag, func(t *testing.T) {
 				var stdout, stderr bytes.Buffer
 				if got := Run(context.Background(), []string{operation, flag, "/private/input"}, &stdout, &stderr, readyRunner()); got != exitUsage {

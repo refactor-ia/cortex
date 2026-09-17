@@ -68,6 +68,9 @@ type Matrix struct {
 }
 
 // Decide validates observations and returns decisions in supported runtime order.
+// A present runtime with a normalized version is admitted by default; only a
+// known-incompatible adapter, an absent runtime, or a runtime whose version
+// could not be identified is kept out of the transaction.
 func Decide(observations []Observation) (Matrix, error) {
 	byID := make(map[RuntimeID]Observation, len(runtimeOrder))
 	for _, observation := range observations {
@@ -97,14 +100,15 @@ func Decide(observations []Observation) (Matrix, error) {
 	return matrix, nil
 }
 
-// DecideLocalUpdate narrows strict decisions to exactly one selected runtime.
-// A present normalized uncertified version is eligible only for this explicit
-// local update; strict Decide never emits or authorizes this outcome.
+// DecideLocalUpdate narrows default decisions to exactly one selected runtime.
+// Every other runtime is excluded from the transaction regardless of its own
+// decision, so an explicit local update can only ever touch its single target.
 func DecideLocalUpdate(observations []Observation, target RuntimeID) (Matrix, error) {
 	matrix, err := Decide(observations)
 	if err != nil || !isSupported(target) {
 		return Matrix{}, errors.New("invalid local update input")
 	}
+	matrix.HasCompatible = false
 	for index := range matrix.Decisions {
 		decision := &matrix.Decisions[index]
 		if decision.ID != target {
@@ -112,43 +116,6 @@ func DecideLocalUpdate(observations []Observation, target RuntimeID) (Matrix, er
 			decision.TouchAllowed = false
 			continue
 		}
-		for _, observation := range observations {
-			if observation.ID == target && observation.Present && observation.Version != "" && observation.Compatibility == CompatibilityUnknown {
-				decision.Outcome = OutcomePresentUncertified
-				decision.Action = Configure
-				decision.IncludeInTransaction = true
-				decision.TouchAllowed = true
-			}
-		}
-	}
-	matrix.HasCompatible = false
-	for _, decision := range matrix.Decisions {
-		matrix.HasCompatible = matrix.HasCompatible || decision.IncludeInTransaction
-	}
-	return matrix, nil
-}
-
-// DecideUncertifiedAdmission promotes every present, normalized, uncertified
-// runtime under an explicit operator opt-in. Strict Decide never emits or
-// authorizes this outcome.
-func DecideUncertifiedAdmission(observations []Observation) (Matrix, error) {
-	matrix, err := Decide(observations)
-	if err != nil {
-		return Matrix{}, err
-	}
-	for index := range matrix.Decisions {
-		decision := &matrix.Decisions[index]
-		for _, observation := range observations {
-			if observation.ID == decision.ID && observation.Present && observation.Version != "" && observation.Compatibility == CompatibilityUnknown {
-				decision.Outcome = OutcomePresentUncertified
-				decision.Action = Configure
-				decision.IncludeInTransaction = true
-				decision.TouchAllowed = true
-			}
-		}
-	}
-	matrix.HasCompatible = false
-	for _, decision := range matrix.Decisions {
 		matrix.HasCompatible = matrix.HasCompatible || decision.IncludeInTransaction
 	}
 	return matrix, nil
@@ -202,6 +169,17 @@ func decisionFor(observation Observation) Decision {
 	}
 	if observation.Compatibility == Incompatible {
 		return Decision{ID: observation.ID, Outcome: OutcomeKnownIncompatible, Action: Skip}
+	}
+	if observation.Version != "" {
+		// The observed version is not certified, but it is identified: admit it
+		// and let the caller disclose that the admission is not certified.
+		return Decision{
+			ID:                   observation.ID,
+			Outcome:              OutcomePresentUncertified,
+			Action:               Configure,
+			IncludeInTransaction: true,
+			TouchAllowed:         true,
+		}
 	}
 	return Decision{ID: observation.ID, Outcome: OutcomeUnknownVersion, Action: Warn}
 }

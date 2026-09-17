@@ -204,6 +204,9 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 		wantCode   int
 		wantStdout string
 		wantStderr string
+		// installOptIn marks hosts where uncertified admission would help, so
+		// only the install refusal names the opt-in.
+		installOptIn bool
 	}{
 		{
 			name:       "all runtimes absent",
@@ -231,7 +234,8 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 					},
 				}
 			},
-			wantCode: exitUnknown,
+			wantCode:     exitUnknown,
+			installOptIn: true,
 			wantStdout: "operation=install status=not_applied reason=compatibility_uncertified touch=denied\n" +
 				"runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
 				"runtime=opencode presence=absent action=warn touch=denied\n" +
@@ -256,6 +260,9 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 					t.Fatalf("Run() exit code = %d, want %d", got, tt.wantCode)
 				}
 				wantStdout := strings.Replace(tt.wantStdout, "operation=install", "operation="+operation, 1)
+				if tt.installOptIn && operation == "install" {
+					wantStdout = strings.Replace(wantStdout, "touch=denied\n", "touch=denied opt_in=--allow-uncertified\n", 1)
+				}
 				if got := stdout.String(); got != wantStdout {
 					t.Fatalf("stdout = %q, want %q", got, wantStdout)
 				}
@@ -272,13 +279,22 @@ func TestRunUncertifiedInstallAndUpdate(t *testing.T) {
 	}
 }
 
-func TestRunUncertifiedOperationsAreParityAndDoNotReachUninstallSeams(t *testing.T) {
+// TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams pins the
+// no-opt-in refusal for install and update. Only install can name the opt-in;
+// neither operation may touch the filesystem.
+func TestRunUncertifiedOperationsWithoutOptInDoNotReachUninstallSeams(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "sentinel")
 	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, operation := range []string{"install", "update"} {
+	report := "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
+		"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
+		"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"
+	for operation, status := range map[string]string{
+		"install": "status=not_applied reason=compatibility_uncertified touch=denied opt_in=--allow-uncertified\n",
+		"update":  "status=not_applied reason=compatibility_uncertified touch=denied\n",
+	} {
 		var stdout, stderr bytes.Buffer
 		if got := runWithUninstallDependencies(context.Background(), []string{operation}, &stdout, &stderr, readyRunner(), uninstallDependencies{}); got != exitUnknown {
 			t.Fatalf("%s exit code = %d, want %d", operation, got, exitUnknown)
@@ -286,10 +302,7 @@ func TestRunUncertifiedOperationsAreParityAndDoNotReachUninstallSeams(t *testing
 		if stderr.Len() != 0 {
 			t.Fatalf("%s stderr = %q", operation, stderr.String())
 		}
-		if got, want := strings.TrimPrefix(stdout.String(), "operation="+operation+" "), "status=not_applied reason=compatibility_uncertified touch=denied\n"+
-			"runtime=pi presence=present compatibility=unknown action=warn touch=denied\n"+
-			"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n"+
-			"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n"; got != want {
+		if got, want := strings.TrimPrefix(stdout.String(), "operation="+operation+" "), status+report; got != want {
 			t.Fatalf("%s report = %q, want %q", operation, got, want)
 		}
 		got, err := os.ReadFile(sentinel)

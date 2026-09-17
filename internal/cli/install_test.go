@@ -9,10 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"os/exec"
+
 	"github.com/refactor-ia/cortex/internal/installtxn"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
+	"github.com/refactor-ia/cortex/internal/runtimeprobe"
 	"github.com/refactor-ia/cortex/internal/skilldest"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
@@ -46,7 +49,7 @@ func TestRunInstallCompatibleFreshRoot(t *testing.T) {
 }
 func TestRunInstallUnrepresentableProjectionIsNotApplied(t *testing.T) {
 	deps := compatibleInstallDependencies(t, t.TempDir())
-	deps.buildRequests = func([]runtimematrix.Observation, installDependencies) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
+	deps.buildRequests = func([]runtimematrix.Observation, installDependencies, bool) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
 		return nil, []projection.RuntimeResult{{ID: runtimematrix.RuntimePi, Outcome: runtimematrix.OutcomePresentCompatible, Action: runtimematrix.Skip}}, nil
 	}
 	deps.home = func() (string, error) { t.Fatal("home called"); return "", nil }
@@ -141,4 +144,136 @@ func compatibleInstallDependencies(t *testing.T, home string) installDependencie
 	}
 	deps.backupName = func() (string, error) { return ".cortex-backup-000102030405060708090a0b0c0d0e0f", nil }
 	return deps
+}
+
+// uncertifiedRunner reports every runtime present with a normalized version
+// that the injected policy neither certifies nor rejects.
+func uncertifiedRunner() *fakeRunner {
+	return &fakeRunner{runs: map[string]fakeRun{
+		"/private/pi":       {execution: runtimeprobe.Execution{Stdout: []byte("9.9.9\n")}},
+		"/private/opencode": {execution: runtimeprobe.Execution{Stdout: []byte("9.9.9\n")}},
+		"/private/claude":   {execution: runtimeprobe.Execution{Stdout: []byte("9.9.9 (Claude Code)")}},
+	}}
+}
+
+func TestRunInstallAllowUncertifiedAdmitsEveryPresentRuntime(t *testing.T) {
+	home := t.TempDir()
+	deps := compatibleInstallDependencies(t, home)
+	var stdout, stderr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install", "--allow-uncertified"}, &stdout, &stderr, uncertifiedRunner(), deps); code != exitOK {
+		t.Fatalf("install exit = %d, stderr = %q, stdout = %q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "operation=install status=completed touch=applied") {
+		t.Fatalf("install output = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), " warning=uncertified_admission runtimes=3 certification=not_certified\n") {
+		t.Fatalf("missing disclosure in %q", stdout.String())
+	}
+	for _, id := range []string{"pi", "opencode", "claude-code"} {
+		if !strings.Contains(stdout.String(), "runtime="+id+" presence=present compatibility=uncertified action=configure touch=applied\n") {
+			t.Fatalf("runtime %s was not admitted: %q", id, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "9.9.9") {
+		t.Fatalf("output leaks the observed version: %q", stdout.String())
+	}
+}
+
+func TestRunInstallWithoutOptInRefusesAndNamesTheOptIn(t *testing.T) {
+	deps := compatibleInstallDependencies(t, t.TempDir())
+	deps.buildRequests = func([]runtimematrix.Observation, installDependencies, bool) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
+		t.Fatal("build called")
+		return nil, nil, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, uncertifiedRunner(), deps); code != exitUnknown {
+		t.Fatalf("install exit = %d, want %d", code, exitUnknown)
+	}
+	if !strings.HasPrefix(stdout.String(), "operation=install status=not_applied reason=compatibility_uncertified touch=denied opt_in=--allow-uncertified\n") || stderr.Len() != 0 {
+		t.Fatalf("install = (%q, %q)", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunInstallRefusesWithoutAdvertisingAnUnhelpfulOptIn(t *testing.T) {
+	deps := compatibleInstallDependencies(t, t.TempDir())
+	// opencode 2.3.4 is known-incompatible, claude reports no parseable
+	// version, and pi is absent: the opt-in would admit nothing.
+	runner := &fakeRunner{
+		lookup: map[string]error{"pi": exec.ErrNotFound},
+		runs: map[string]fakeRun{
+			"/private/opencode": {execution: runtimeprobe.Execution{Stdout: []byte("2.3.4\n")}},
+			"/private/claude":   {execution: runtimeprobe.Execution{Stdout: []byte("not-a-version")}},
+		},
+	}
+	for _, args := range [][]string{{"install"}, {"install", "--allow-uncertified"}} {
+		var stdout, stderr bytes.Buffer
+		if code := runWithInstallDependencies(context.Background(), args, &stdout, &stderr, runner, deps); code != exitUnknown {
+			t.Fatalf("%v exit = %d, want %d", args, code, exitUnknown)
+		}
+		if !strings.HasPrefix(stdout.String(), "operation=install status=not_applied reason=compatibility_uncertified touch=denied\n") || stderr.Len() != 0 {
+			t.Fatalf("%v = (%q, %q)", args, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestRunInstallAllowUncertifiedStillRefusesUnrepresentableProjection(t *testing.T) {
+	deps := compatibleInstallDependencies(t, t.TempDir())
+	deps.buildRequests = func(_ []runtimematrix.Observation, _ installDependencies, allowUncertified bool) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
+		if !allowUncertified {
+			t.Fatal("opt-in was not threaded to the build seam")
+		}
+		return nil, []projection.RuntimeResult{{ID: runtimematrix.RuntimePi, Outcome: runtimematrix.OutcomePresentUncertified, Action: runtimematrix.Skip}}, nil
+	}
+	deps.home = func() (string, error) { t.Fatal("home called"); return "", nil }
+	var stdout, stderr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install", "--allow-uncertified"}, &stdout, &stderr, uncertifiedRunner(), deps); code != exitUnknown {
+		t.Fatalf("install exit = %d, want %d", code, exitUnknown)
+	}
+	want := "operation=install status=not_applied reason=projection_unrepresentable touch=denied\n" +
+		"runtime=pi presence=present compatibility=uncertified action=skip touch=denied\n"
+	if stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("install = (%q, %q)", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunInstallAllowUncertifiedSkipsOnlyTheKnownIncompatibleRuntime(t *testing.T) {
+	home := t.TempDir()
+	deps := compatibleInstallDependencies(t, home)
+	runner := &fakeRunner{
+		lookup: map[string]error{"claude": exec.ErrNotFound},
+		runs: map[string]fakeRun{
+			"/private/pi":       {execution: runtimeprobe.Execution{Stdout: []byte("9.9.9\n")}},
+			"/private/opencode": {execution: runtimeprobe.Execution{Stdout: []byte("2.3.4\n")}},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install", "--allow-uncertified"}, &stdout, &stderr, runner, deps); code != exitOK {
+		t.Fatalf("install exit = %d, stderr = %q, stdout = %q", code, stderr.String(), stdout.String())
+	}
+	want := "runtime=pi presence=present compatibility=uncertified action=configure touch=applied\n" +
+		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied\n" +
+		"runtime=claude-code presence=absent action=warn touch=denied\n"
+	if !strings.HasSuffix(stdout.String(), want) {
+		t.Fatalf("install output = %q, want suffix %q", stdout.String(), want)
+	}
+	if !strings.Contains(stdout.String(), " warning=uncertified_admission runtimes=1 certification=not_certified\n") {
+		t.Fatalf("missing disclosure in %q", stdout.String())
+	}
+}
+
+func TestRunInstallRejectsUnknownAndRepeatedFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "--allow-uncertified", "--allow-uncertified"},
+		{"install", "--allow-uncertified", "extra"},
+		{"install", "--allow-uncertified=true"},
+		{"update", "--allow-uncertified"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(), args, &stdout, &stderr, readyRunner()); code != exitUsage {
+			t.Fatalf("%v exit = %d, want %d", args, code, exitUsage)
+		}
+		if stdout.Len() != 0 || stderr.String() != "error=invalid_command\n" {
+			t.Fatalf("%v output = (%q, %q)", args, stdout.String(), stderr.String())
+		}
+	}
 }

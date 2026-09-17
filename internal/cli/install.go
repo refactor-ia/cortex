@@ -35,7 +35,7 @@ type installDependencies struct {
 	observe       func(installplan.Plan, installobserve.Options) (installobserve.FilesystemObservation, error)
 	applyGroup    func([]installtxn.GroupRequest, string, string) (installtxn.GroupResult, error)
 	backupName    func() (string, error)
-	buildRequests func([]runtimematrix.Observation, installDependencies) ([]installtxn.GroupRequest, []projection.RuntimeResult, error)
+	buildRequests func([]runtimematrix.Observation, installDependencies, bool) ([]installtxn.GroupRequest, []projection.RuntimeResult, error)
 }
 
 func defaultInstallDependencies() installDependencies {
@@ -54,7 +54,27 @@ func runWithInstallDependencies(ctx context.Context, args []string, stdout, stde
 	return runWithDependencies(ctx, args, stdout, stderr, runner, deps, defaultUninstallDependencies())
 }
 
-func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string, deps installDependencies) int {
+// parseInstallArgs accepts only the explicit uncertified admission opt-in.
+// Any other token, or a repeated flag, is an invalid command.
+func parseInstallArgs(args []string) (bool, bool) {
+	allowUncertified := false
+	for len(args) > 0 {
+		flag := args[0]
+		args = args[1:]
+		switch flag {
+		case "--allow-uncertified":
+			if allowUncertified {
+				return false, false
+			}
+			allowUncertified = true
+		default:
+			return false, false
+		}
+	}
+	return allowUncertified, true
+}
+
+func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string, allowUncertified bool, deps installDependencies) int {
 	reports, err := probe(ctx, runner)
 	if err != nil {
 		writeError(stderr, "probe_failed")
@@ -65,21 +85,35 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 		writeError(stderr, "install_composition_failed")
 		return exitFailure
 	}
-	matrix, err := runtimematrix.Decide(observations)
+	matrix, err := installMatrix(observations, allowUncertified)
 	if err != nil {
 		writeError(stderr, "install_composition_failed")
 		return exitFailure
 	}
 	if !matrix.HasCompatible {
-		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason=compatibility_uncertified touch=denied", installResults(matrix.Decisions), false, installtxn.Counts{}, exitUnknown)
+		status := "status=not_applied reason=compatibility_uncertified touch=denied"
+		// Only the install command accepts the opt-in; bare update keeps its
+		// existing refusal verbatim and never advertises a flag it rejects.
+		if !allowUncertified && operation == "install" {
+			admissible, err := runtimematrix.DecideUncertifiedAdmission(observations)
+			if err != nil {
+				writeError(stderr, "install_composition_failed")
+				return exitFailure
+			}
+			if admissible.HasCompatible {
+				status += " opt_in=--allow-uncertified"
+			}
+		}
+		return writeInstallResult(stdout, stderr, operation, status, "", installResults(matrix.Decisions), false, installtxn.Counts{}, exitUnknown)
 	}
-	requests, results, err := deps.buildRequests(observations, deps)
+	warning := uncertifiedAdmissionWarning(matrix, allowUncertified)
+	requests, results, err := deps.buildRequests(observations, deps, allowUncertified)
 	if err != nil {
 		writeError(stderr, "install_composition_failed")
 		return exitFailure
 	}
 	if len(requests) == 0 {
-		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason=projection_unrepresentable touch=denied", results, false, installtxn.Counts{}, exitUnknown)
+		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason=projection_unrepresentable touch=denied", "", results, false, installtxn.Counts{}, exitUnknown)
 	}
 	home, err := deps.home()
 	if err != nil || !existingDirectory(home) {
@@ -97,9 +131,36 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 		if errors.Is(err, installtxn.ErrConflict) {
 			reason, code = "ownership_conflict", exitConflict
 		}
-		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason="+reason+" touch=denied", results, false, installtxn.Counts{}, code)
+		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
 	}
-	return writeInstallResult(stdout, stderr, operation, "status=completed touch=applied", results, true, group.Counts(), exitOK)
+	return writeInstallResult(stdout, stderr, operation, "status=completed touch=applied", warning, results, true, group.Counts(), exitOK)
+}
+
+// installMatrix selects the strict certification gate by default and the
+// explicit uncertified admission gate only under the command opt-in.
+func installMatrix(observations []runtimematrix.Observation, allowUncertified bool) (runtimematrix.Matrix, error) {
+	if allowUncertified {
+		return runtimematrix.DecideUncertifiedAdmission(observations)
+	}
+	return runtimematrix.Decide(observations)
+}
+
+// uncertifiedAdmissionWarning discloses how many uncertified runtimes the
+// opt-in admitted without ever reporting an observed version.
+func uncertifiedAdmissionWarning(matrix runtimematrix.Matrix, allowUncertified bool) string {
+	if !allowUncertified {
+		return ""
+	}
+	admitted := 0
+	for _, decision := range matrix.Decisions {
+		if decision.Outcome == runtimematrix.OutcomePresentUncertified && decision.IncludeInTransaction {
+			admitted++
+		}
+	}
+	if admitted == 0 {
+		return ""
+	}
+	return " warning=uncertified_admission runtimes=" + strconv.Itoa(admitted) + " certification=not_certified"
 }
 
 func installResults(decisions []runtimematrix.Decision) []projection.RuntimeResult {
@@ -110,7 +171,7 @@ func installResults(decisions []runtimematrix.Decision) []projection.RuntimeResu
 	return results
 }
 
-func buildInstallRequests(observations []runtimematrix.Observation, deps installDependencies) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
+func buildInstallRequests(observations []runtimematrix.Observation, deps installDependencies, allowUncertified bool) ([]installtxn.GroupRequest, []projection.RuntimeResult, error) {
 	snapshot, err := builtinassets.Snapshot()
 	if err != nil {
 		return nil, nil, err
@@ -122,7 +183,11 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 	if err != nil {
 		return nil, nil, err
 	}
-	base, err := adapterplan.Build(snapshot.Fingerprint(), observations)
+	build := adapterplan.Build
+	if allowUncertified {
+		build = adapterplan.BuildUncertifiedAdmission
+	}
+	base, err := build(snapshot.Fingerprint(), observations)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -171,7 +236,7 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 	return requests, final.Results(), nil
 }
 
-func writeInstallResult(stdout, stderr io.Writer, operation, status string, results []projection.RuntimeResult, applied bool, counts installtxn.Counts, code int) int {
+func writeInstallResult(stdout, stderr io.Writer, operation, status, warning string, results []projection.RuntimeResult, applied bool, counts installtxn.Counts, code int) int {
 	var output strings.Builder
 	output.WriteString("operation=")
 	output.WriteString(operation)
@@ -189,6 +254,7 @@ func writeInstallResult(stdout, stderr io.Writer, operation, status string, resu
 		output.WriteString(" preserve=")
 		output.WriteString(strconv.Itoa(counts.Preserve))
 	}
+	output.WriteString(warning)
 	output.WriteByte('\n')
 	for _, result := range results {
 		output.WriteString(installRuntimeLine(result.ID, result.Outcome, result.Action, applied && result.TouchAllowed))
@@ -209,6 +275,8 @@ func installRuntimeLine(id runtimematrix.RuntimeID, outcome runtimematrix.Outcom
 		line += " presence=present compatibility=incompatible"
 	case runtimematrix.OutcomePresentCompatible:
 		line += " presence=present compatibility=compatible"
+	case runtimematrix.OutcomePresentUncertified:
+		line += " presence=present compatibility=uncertified"
 	default:
 		line += " presence=present compatibility=unknown"
 	}

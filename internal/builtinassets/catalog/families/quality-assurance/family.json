@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "quality-assurance",
+  "router": "families/quality-assurance/router.md",
+  "capabilities": [
+    "families/quality-assurance/capabilities/requirements-analyst.json",
+    "families/quality-assurance/capabilities/test-designer.json",
+    "families/quality-assurance/capabilities/exploratory-tester.json",
+    "families/quality-assurance/capabilities/adversarial-tester.json",
+    "families/quality-assurance/capabilities/test-runner.json",
+    "families/quality-assurance/capabilities/evidence-auditor.json"
+  ],
+  "agents": ["requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester", "test-runner", "evidence-auditor"]
+}

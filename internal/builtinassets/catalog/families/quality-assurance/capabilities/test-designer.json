@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"test-designer","description":"Produce test conditions and coverage rationale for a bounded evaluation.","family":"quality-assurance","source":"families/quality-assurance/sources/test-designer.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

@@ -29,8 +29,8 @@ const (
 	opencodeSmokeBinary            = "opencode"
 	opencodeSmokeOutputLimit       = 8 * 1024
 	opencodeSmokeTimeout           = 60 * time.Second
-	opencodeSmokeConfig            = `{"permission":{"*":"deny","skill":{"cortex-catalog-marker":"allow"}}}`
-	opencodeSmokePrompt            = "Use the cortex-catalog-marker skill. Return exactly one minified JSON object with lowercase keys name and heading. Set name to the loaded skill's declared name and heading to its first Markdown heading from the ORIGINAL SKILL.md content, excluding the OpenCode-added `# Skill: ...` wrapper heading, without the leading #. No commentary."
+	opencodeSmokeConfig            = `{"permission":{"*":"deny","skill":{"cortex-requirements-analyst":"allow"}}}`
+	opencodeSmokePrompt            = "Use the cortex-requirements-analyst skill. Return exactly one minified JSON object with lowercase keys name and heading. Set name to the loaded skill's declared name and heading to its first Markdown heading from the ORIGINAL SKILL.md content, excluding the OpenCode-added `# Skill: ...` wrapper heading, without the leading #. No commentary."
 )
 
 func TestOpenCodeRealSmoke(t *testing.T) {
@@ -73,7 +73,7 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 	})
 	t.Run("JSONL accepts completed skill and exact acknowledgement", func(t *testing.T) {
 		valid := `{"type":"tool_use","timestamp":1700000000000,"sessionID":"s","part":{"type":"tool","tool":"skill","state":{"status":"completed"}}}` + "\n" +
-			`{"type":"text","timestamp":1700000000001,"sessionID":"s","part":{"type":"text","text":"{\"name\":\"cortex-catalog-marker\",\"heading\":\"Cortex Catalog Marker\"}"}}`
+			`{"type":"text","timestamp":1700000000001,"sessionID":"s","part":{"type":"text","text":"{\"name\":\"cortex-requirements-analyst\",\"heading\":\"Requirements Analyst\"}"}}`
 		for _, tc := range []struct {
 			name, body string
 			ok         bool
@@ -86,7 +86,7 @@ func TestOpenCodeRealSmokeHelpers(t *testing.T) {
 			{"zero timestamp", strings.Replace(valid, `"timestamp":1700000000000`, `"timestamp":0`, 1), false},
 			{"negative timestamp", strings.Replace(valid, `"timestamp":1700000000000`, `"timestamp":-1`, 1), false},
 			{"fractional timestamp", strings.Replace(valid, `"timestamp":1700000000000`, `"timestamp":1.5`, 1), false},
-			{"wrong acknowledgement", strings.Replace(valid, "Cortex Catalog Marker", "Wrong", 1), false},
+			{"wrong acknowledgement", strings.Replace(valid, "Requirements Analyst", "Wrong", 1), false},
 			{"trailing acknowledgement", valid + "\n" + strings.Split(valid, "\n")[1], false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -162,7 +162,7 @@ func runOpenCodeRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	if err != nil {
 		return "", newSmokeFailure(smokeFailureInternal)
 	}
-	installedPath := filepath.Join(home, ".config", "opencode", "skills", "cortex-catalog-marker", "SKILL.md")
+	installedPath := filepath.Join(home, ".config", "opencode", "skills", "cortex-requirements-analyst", "SKILL.md")
 	installed, err := os.ReadFile(installedPath)
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
 		return "", newSmokeFailure(smokeFailureReadback)
@@ -277,7 +277,7 @@ func parseOpenCodeSmokeJSONL(data []byte) (smokeAcknowledgement, error) {
 				return smokeAcknowledgement{}, realSmokeError()
 			}
 			ack, err := parseSmokeAcknowledgement([]byte(part.Text))
-			if err != nil || ack.Name != "cortex-catalog-marker" || ack.Heading != "Cortex Catalog Marker" {
+			if err != nil || ack.Name != "cortex-requirements-analyst" || ack.Heading != "Requirements Analyst" {
 				return smokeAcknowledgement{}, realSmokeError()
 			}
 			text = true
@@ -292,10 +292,10 @@ func parseOpenCodeSmokeJSONL(data []byte) (smokeAcknowledgement, error) {
 	if scanner.Err() != nil || !tool || !text {
 		return smokeAcknowledgement{}, realSmokeError()
 	}
-	return smokeAcknowledgement{Name: "cortex-catalog-marker", Heading: "Cortex Catalog Marker"}, nil
+	return smokeAcknowledgement{Name: "cortex-requirements-analyst", Heading: "Requirements Analyst"}, nil
 }
 func opencodeSmokeInstallOutput() string {
-	return "operation=install status=completed touch=applied create=2 replace=0 remove=0 unchanged=0 preserve=0\n" +
+	return "operation=install status=completed touch=applied create=7 replace=0 remove=0 unchanged=0 preserve=0\n" +
 		"runtime=pi presence=absent action=warn touch=denied\n" +
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n" +
 		"runtime=claude-code presence=absent action=warn touch=denied\n"

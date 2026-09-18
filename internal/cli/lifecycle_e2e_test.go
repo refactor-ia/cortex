@@ -5,6 +5,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/installstate"
@@ -98,6 +100,17 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 			}
 		}
 	}
+	// The embedded catalog projects the six quality-assurance capabilities as one
+	// skill each, on every runtime. Asserting the whole set in sorted order keeps
+	// the check honest: a count alone would also pass for six wrong skills.
+	expectedLogicalIDs := []string{
+		"skills/adversarial-tester",
+		"skills/evidence-auditor",
+		"skills/exploratory-tester",
+		"skills/requirements-analyst",
+		"skills/test-designer",
+		"skills/test-runner",
+	}
 	assertInstalled := func() {
 		t.Helper()
 		for i := range runtimes {
@@ -111,15 +124,22 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 				t.Fatalf("%s installed state = (%#v, %v)", runtime.root.RuntimeID(), manifest, err)
 			}
 			artifacts := manifest.Artifacts()
-			if len(artifacts) != 1 || artifacts[0].LogicalID() != "skills/catalog-marker" {
-				t.Fatalf("%s installed artifacts = %#v", runtime.root.RuntimeID(), artifacts)
+			logicalIDs := make([]string, len(artifacts))
+			for j, artifact := range artifacts {
+				logicalIDs[j] = artifact.LogicalID()
 			}
-			path := filepath.Join(runtime.root.RootPath(), artifacts[0].RelativePath())
-			contents, err := os.ReadFile(path)
-			if err != nil || len(contents) == 0 {
-				t.Fatalf("%s installed artifact %s = %q, %v", runtime.root.RuntimeID(), path, contents, err)
+			sort.Strings(logicalIDs)
+			if !slices.Equal(logicalIDs, expectedLogicalIDs) {
+				t.Fatalf("%s installed logical IDs = %#v, want %#v", runtime.root.RuntimeID(), logicalIDs, expectedLogicalIDs)
 			}
-			runtime.artifacts[path] = contents
+			for _, artifact := range artifacts {
+				path := filepath.Join(runtime.root.RootPath(), artifact.RelativePath())
+				contents, err := os.ReadFile(path)
+				if err != nil || len(contents) == 0 {
+					t.Fatalf("%s installed artifact %s = %q, %v", runtime.root.RuntimeID(), path, contents, err)
+				}
+				runtime.artifacts[path] = contents
+			}
 		}
 	}
 	assertUnchangedArtifacts := func() {
@@ -146,23 +166,23 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	assertSentinels()
 	assertOwnedAbsent()
 
-	expect("install", exitOK, "operation=install status=completed touch=applied create=6 replace=0 remove=0 unchanged=0 preserve=0\n"+
+	expect("install", exitOK, "operation=install status=completed touch=applied create=21 replace=0 remove=0 unchanged=0 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertInstalled()
 
-	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=6 preserve=0\n"+
+	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=21 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertUnchangedArtifacts()
 
-	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=2 absent=0 conflict=0\n"+
-		"runtime=opencode uninstall=completed remove=2 absent=0 conflict=0\n"+
-		"runtime=claude-code uninstall=completed remove=2 absent=0 conflict=0\n")
+	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=7 absent=0 conflict=0\n"+
+		"runtime=opencode uninstall=completed remove=7 absent=0 conflict=0\n"+
+		"runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0\n")
 	assertSentinels()
 	assertOwnedAbsent()
 

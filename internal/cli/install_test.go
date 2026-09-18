@@ -56,7 +56,7 @@ func TestRunInstallCompatibleFreshRoot(t *testing.T) {
 		t.Fatalf("install state = %v", err)
 	}
 	stdout.Reset()
-	if code := runWithInstallDependencies(context.Background(), []string{"update"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitOK || !strings.Contains(stdout.String(), "unchanged=2") {
+	if code := runWithInstallDependencies(context.Background(), []string{"update"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitOK || !strings.Contains(stdout.String(), "unchanged=7") {
 		t.Fatalf("idempotent update = (%d, %q)", code, stdout.String())
 	}
 }

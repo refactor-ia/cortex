@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/installcoord"
 	"github.com/refactor-ia/cortex/internal/installobserve"
@@ -19,15 +18,11 @@ import (
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/installtxn"
 	"github.com/refactor-ia/cortex/internal/ownership"
-	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
-	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
-	"github.com/refactor-ia/cortex/internal/skillprojection"
-	"github.com/refactor-ia/cortex/internal/skillrender"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
@@ -168,66 +163,32 @@ func buildUpdateCandidate(runtimeID runtimematrix.RuntimeID, catalogDir string, 
 	if err != nil {
 		return installplan.Plan{}, err
 	}
-	sources, err := skillrender.Render(snapshot)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	base, err := adapterplan.BuildLocalUpdate(snapshot.Fingerprint(), observations, runtimeID)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	assessments := make([]projection.Assessment, 0, len(base.TransactionTargets))
-	for _, id := range base.TransactionTargets {
-		projected, err := skillprojection.Build(id, sources)
-		if err != nil {
-			return installplan.Plan{}, err
-		}
-		assessments = append(assessments, projected.Assessment())
-	}
-	final, err := projection.BuildPlan(base, assessments)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	projected, err := skillprojection.Build(runtimeID, sources)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	binding, err := skillartifact.Build(projected, final)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	bundle, bound := binding.Bundle()
-	if !bound {
-		return installplan.Plan{}, fmt.Errorf("catalog projection has no artifacts for %s", runtimeID)
-	}
-	symbolic, err := skilldest.Build(binding)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
 	inputs, err := deps.resolveInputs()
 	if err != nil {
 		return installplan.Plan{}, err
 	}
-	resolved, err := skillroot.Resolve(symbolic, inputs)
+	candidates, _, err := installcoord.BuildCandidates(installcoord.CandidateRequest{
+		Snapshot:     snapshot,
+		Observations: observations,
+		LocalTarget:  runtimeID,
+		// Admit is deliberately unset. This catalog comes from the operator on
+		// the command line, not from the compiled release set, so the built-in
+		// release admission does not apply to it.
+		ResolveRoot: func(symbolic skilldest.Plan) (skillroot.Plan, error) {
+			return skillroot.Resolve(symbolic, inputs)
+		},
+		Actors:            bindPiActors,
+		NewInstallationID: installstate.DefaultInstallationIDGenerator().Generate,
+	})
 	if err != nil {
 		return installplan.Plan{}, err
 	}
-	skills, err := installplan.BuildWithBundle(resolved, bundle)
-	if err != nil {
-		return installplan.Plan{}, err
+	for _, candidate := range candidates {
+		if candidate.RuntimeID == runtimeID {
+			return candidate.Plan, nil
+		}
 	}
-	if runtimeID != runtimematrix.RuntimePi {
-		return skills, nil
-	}
-	actors, err := bindPiActors(snapshot)
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	installationID, err := installstate.DefaultInstallationIDGenerator().Generate()
-	if err != nil {
-		return installplan.Plan{}, err
-	}
-	return installplan.BuildActorAware(skills, actors, installationID)
+	return installplan.Plan{}, fmt.Errorf("catalog projection has no artifacts for %s", runtimeID)
 }
 
 // bindPiActors binds the canonical Pi actor projection for one catalog snapshot.

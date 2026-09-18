@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/builtinassets"
+	"github.com/refactor-ia/cortex/internal/catalog"
+	"github.com/refactor-ia/cortex/internal/installcoord"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installtxn"
@@ -21,10 +22,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
-	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
-	"github.com/refactor-ia/cortex/internal/skillprojection"
-	"github.com/refactor-ia/cortex/internal/skillrender"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
@@ -132,58 +130,28 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err := releasecatalog.BuiltInSource().ResolveSnapshot(snapshot); err != nil {
-		return nil, nil, err
-	}
-	sources, err := skillrender.Render(snapshot)
+	candidates, final, err := installcoord.BuildCandidates(installcoord.CandidateRequest{
+		Snapshot:     snapshot,
+		Observations: observations,
+		// The embedded catalog must be one this build was compiled to ship.
+		Admit: func(candidate catalog.CatalogSnapshot) error {
+			_, err := releasecatalog.BuiltInSource().ResolveSnapshot(candidate)
+			return err
+		},
+		ResolveRoot: deps.resolveRoot,
+		// Actors is deliberately unset: install writes the skill-only v1
+		// representation. Converging it with update is a separate change.
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	base, err := adapterplan.Build(snapshot.Fingerprint(), observations)
-	if err != nil {
-		return nil, nil, err
-	}
-	projected := make(map[runtimematrix.RuntimeID]skillprojection.Plan, len(base.TransactionTargets))
-	assessments := make([]projection.Assessment, 0, len(base.TransactionTargets))
-	for _, id := range base.TransactionTargets {
-		plan, err := skillprojection.Build(id, sources)
+	requests := make([]installtxn.GroupRequest, 0, len(candidates))
+	for _, candidate := range candidates {
+		observation, err := deps.observe(candidate.Plan, installobserve.DefaultOptions())
 		if err != nil {
 			return nil, nil, err
 		}
-		projected[id] = plan
-		assessments = append(assessments, plan.Assessment())
-	}
-	final, err := projection.BuildPlan(base, assessments)
-	if err != nil {
-		return nil, nil, err
-	}
-	requests := make([]installtxn.GroupRequest, 0, len(final.TransactionTargets()))
-	for _, id := range final.TransactionTargets() {
-		binding, err := skillartifact.Build(projected[id], final)
-		if err != nil {
-			return nil, nil, err
-		}
-		bundle, ok := binding.Bundle()
-		if !ok {
-			return nil, nil, errors.New("missing bundle")
-		}
-		destination, err := skilldest.Build(binding)
-		if err != nil {
-			return nil, nil, err
-		}
-		root, err := deps.resolveRoot(destination)
-		if err != nil {
-			return nil, nil, err
-		}
-		candidate, err := installplan.BuildWithBundle(root, bundle)
-		if err != nil {
-			return nil, nil, err
-		}
-		observation, err := deps.observe(candidate, installobserve.DefaultOptions())
-		if err != nil {
-			return nil, nil, err
-		}
-		requests = append(requests, installtxn.GroupRequest{Plan: candidate, Observation: observation})
+		requests = append(requests, installtxn.GroupRequest{Plan: candidate.Plan, Observation: observation})
 	}
 	return requests, final.Results(), nil
 }

@@ -11,17 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/catalog"
+	"github.com/refactor-ia/cortex/internal/installcoord"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installtxn"
-	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
-	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
-	"github.com/refactor-ia/cortex/internal/skillprojection"
-	"github.com/refactor-ia/cortex/internal/skillrender"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
@@ -224,38 +220,22 @@ func buildPlans(t *testing.T, home, version string, ids ...string) map[runtimema
 	writeJSON(t, catalogRoot, "catalog.json", map[string]any{"schemaVersion": 1, "families": families})
 	snapshot, err := catalog.BuildCatalogSnapshot(catalogRoot, "catalog.json", catalog.AdmissionPolicy{})
 	must(t, err, "build catalog snapshot")
-	sources, err := skillrender.Render(snapshot)
-	must(t, err, "render catalog skills")
 
-	runtimes := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
-	projected := make(map[runtimematrix.RuntimeID]skillprojection.Plan, len(runtimes))
-	assessments := make([]projection.Assessment, 0, len(runtimes))
-	for _, runtime := range runtimes {
-		value, err := skillprojection.Build(runtime, sources)
-		must(t, err, "build runtime projection")
-		projected[runtime], assessments = value, append(assessments, value.Assessment())
-	}
-	// These observations deliberately bypass real adapter discovery and certification.
-	base, err := adapterplan.Build(snapshot.Fingerprint(), syntheticCompatibleObservations())
-	must(t, err, "build synthetic adapter plan")
-	final, err := projection.BuildPlan(base, assessments)
-	must(t, err, "build final projection plan")
+	// The candidates come from the shipped builder, so a divergence in the real
+	// pipeline fails this harness instead of hiding behind a second copy of it.
+	// The observations below still deliberately bypass real adapter discovery.
+	candidates, _, err := installcoord.BuildCandidates(installcoord.CandidateRequest{
+		Snapshot:     snapshot,
+		Observations: syntheticCompatibleObservations(),
+		ResolveRoot: func(destination skilldest.Plan) (skillroot.Plan, error) {
+			return skillroot.Resolve(destination, skillroot.Inputs{Home: home})
+		},
+	})
+	must(t, err, "build candidates")
 
-	plans := make(map[runtimematrix.RuntimeID]installplan.Plan, len(runtimes))
-	for _, runtime := range runtimes {
-		binding, err := skillartifact.Build(projected[runtime], final)
-		must(t, err, "bind projected artifacts")
-		bundle, ok := binding.Bundle()
-		if !ok {
-			t.Fatal("representable synthetic projection did not bind a bundle")
-		}
-		destination, err := skilldest.Build(binding)
-		must(t, err, "build skill destination")
-		root, err := skillroot.Resolve(destination, skillroot.Inputs{Home: home})
-		must(t, err, "resolve isolated runtime root")
-		plan, err := installplan.BuildWithBundle(root, bundle)
-		must(t, err, "build bundle-bound install plan")
-		plans[runtime] = plan
+	plans := make(map[runtimematrix.RuntimeID]installplan.Plan, len(candidates))
+	for _, candidate := range candidates {
+		plans[candidate.RuntimeID] = candidate.Plan
 	}
 	return plans
 }

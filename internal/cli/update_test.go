@@ -12,22 +12,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/catalog"
+	"github.com/refactor-ia/cortex/internal/installcoord"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/installtxn"
-	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
-	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skilldest"
-	"github.com/refactor-ia/cortex/internal/skillprojection"
-	"github.com/refactor-ia/cortex/internal/skillrender"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
@@ -127,26 +123,32 @@ func updateUnchanged(t *testing.T, fixture *updateFixture, target runtimematrix.
 }
 
 // buildPiSkillsPlan builds the canonical v1 skill-only Pi candidate from the
-// production catalog; it is fixture evidence for a prior v1 installation.
+// production catalog; it is fixture evidence for a prior v1 installation. It
+// drives the shipped builder rather than a copy of it, so a divergence in the
+// real pipeline reaches this fixture instead of hiding behind it.
 func buildPiSkillsPlan(t *testing.T, catalogDir, home string) installplan.Plan {
 	t.Helper()
-	snapshot := must(catalog.BuildCatalogSnapshot(catalogDir, "catalog.json", catalog.AdmissionPolicy{}))
-	sources := must(skillrender.Render(snapshot))
-	assessments := make([]projection.Assessment, 0, 3)
-	observations := make([]runtimematrix.Observation, 0, 3)
+	observations := make([]runtimematrix.Observation, 0, len(updateRuntimeIDs))
 	for _, id := range updateRuntimeIDs {
-		projected := must(skillprojection.Build(id, sources))
-		assessments = append(assessments, projected.Assessment())
 		observations = append(observations, runtimematrix.Observation{ID: id, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible})
 	}
-	final := must(projection.BuildPlan(must(adapterplan.Build(snapshot.Fingerprint(), observations)), assessments))
-	binding := must(skillartifact.Build(must(skillprojection.Build(runtimematrix.RuntimePi, sources)), final))
-	bundle, bound := binding.Bundle()
-	if !bound {
-		t.Fatal("missing bundle")
+	candidates, _, err := installcoord.BuildCandidates(installcoord.CandidateRequest{
+		Snapshot:     must(catalog.BuildCatalogSnapshot(catalogDir, "catalog.json", catalog.AdmissionPolicy{})),
+		Observations: observations,
+		ResolveRoot: func(symbolic skilldest.Plan) (skillroot.Plan, error) {
+			return skillroot.Resolve(symbolic, skillroot.Inputs{Home: home})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	resolved := must(skillroot.Resolve(must(skilldest.Build(binding)), skillroot.Inputs{Home: home}))
-	return must(installplan.BuildWithBundle(resolved, bundle))
+	for _, candidate := range candidates {
+		if candidate.RuntimeID == runtimematrix.RuntimePi {
+			return candidate.Plan
+		}
+	}
+	t.Fatal("no Pi candidate")
+	return installplan.Plan{}
 }
 
 func TestUpdatePreviewAndApplyPerRuntime(t *testing.T) {

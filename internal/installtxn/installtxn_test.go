@@ -55,7 +55,7 @@ func TestApplyGroupCreatesAbsentRoots(t *testing.T) {
 	plans := absentGroupCandidates(t, home, "one")
 	requests := groupRequests(t, plans...)
 	calls := 0
-	result, err := applyGroupWith(requests, home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+	result, err := applyGroupWith(requests, home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 		calls++
 		state := false
 		for _, operation := range operations {
@@ -81,7 +81,7 @@ func TestApplyGroupCreatesAbsentRoots(t *testing.T) {
 		if len(mustCreate) != 0 {
 			t.Fatalf("missing must-create ancestors: %#v", mustCreate)
 		}
-		return filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directories, operations)
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, verify, finalize)
 	})
 	must(t, err)
 	if calls != 1 || result.Counts().Create != 9 {
@@ -126,7 +126,7 @@ func TestApplyGroupRejectsAbsentRootChanges(t *testing.T) {
 		request := groupRequests(t, plan)[0]
 		mustMkdir(t, plan.RootPath())
 		called := false
-		_, err := applyGroupWith([]GroupRequest{request}, home, ".cortex-backup", func(string, string, string, []filetxn.Directory, []filetxn.Operation) (filetxn.Snapshot, error) {
+		_, err := applyGroupWith([]GroupRequest{request}, home, ".cortex-backup", func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error, func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 			called = true
 			return filetxn.Snapshot{}, nil
 		})
@@ -137,9 +137,9 @@ func TestApplyGroupRejectsAbsentRootChanges(t *testing.T) {
 	t.Run("after re-observation", func(t *testing.T) {
 		home := t.TempDir()
 		plan := absentGroupCandidates(t, home, "one")[0]
-		_, err := applyGroupWith(groupRequests(t, plan), home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+		_, err := applyGroupWith(groupRequests(t, plan), home, ".cortex-backup", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 			mustMkdir(t, plan.RootPath())
-			return filetxn.ApplyOperationsWithDirectories(root, backupRoot, backupName, directories, operations)
+			return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, verify, finalize)
 		})
 		if !errors.Is(err, ErrFailed) {
 			t.Fatalf("ApplyGroup() error = %v", err)
@@ -192,7 +192,7 @@ func TestApplyGroupRejectsInjectedTransactionFailureAndInvalidGroups(t *testing.
 	}
 	expectedOperations := groupOperations(t, home, plans)
 	calls := 0
-	_, err := applyGroupWith(requests, t.TempDir(), "snapshot", func(root, _, _ string, directories []filetxn.Directory, operations []filetxn.Operation) (filetxn.Snapshot, error) {
+	_, err := applyGroupWith(requests, t.TempDir(), "snapshot", func(root, _, _ string, directories []filetxn.Directory, operations []filetxn.Operation, _ func() error, _ func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
 		calls++
 		if root != home {
 			t.Errorf("transaction root = %q, want %q", root, home)
@@ -229,6 +229,173 @@ func TestApplyGroupRejectsInjectedTransactionFailureAndInvalidGroups(t *testing.
 	if _, err := ApplyGroup([]GroupRequest{observations[0], changedRequests[1]}, t.TempDir(), "snapshot"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("mixed snapshot error = %v", err)
 	}
+}
+
+func TestApplyGroupAppliesMixedSchemaGroupSkillsThenActorsThenState(t *testing.T) {
+	home, cwd := physicalTempDir(t), physicalTempDir(t)
+	plans := mixedSchemaCandidates(t, home)
+	for _, plan := range plans {
+		mustMkdir(t, plan.RootPath())
+	}
+	actors := actorRelativePaths(plans[0])
+	var trace []string
+	calls := 0
+	result, err := applyGroupWith(mixedSchemaRequests(t, cwd, plans...), physicalTempDir(t), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
+		calls++
+		for _, operation := range operations {
+			trace = append(trace, operationPath(operation))
+		}
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, verify, finalize)
+	})
+	must(t, err)
+	if calls != 1 {
+		t.Fatalf("grouped apply calls = %d, want 1", calls)
+	}
+	if got := result.RuntimeIDs(); len(got) != 3 || got[0] != runtimematrix.RuntimePi || got[2] != runtimematrix.RuntimeClaudeCode {
+		t.Fatalf("RuntimeIDs() = %#v", got)
+	}
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
+			assertExactBytesAndMode(t, file.AbsolutePath(), file.Content(), file.DesiredMode())
+		}
+	}
+
+	ranks := map[string]int{"skill": 0, "actor": 1, "state": 2}
+	seen := map[string]int{}
+	highest := 0
+	for _, path := range trace {
+		class := operationClass(path, actors)
+		if ranks[class] < highest {
+			t.Fatalf("operation %q (%s) followed a %d-ranked operation", path, class, highest)
+		}
+		highest = ranks[class]
+		seen[class]++
+	}
+	if seen["skill"] == 0 || seen["actor"] == 0 || seen["state"] != len(plans) {
+		t.Fatalf("operation classes = %#v", seen)
+	}
+}
+
+func TestApplyGroupRejectsActorShadowBeforeMutation(t *testing.T) {
+	home, cwd := physicalTempDir(t), physicalTempDir(t)
+	plans := mixedSchemaCandidates(t, home)
+	for _, plan := range plans {
+		mustMkdir(t, plan.RootPath())
+	}
+	requests := mixedSchemaRequests(t, cwd, plans...)
+	writeActorShadow(t, cwd, plans[0])
+
+	backups := physicalTempDir(t)
+	calls := 0
+	_, err := applyGroupWith(requests, backups, "snapshot", func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error, func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
+		calls++
+		return filetxn.Snapshot{}, nil
+	})
+	if !errors.Is(err, ErrConflict) || calls != 0 {
+		t.Fatalf("ApplyGroup() = (%v, %d calls)", err, calls)
+	}
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
+			assertFile(t, file, false)
+		}
+	}
+	if _, statErr := os.Lstat(filepath.Join(backups, "snapshot")); !os.IsNotExist(statErr) {
+		t.Fatalf("backup was created: %v", statErr)
+	}
+}
+
+func TestApplyGroupIgnoresActorShadowAppearingMidTransaction(t *testing.T) {
+	home, cwd := physicalTempDir(t), physicalTempDir(t)
+	plans := mixedSchemaCandidates(t, home)
+	for _, plan := range plans {
+		mustMkdir(t, plan.RootPath())
+	}
+	requests := mixedSchemaRequests(t, cwd, plans...)
+
+	_, err := applyGroupWith(requests, physicalTempDir(t), "snapshot", func(root, backupRoot, backupName string, directories []filetxn.Directory, operations []filetxn.Operation, verify func() error, finalize func(filetxn.Snapshot) error) (filetxn.Snapshot, error) {
+		return filetxn.ApplyOperationsWithDirectoriesAndFinalize(root, backupRoot, backupName, directories, operations, func() error {
+			writeActorShadow(t, cwd, plans[0])
+			return verify()
+		}, finalize)
+	})
+	must(t, err)
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
+			assertExactBytesAndMode(t, file.AbsolutePath(), file.Content(), file.DesiredMode())
+		}
+	}
+}
+
+// writeActorShadow plants a copy of one of the candidate's actors under the
+// process working directory, outside the transaction root.
+func writeActorShadow(t *testing.T, cwd string, candidate installplan.Plan) {
+	t.Helper()
+	for _, file := range candidate.Files() {
+		if file.Role() != "actor" {
+			continue
+		}
+		mustMkdir(t, filepath.Join(cwd, ".pi", "subagents"))
+		must(t, os.WriteFile(filepath.Join(cwd, ".pi", "subagents", "shadow.md"), file.Content(), file.DesiredMode()))
+		return
+	}
+	t.Fatal("candidate has no actor to shadow")
+}
+
+// mixedSchemaCandidates returns one actor-aware Pi candidate and two skill-only
+// candidates, all bound to the same catalog snapshot under one home.
+func mixedSchemaCandidates(t *testing.T, home string) []installplan.Plan {
+	t.Helper()
+	pi := actorAwareCandidateWith(t, home, "000102030405060708090a0b0c0d0e0f")
+	opencode, _ := realCatalogCandidate(t, home, runtimematrix.RuntimeOpenCode)
+	claudeCode, _ := realCatalogCandidate(t, home, runtimematrix.RuntimeClaudeCode)
+	return []installplan.Plan{pi, opencode, claudeCode}
+}
+
+func mixedSchemaRequests(t *testing.T, cwd string, plans ...installplan.Plan) []GroupRequest {
+	t.Helper()
+	requests := groupRequests(t, plans...)
+	for index := range requests {
+		if requests[index].Plan.InstalledState().SchemaVersion() != 1 {
+			requests[index].CWD = cwd
+		}
+	}
+	return requests
+}
+
+func actorRelativePaths(plan installplan.Plan) map[string]bool {
+	paths := map[string]bool{}
+	for _, file := range plan.Files() {
+		if file.Role() == "actor" {
+			paths[file.RelativePath()] = true
+		}
+	}
+	return paths
+}
+
+func operationPath(operation filetxn.Operation) string {
+	switch {
+	case operation.Create != nil:
+		return operation.Create.Path
+	case operation.Replace != nil:
+		return operation.Replace.Path
+	case operation.Remove != nil:
+		return operation.Remove.Path
+	}
+	return ""
+}
+
+// operationClass names the ordering bucket a rebased group operation belongs
+// to, recognising actors by the candidate-relative suffix of their path.
+func operationClass(rebased string, actors map[string]bool) string {
+	if strings.HasSuffix(rebased, "/"+stateRelativePath) || rebased == stateRelativePath {
+		return "state"
+	}
+	for actor := range actors {
+		if strings.HasSuffix(rebased, "/"+actor) || rebased == actor {
+			return "actor"
+		}
+	}
+	return "skill"
 }
 
 func TestApplyRuntimeHarness(t *testing.T) {
@@ -736,12 +903,30 @@ func actorAwareCandidate(t *testing.T) installplan.Plan {
 
 func actorAwareCandidateWith(t *testing.T, home, installationID string) installplan.Plan {
 	t.Helper()
+	skills, snapshot := realCatalogCandidate(t, home, runtimematrix.RuntimePi)
+	actorSources, err := qaactor.Sources(snapshot)
+	must(t, err)
+	set, err := qaactor.Render(actorSources)
+	must(t, err)
+	actors, err := qaactor.ProjectPi(set)
+	must(t, err)
+	actorBinding, err := qaactor.Bind(actors)
+	must(t, err)
+	candidate, err := installplan.BuildActorAware(skills, actorBinding, installstate.InstallationID(installationID))
+	must(t, err)
+	return candidate
+}
+
+// realCatalogCandidate builds one schema 1 candidate for runtime from the
+// shipped catalog, so every runtime in a group shares one snapshot fingerprint.
+func realCatalogCandidate(t *testing.T, home string, runtime runtimematrix.RuntimeID) (installplan.Plan, catalog.CatalogSnapshot) {
+	t.Helper()
 	root := filepath.Join("..", "..", "catalog")
 	snapshot, err := catalog.BuildCatalogSnapshot(root, "catalog.json", catalog.AdmissionPolicy{})
 	must(t, err)
 	sources, err := skillrender.Render(snapshot)
 	must(t, err)
-	projected, err := skillprojection.Build(runtimematrix.RuntimePi, sources)
+	projected, err := skillprojection.Build(runtime, sources)
 	must(t, err)
 	assessments := make([]projection.Assessment, 0, 3)
 	observations := make([]runtimematrix.Observation, 0, 3)
@@ -767,17 +952,7 @@ func actorAwareCandidateWith(t *testing.T, home, installationID string) installp
 	must(t, err)
 	skills, err := installplan.BuildWithBundle(resolved, bundle)
 	must(t, err)
-	actorSources, err := qaactor.Sources(snapshot)
-	must(t, err)
-	set, err := qaactor.Render(actorSources)
-	must(t, err)
-	actors, err := qaactor.ProjectPi(set)
-	must(t, err)
-	actorBinding, err := qaactor.Bind(actors)
-	must(t, err)
-	candidate, err := installplan.BuildActorAware(skills, actorBinding, installstate.InstallationID(installationID))
-	must(t, err)
-	return candidate
+	return skills, snapshot
 }
 
 func writeV1Origin(t *testing.T, candidate installplan.Plan) ([]byte, map[string][]byte) {

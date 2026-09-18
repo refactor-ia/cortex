@@ -359,10 +359,11 @@ func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName s
 	if err != nil || !shadows.Clean() {
 		return Result{}, ErrConflict
 	}
-	operations, result, err := verifiedOperations(candidate, current, classified)
+	sequenced, result, err := verifiedOperations(candidate, current, classified)
 	if err != nil {
 		return Result{}, ErrInvalid
 	}
+	operations := sequenced.flatten()
 	verify := func() error { return verifyAccepted(candidate, cwd) }
 	if len(operations) == 0 {
 		if err := verify(); err != nil {
@@ -410,29 +411,32 @@ func verifiedDecisionsReady(classified installobserve.Result) bool {
 	return true
 }
 
-func verifiedOperations(candidate installplan.Plan, observation installobserve.FilesystemObservation, classified installobserve.Result) ([]filetxn.Operation, Result, error) {
+func verifiedOperations(candidate installplan.Plan, observation installobserve.FilesystemObservation, classified installobserve.Result) (sequencedOperations, Result, error) {
 	decisions := make(map[string]installobserve.ArtifactDecision, len(classified.ArtifactDecisions()))
 	for _, decision := range classified.ArtifactDecisions() {
 		decisions[decision.LogicalID] = decision
 	}
-	skills, actors := make([]filetxn.Operation, 0, len(decisions)), make([]filetxn.Operation, 0, len(decisions))
+	sequenced := sequencedOperations{
+		skills: make([]filetxn.Operation, 0, len(decisions)),
+		actors: make([]filetxn.Operation, 0, len(decisions)),
+	}
 	for _, file := range candidate.Files()[:len(candidate.Files())-1] {
 		decision, found := decisions[file.LogicalID()]
 		if !found {
-			return nil, Result{}, errors.New("missing candidate decision")
+			return sequencedOperations{}, Result{}, errors.New("missing candidate decision")
 		}
 		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, file, observation)
 		if !ok {
-			return nil, Result{}, errors.New("invalid candidate decision")
+			return sequencedOperations{}, Result{}, errors.New("invalid candidate decision")
 		}
 		if include {
 			switch decision.Kind {
 			case installstate.KindSkill:
-				skills = append(skills, operation)
+				sequenced.skills = append(sequenced.skills, operation)
 			case installstate.KindPiActor:
-				actors = append(actors, operation)
+				sequenced.actors = append(sequenced.actors, operation)
 			default:
-				return nil, Result{}, errors.New("invalid candidate decision kind")
+				return sequencedOperations{}, Result{}, errors.New("invalid candidate decision kind")
 			}
 		}
 		delete(decisions, file.LogicalID())
@@ -442,47 +446,59 @@ func verifiedOperations(candidate installplan.Plan, observation installobserve.F
 			continue
 		}
 		if decision.Kind != installstate.KindSkill {
-			return nil, Result{}, errors.New("invalid removal decision kind")
+			return sequencedOperations{}, Result{}, errors.New("invalid removal decision kind")
 		}
 		operation, include, ok := operationFor(ownership.Decision{LogicalID: decision.LogicalID, Action: decision.Action}, installplan.File{}, observation)
 		if !ok {
-			return nil, Result{}, errors.New("invalid removal decision")
+			return sequencedOperations{}, Result{}, errors.New("invalid removal decision")
 		}
 		if include {
-			skills = append(skills, operation)
+			sequenced.skills = append(sequenced.skills, operation)
 		}
 	}
-	operations := append(skills, actors...)
 	state, found := candidate.Files()[len(candidate.Files())-1], true
 	operation, include, ok := stateOperation(classified.StateAction(), state, found, observation)
 	if !ok {
-		return nil, Result{}, errors.New("invalid state decision")
+		return sequencedOperations{}, Result{}, errors.New("invalid state decision")
 	}
 	if include {
-		operations = append(operations, operation)
+		sequenced.state = append(sequenced.state, operation)
 	}
-	return operations, Result{actions: actionsFromClassification(classified)}, nil
+	return sequenced, Result{actions: actionsFromClassification(classified)}, nil
 }
 
 func verifyAccepted(candidate installplan.Plan, cwd string) error {
-	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	observation, err := verifyAcceptedArtifacts(candidate)
 	if err != nil {
 		return err
-	}
-	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
-	if err != nil || classified.StateAction() != ownership.Unchanged {
-		return errors.New("accepted state readback is invalid")
-	}
-	for _, decision := range classified.ArtifactDecisions() {
-		if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
-			return errors.New("accepted artifact readback is invalid")
-		}
 	}
 	shadows, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
 	if err != nil || !shadows.Clean() {
 		return errors.New("accepted actor shadows are invalid")
 	}
 	return nil
+}
+
+// verifyAcceptedArtifacts reads back only what the transaction itself wrote,
+// inside the transaction root. It deliberately excludes the actor shadow
+// preflight, which reads under the process working directory and therefore
+// outside the rollback scope: a shadow refuses a candidate during admission,
+// it never tears down runtimes whose writes already succeeded.
+func verifyAcceptedArtifacts(candidate installplan.Plan) (installobserve.FilesystemObservation, error) {
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		return installobserve.FilesystemObservation{}, err
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
+	if err != nil || classified.StateAction() != ownership.Unchanged {
+		return installobserve.FilesystemObservation{}, errors.New("accepted state readback is invalid")
+	}
+	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ObservedOwnership != ownership.CortexOwned || decision.Action != ownership.Unchanged {
+			return installobserve.FilesystemObservation{}, errors.New("accepted artifact readback is invalid")
+		}
+	}
+	return observation, nil
 }
 
 func actionsFromClassification(classified installobserve.Result) []Action {
@@ -508,7 +524,7 @@ func Apply(candidate installplan.Plan, observation installobserve.FilesystemObse
 	if err != nil || !reflect.DeepEqual(observation, current) {
 		return Result{}, ErrInvalid
 	}
-	operations, result, err := prepare(candidate, current)
+	operations, result, err := prepare(candidate, current, "")
 	if err != nil || len(operations) == 0 {
 		return result, err
 	}
@@ -521,6 +537,10 @@ func Apply(candidate installplan.Plan, observation installobserve.FilesystemObse
 type GroupRequest struct {
 	Plan        installplan.Plan
 	Observation installobserve.FilesystemObservation
+	// CWD is the absolute process working directory. It is consulted only for
+	// an actor-aware (schema 2) plan, whose admission preflights actor shadows
+	// there, and is required for one. A schema 1 plan ignores it entirely.
+	CWD string
 }
 type Counts struct {
 	Create, Replace, Remove, Unchanged, Preserve int
@@ -535,10 +555,10 @@ func (result GroupResult) RuntimeIDs() []runtimematrix.RuntimeID {
 }
 func (result GroupResult) Counts() Counts { return result.counts }
 
-type applyWithDirectories func(string, string, string, []filetxn.Directory, []filetxn.Operation) (filetxn.Snapshot, error)
+type applyWithDirectories func(string, string, string, []filetxn.Directory, []filetxn.Operation, func() error, func(filetxn.Snapshot) error) (filetxn.Snapshot, error)
 
 func ApplyGroup(requests []GroupRequest, backupRoot, backupName string) (GroupResult, error) {
-	return applyGroupWith(requests, backupRoot, backupName, filetxn.ApplyOperationsWithDirectories)
+	return applyGroupWith(requests, backupRoot, backupName, filetxn.ApplyOperationsWithDirectoriesAndFinalize)
 }
 
 func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, apply applyWithDirectories) (GroupResult, error) {
@@ -559,10 +579,11 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 	}
 
 	result := GroupResult{runtimeIDs: make([]runtimematrix.RuntimeID, 0, len(requests))}
-	skills, states := make([]filetxn.Operation, 0), make([]filetxn.Operation, 0)
+	skills, actors, states := make([]filetxn.Operation, 0), make([]filetxn.Operation, 0), make([]filetxn.Operation, 0)
 	directories := make(map[string]filetxn.Directory)
+	verified := make([]installplan.Plan, 0, len(requests))
 	for index, request := range requests {
-		operations, single, err := prepare(request.Plan, current[index])
+		sequenced, single, err := prepareSequenced(request.Plan, current[index], request.CWD)
 		if err != nil {
 			if errors.Is(err, ErrConflict) {
 				return GroupResult{}, ErrConflict
@@ -571,6 +592,9 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 		}
 		result.runtimeIDs = append(result.runtimeIDs, request.Plan.RuntimeID())
 		result.counts = addCounts(result.counts, single)
+		if request.Plan.InstalledState().SchemaVersion() != 1 {
+			verified = append(verified, request.Plan)
+		}
 		prefix, err := rootRelative(root, request.Plan.RootPath())
 		if err != nil {
 			return GroupResult{}, ErrInvalid
@@ -584,23 +608,30 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 				mergeDirectory(directories, directory)
 			}
 		}
-		for _, operation := range operations {
-			operation, state, ok := rebaseOperation(operation, prefix)
-			if !ok {
-				return GroupResult{}, ErrInvalid
-			}
-			if state {
-				states = append(states, operation)
-			} else {
-				skills = append(skills, operation)
+		for _, bucket := range []struct {
+			source  []filetxn.Operation
+			target  *[]filetxn.Operation
+			isState bool
+		}{
+			{sequenced.skills, &skills, false},
+			{sequenced.actors, &actors, false},
+			{sequenced.state, &states, true},
+		} {
+			for _, operation := range bucket.source {
+				rebased, state, ok := rebaseOperation(operation, prefix)
+				if !ok || state != bucket.isState {
+					return GroupResult{}, ErrInvalid
+				}
+				*bucket.target = append(*bucket.target, rebased)
 			}
 		}
+		operations := sequenced.flatten()
 		for _, directory := range directoriesFor(request.Plan, operations) {
 			directory.Path = path.Join(prefix, directory.Path)
 			mergeDirectory(directories, directory)
 		}
 	}
-	operations := append(skills, states...)
+	operations := append(append(skills, actors...), states...)
 	if len(operations) == 0 {
 		return result, nil
 	}
@@ -612,10 +643,24 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 		leftDepth, rightDepth := depth(directoryList[left].Path), depth(directoryList[right].Path)
 		return leftDepth < rightDepth || leftDepth == rightDepth && directoryList[left].Path < directoryList[right].Path
 	})
-	if _, err := apply(root, backupRoot, backupName, directoryList, operations); err != nil {
+	verify := func() error { return verifyAcceptedGroup(verified) }
+	finalize := func(filetxn.Snapshot) error { return nil }
+	if _, err := apply(root, backupRoot, backupName, directoryList, operations, verify, finalize); err != nil {
 		return GroupResult{}, ErrFailed
 	}
 	return result, nil
+}
+
+// verifyAcceptedGroup reads every actor-aware candidate in the group back
+// before the transaction commits. Schema 1 candidates keep the historical
+// unverified commit, and no candidate's actor shadows are consulted here.
+func verifyAcceptedGroup(verified []installplan.Plan) error {
+	for _, candidate := range verified {
+		if _, err := verifyAcceptedArtifacts(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func validGroupRequests(requests []GroupRequest) bool {
 	if len(requests) < 1 || len(requests) > 3 {
@@ -629,6 +674,9 @@ func validGroupRequests(requests []GroupRequest) bool {
 		bundle, bound := plan.Bundle()
 		validObservation := validRoot(plan.RootPath()) && observation.MatchesCandidate(plan) || observation.MatchesAbsentRoot(plan)
 		if rank < 0 || rank <= last || !bound || !validObservation || bundle.Manifest().RuntimeID() != plan.RuntimeID() || bundle.Manifest().SnapshotFingerprint() != plan.SnapshotFingerprint() {
+			return false
+		}
+		if schema := plan.InstalledState().SchemaVersion(); schema != 1 && (schema != 2 || !validCWD(request.CWD)) {
 			return false
 		}
 		if snapshot == "" {
@@ -763,50 +811,106 @@ func addCounts(counts Counts, result Result) Counts {
 }
 
 func operationsFor(candidate installplan.Plan, observation installobserve.FilesystemObservation) ([]filetxn.Operation, error) {
-	operations, _, err := prepare(candidate, observation)
+	operations, _, err := prepare(candidate, observation, "")
 	return operations, err
 }
 
-func prepare(candidate installplan.Plan, observation installobserve.FilesystemObservation) ([]filetxn.Operation, Result, error) {
+// sequencedOperations keeps one candidate's operations in their canonical
+// apply order: every skill, then every actor, then the installation state.
+type sequencedOperations struct {
+	skills []filetxn.Operation
+	actors []filetxn.Operation
+	state  []filetxn.Operation
+}
+
+func (sequenced sequencedOperations) flatten() []filetxn.Operation {
+	operations := make([]filetxn.Operation, 0, len(sequenced.skills)+len(sequenced.actors)+len(sequenced.state))
+	operations = append(operations, sequenced.skills...)
+	operations = append(operations, sequenced.actors...)
+	return append(operations, sequenced.state...)
+}
+
+func prepare(candidate installplan.Plan, observation installobserve.FilesystemObservation, cwd string) ([]filetxn.Operation, Result, error) {
+	sequenced, result, err := prepareSequenced(candidate, observation, cwd)
+	if err != nil {
+		return nil, result, err
+	}
+	return sequenced.flatten(), result, nil
+}
+
+// prepareSequenced dispatches on the candidate's installation-state schema the
+// same way installcoord.Classify does. Schema 1 keeps the historical
+// skill-only path; schema 2 takes the actor-aware path, which admits the
+// candidate against the filesystem and refuses before any mutation.
+func prepareSequenced(candidate installplan.Plan, observation installobserve.FilesystemObservation, cwd string) (sequencedOperations, Result, error) {
+	if candidate.InstalledState().SchemaVersion() != 1 {
+		return prepareVerified(candidate, observation, cwd)
+	}
 	bundle, bound := candidate.Bundle()
 	if !bound {
-		return nil, Result{}, ErrInvalid
+		return sequencedOperations{}, Result{}, ErrInvalid
 	}
 	classified, err := installobserve.Classify(candidate, observation.PriorState(), observation.Slots())
 	if err != nil {
-		return nil, Result{}, ErrInvalid
+		return sequencedOperations{}, Result{}, ErrInvalid
 	}
 	plan, err := ownership.Build(bundle, classified.Observed())
 	if err != nil {
-		return nil, Result{}, ErrInvalid
+		return sequencedOperations{}, Result{}, ErrInvalid
 	}
 	result := Result{actions: actions(plan.Decisions(), classified.StateAction())}
 	if !plan.Ready() {
-		return nil, result, ErrConflict
+		return sequencedOperations{}, result, ErrConflict
 	}
 	files := make(map[string]installplan.File, len(candidate.Files()))
 	for _, file := range candidate.Files() {
 		files[file.LogicalID()] = file
 	}
-	operations := make([]filetxn.Operation, 0, len(plan.Decisions())+1)
+	sequenced := sequencedOperations{skills: make([]filetxn.Operation, 0, len(plan.Decisions()))}
 	for _, decision := range plan.Decisions() {
 		operation, include, ok := operationFor(decision, files[decision.LogicalID], observation)
 		if !ok {
-			return nil, Result{}, ErrInvalid
+			return sequencedOperations{}, Result{}, ErrInvalid
 		}
 		if include {
-			operations = append(operations, operation)
+			sequenced.skills = append(sequenced.skills, operation)
 		}
 	}
 	state, found := files["state/install-state"]
 	operation, include, ok := stateOperation(classified.StateAction(), state, found, observation)
 	if !ok {
-		return nil, Result{}, ErrInvalid
+		return sequencedOperations{}, Result{}, ErrInvalid
 	}
 	if include {
-		operations = append(operations, operation)
+		sequenced.state = append(sequenced.state, operation)
 	}
-	return operations, result, nil
+	return sequenced, result, nil
+}
+
+// prepareVerified admits one actor-aware candidate. It refuses on any
+// unresolved ownership decision and on any actor shadow, both before a single
+// byte is written. The shadow preflight needs the process working directory,
+// so a candidate offered without one is rejected as invalid.
+func prepareVerified(candidate installplan.Plan, observation installobserve.FilesystemObservation, cwd string) (sequencedOperations, Result, error) {
+	if candidate.InstalledState().SchemaVersion() != 2 || !validCWD(cwd) {
+		return sequencedOperations{}, Result{}, ErrInvalid
+	}
+	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
+	if err != nil {
+		return sequencedOperations{}, Result{}, ErrInvalid
+	}
+	if !verifiedDecisionsReady(classified) {
+		return sequencedOperations{}, Result{actions: actionsFromClassification(classified)}, ErrConflict
+	}
+	shadows, err := installobserve.ObserveActorShadows(candidate, observation, cwd)
+	if err != nil || !shadows.Clean() {
+		return sequencedOperations{}, Result{actions: actionsFromClassification(classified)}, ErrConflict
+	}
+	sequenced, result, err := verifiedOperations(candidate, observation, classified)
+	if err != nil {
+		return sequencedOperations{}, Result{}, ErrInvalid
+	}
+	return sequenced, result, nil
 }
 
 func operationFor(decision ownership.Decision, file installplan.File, observation installobserve.FilesystemObservation) (filetxn.Operation, bool, bool) {

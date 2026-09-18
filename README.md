@@ -6,7 +6,7 @@ You point it at your machine. It detects which runtimes are present — [Pi](htt
 
 It does not install those runtimes, replace them, or sit between you and them. When you are not running a Cortex command, nothing about your setup is different.
 
-> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today, and you can run them right now. **Implementation is not complete:** the capability catalog is largely empty, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
+> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today, and you can run them right now. **Implementation is not complete:** one family of eleven carries capabilities, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
 
 ## Install
 
@@ -53,19 +53,19 @@ Then install:
 
 ```
 $ cortex install
-operation=install status=completed touch=applied create=6 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
+operation=install status=completed touch=applied create=21 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
 runtime=pi presence=present compatibility=compatible action=configure touch=applied
 runtime=opencode presence=present compatibility=compatible action=configure touch=applied
 runtime=claude-code presence=present compatibility=uncertified action=configure touch=applied
 ```
 
-Running it again is a no-op, and reports that honestly as `create=0 unchanged=6`. `uninstall` removes only what Cortex owns:
+That is the six quality-assurance roles on each of the three runtimes, plus one state manifest each. Running it again is a no-op, and reports that honestly as `create=0 unchanged=21`. `uninstall` removes only what Cortex owns:
 
 ```
 $ cortex uninstall
-runtime=pi uninstall=completed remove=2 absent=0 conflict=0
-runtime=opencode uninstall=completed remove=2 absent=0 conflict=0
-runtime=claude-code uninstall=completed remove=2 absent=0 conflict=0
+runtime=pi uninstall=completed remove=7 absent=0 conflict=0
+runtime=opencode uninstall=completed remove=7 absent=0 conflict=0
+runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0
 ```
 
 Every command reports one line per runtime, in the same order, in `key=value` form meant to be read by a person and parsed by a script.
@@ -89,7 +89,7 @@ Writes are transactional and read back before success is reported; a failed tran
 | --- | --- |
 | **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall` of exact Cortex-owned state and artifacts. Synthetic three-runtime transaction parity covers this lifecycle. |
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; and the runtime matrix. These are not yet an end-to-end product. |
-| **Target only** | Full 11×3 runtime-family parity, release certification, the capability catalog, family packages, and agent prompts. |
+| **Target only** | Full 11×3 runtime-family parity, release certification, the remaining ten families' capabilities, family packages, and agent prompts. |
 
 ## What Cortex is not
 

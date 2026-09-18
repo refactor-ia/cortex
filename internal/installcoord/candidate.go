@@ -5,6 +5,7 @@ import (
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
 	"github.com/refactor-ia/cortex/internal/catalog"
+	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/projection"
@@ -45,9 +46,38 @@ type CandidateRequest struct {
 	// candidates for every runtime, including Pi.
 	Actors func(catalog.CatalogSnapshot) (qaactor.Binding, error)
 
-	// NewInstallationID mints the identity an actor-aware candidate carries. It
-	// is required when Actors is set and unused otherwise.
-	NewInstallationID func() (installstate.InstallationID, error)
+	// InstallationID resolves the identity an actor-aware candidate carries for
+	// one already-resolved root. It is required when Actors is set and unused
+	// otherwise.
+	//
+	// It guarantees nothing about where the identity comes from: an
+	// installation ID names an installation, so a resolver is expected to reuse
+	// the identity an existing installation at that root already recorded and
+	// to mint a new one only when there is none. ReuseInstallationID is that
+	// resolver; a resolver that ignores its argument mints a new identity on
+	// every build and makes the candidate unclassifiable against its own prior
+	// state.
+	InstallationID func(skillroot.Plan) (installstate.InstallationID, error)
+}
+
+// ReuseInstallationID returns the resolver CandidateRequest.InstallationID
+// expects: it reuses the installation ID recorded in a valid actor-aware state
+// at the resolved root and mints a fresh one from generator when that root
+// carries no such state.
+//
+// Invalid, non-canonical, foreign, or unreadable prior state yields no identity
+// and therefore a freshly minted one. Unverified bytes on disk never become the
+// candidate's identity.
+func ReuseInstallationID(generator installstate.InstallationIDGenerator) func(skillroot.Plan) (installstate.InstallationID, error) {
+	return func(resolved skillroot.Plan) (installstate.InstallationID, error) {
+		root, err := installobserve.NewUninstallRoot(resolved.RuntimeID(), resolved.RootKind(), resolved.RootPath())
+		if err == nil {
+			if prior, found := installobserve.ObserveInstallationID(root, installobserve.DefaultOptions()); found {
+				return prior, nil
+			}
+		}
+		return generator.Generate()
+	}
 }
 
 // Candidate is one runtime's installable plan.
@@ -69,7 +99,7 @@ func BuildCandidates(request CandidateRequest) ([]Candidate, projection.Plan, er
 	if request.ResolveRoot == nil {
 		return nil, projection.Plan{}, ErrInvalid
 	}
-	if request.Actors != nil && request.NewInstallationID == nil {
+	if request.Actors != nil && request.InstallationID == nil {
 		return nil, projection.Plan{}, ErrInvalid
 	}
 	if request.Admit != nil {
@@ -149,7 +179,7 @@ func buildOne(request CandidateRequest, final projection.Plan, projected skillpr
 	if err != nil {
 		return installplan.Plan{}, err
 	}
-	installationID, err := request.NewInstallationID()
+	installationID, err := request.InstallationID(resolved)
 	if err != nil {
 		return installplan.Plan{}, err
 	}

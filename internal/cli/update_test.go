@@ -396,3 +396,37 @@ func TestRunDispatchesExplicitUpdateArguments(t *testing.T) {
 		t.Fatalf("explicit update output = %q, want runtime=pi report", stdout.String())
 	}
 }
+
+// TestUpdateActorAwarePiApplyTwiceIsIdempotent drives the shipped update path
+// three times against the same root: an apply that creates the actor-aware v2
+// installation, a read-only plan, and a second apply. An installation ID names
+// an installation, so all three runs must agree on the identity already on
+// disk instead of minting a fresh one and dead-ending classification.
+func TestUpdateActorAwarePiApplyTwiceIsIdempotent(t *testing.T) {
+	fixture := newUpdateFixture(t)
+	root := updateRootPath(t, fixture, runtimematrix.RuntimePi)
+	deps := fixture.dependencies(runtimematrix.RuntimePi)
+
+	code, stdout, stderr := runUpdateCommand(t, deps, "update", "--runtime", "pi", "--catalog", fixture.catalog, "--apply")
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "status=applied") {
+		t.Fatalf("first apply = (%d, %q, %q)", code, stdout, stderr)
+	}
+	first := updateStateIdentity(t, root)
+	if first.SchemaVersion() != 2 || first.InstallationID() == "" {
+		t.Fatalf("first apply state = v%d with installation %q, want a canonical v2 identity", first.SchemaVersion(), first.InstallationID())
+	}
+
+	code, stdout, stderr = runUpdateCommand(t, deps, "update", "--runtime", "pi", "--catalog", fixture.catalog)
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "status=planned") || !strings.Contains(stdout, "operation=state/install-state action=unchanged") {
+		t.Fatalf("plan after apply = (%d, %q, %q)", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runUpdateCommand(t, deps, "update", "--runtime", "pi", "--catalog", fixture.catalog, "--apply")
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "status=applied") {
+		t.Fatalf("second apply = (%d, %q, %q)", code, stdout, stderr)
+	}
+	second := updateStateIdentity(t, root)
+	if second.InstallationID() != first.InstallationID() {
+		t.Fatalf("installation ID = %q after the second apply, want the recorded %q", second.InstallationID(), first.InstallationID())
+	}
+}

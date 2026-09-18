@@ -33,7 +33,7 @@ const (
 	piSmokeOutputLimit       = 8 * 1024
 	piSmokeTimeoutMS         = 60 * 1000
 	piSmokeTimeout           = time.Duration(piSmokeTimeoutMS) * time.Millisecond
-	piSmokePrompt            = "/skill:cortex-catalog-marker\nRespond with exactly one minified JSON object using this envelope: {\"name\":\"<activated skill name>\",\"heading\":\"<first Markdown heading without the leading #>\"}. Do not use a Markdown code fence or include any other text."
+	piSmokePrompt            = "/skill:cortex-requirements-analyst\nRespond with exactly one minified JSON object using this envelope: {\"name\":\"<activated skill name>\",\"heading\":\"<first Markdown heading without the leading #>\"}. Do not use a Markdown code fence or include any other text."
 )
 
 var realSmokeRevision = regexp.MustCompile("^[0-9a-f]{40}$")
@@ -128,7 +128,7 @@ func smokeInvocationFailure(ctx context.Context, execution runtimeprobe.Executio
 }
 
 func smokeResultFailure(result smokeAcknowledgement, err error) error {
-	if err != nil || result.Name != "cortex-catalog-marker" || result.Heading != "Cortex Catalog Marker" {
+	if err != nil || result.Name != "cortex-requirements-analyst" || result.Heading != "Requirements Analyst" {
 		return newSmokeFailure(smokeFailureResultParse)
 	}
 	return nil
@@ -314,15 +314,15 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 			name, body string
 			ok         bool
 		}{
-			{"valid", `{"name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"}`, true},
-			{"malformed", `{`, false}, {"missing", `{"name":"cortex-catalog-marker"}`, false},
-			{"duplicate key", `{"name":"cortex-catalog-marker","name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"}`, false},
-			{"case variant", `{"Name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"}`, false},
-			{"unknown", `{"name":"cortex-catalog-marker","heading":"Cortex Catalog Marker","extra":"value"}`, false},
-			{"non-string value", `{"name":1,"heading":"Cortex Catalog Marker"}`, false},
-			{"null value", `{"name":null,"heading":"Cortex Catalog Marker"}`, false},
+			{"valid", `{"name":"cortex-requirements-analyst","heading":"Requirements Analyst"}`, true},
+			{"malformed", `{`, false}, {"missing", `{"name":"cortex-requirements-analyst"}`, false},
+			{"duplicate key", `{"name":"cortex-requirements-analyst","name":"cortex-requirements-analyst","heading":"Requirements Analyst"}`, false},
+			{"case variant", `{"Name":"cortex-requirements-analyst","heading":"Requirements Analyst"}`, false},
+			{"unknown", `{"name":"cortex-requirements-analyst","heading":"Requirements Analyst","extra":"value"}`, false},
+			{"non-string value", `{"name":1,"heading":"Requirements Analyst"}`, false},
+			{"null value", `{"name":null,"heading":"Requirements Analyst"}`, false},
 			{"non-object", `["name","heading"]`, false},
-			{"multiple", `{"name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"} {"name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"}`, false},
+			{"multiple", `{"name":"cortex-requirements-analyst","heading":"Requirements Analyst"} {"name":"cortex-requirements-analyst","heading":"Requirements Analyst"}`, false},
 			{"trailing", `{} trailing`, false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -344,7 +344,7 @@ func TestPiRealSmokeHelpers(t *testing.T) {
 		}
 		var expected []byte
 		for _, skill := range rendered.Skills() {
-			if skill.LogicalID() == "skills/catalog-marker" && skill.CapabilityID() == "catalog-marker" {
+			if skill.LogicalID() == "skills/requirements-analyst" && skill.CapabilityID() == "requirements-analyst" {
 				expected = skill.Content()
 			}
 		}
@@ -424,11 +424,11 @@ func runPiRealSmoke(home, subscriptionAuthSource string) (string, error) {
 	if err != nil {
 		return "", newSmokeFailure(smokeFailureInternal)
 	}
-	installed, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "skills", "cortex-catalog-marker", "SKILL.md"))
+	installed, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "skills", "cortex-requirements-analyst", "SKILL.md"))
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
 		return "", newSmokeFailure(smokeFailureReadback)
 	}
-	info, err := os.Stat(filepath.Join(home, ".pi", "agent", "skills", "cortex-catalog-marker", "SKILL.md"))
+	info, err := os.Stat(filepath.Join(home, ".pi", "agent", "skills", "cortex-requirements-analyst", "SKILL.md"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		return "", newSmokeFailure(smokeFailureReadback)
 	}
@@ -575,14 +575,14 @@ func smokeMarker() ([]byte, string, error) {
 		return nil, "", realSmokeError()
 	}
 	for _, skill := range rendered.Skills() {
-		if skill.LogicalID() == "skills/catalog-marker" && skill.CapabilityID() == "catalog-marker" {
+		if skill.LogicalID() == "skills/requirements-analyst" && skill.CapabilityID() == "requirements-analyst" {
 			return skill.Content(), snapshot.Fingerprint(), nil
 		}
 	}
 	return nil, "", realSmokeError()
 }
 func piSmokeInstallOutput() string {
-	return "operation=install status=completed touch=applied create=2 replace=0 remove=0 unchanged=0 preserve=0\n" +
+	return "operation=install status=completed touch=applied create=7 replace=0 remove=0 unchanged=0 preserve=0\n" +
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n" +
 		"runtime=opencode presence=absent action=warn touch=denied\n" +
 		"runtime=claude-code presence=absent action=warn touch=denied\n"

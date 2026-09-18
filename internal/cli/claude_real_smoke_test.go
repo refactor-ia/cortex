@@ -28,8 +28,8 @@ const (
 	claudeSmokeBinary            = "claude"
 	claudeSmokeOutputLimit       = 8 * 1024
 	claudeSmokeTimeout           = 60 * time.Second
-	claudeSmokeSchema            = `{"type":"object","required":["name","heading"],"additionalProperties":false,"properties":{"name":{"type":"string","const":"cortex-catalog-marker"},"heading":{"type":"string"}}}`
-	claudeSmokePrompt            = "/cortex-catalog-marker\nReturn one JSON object containing the loaded skill name and its first Markdown heading without the leading #."
+	claudeSmokeSchema            = `{"type":"object","required":["name","heading"],"additionalProperties":false,"properties":{"name":{"type":"string","const":"cortex-requirements-analyst"},"heading":{"type":"string"}}}`
+	claudeSmokePrompt            = "/cortex-requirements-analyst\nReturn one JSON object containing the loaded skill name and its first Markdown heading without the leading #."
 )
 
 func TestClaudeRealSmoke(t *testing.T) {
@@ -93,7 +93,7 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 	})
 
 	t.Run("official result requires exact required fields", func(t *testing.T) {
-		valid := `{"type":"result","version":"1","subtype":"success","is_error":false,"structured_output":{"name":"cortex-catalog-marker","heading":"Cortex Catalog Marker"},"usage":{}}`
+		valid := `{"type":"result","version":"1","subtype":"success","is_error":false,"structured_output":{"name":"cortex-requirements-analyst","heading":"Requirements Analyst"},"usage":{}}`
 		cases := []struct {
 			name string
 			body string
@@ -110,7 +110,7 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 			{"nonobject structured output", `{"type":"result","subtype":"success","is_error":false,"structured_output":[]}`, false},
 			{"malformed", `{`, false},
 			{"trailing outer", valid + ` {}`, false},
-			{"wrong acknowledgement", strings.Replace(valid, `Cortex Catalog Marker`, `Wrong`, 1), false},
+			{"wrong acknowledgement", strings.Replace(valid, `Requirements Analyst`, `Wrong`, 1), false},
 			{"trailing acknowledgement", strings.Replace(valid, `}}`, `} {}`, 1), false},
 		}
 		for _, tc := range cases {
@@ -124,7 +124,7 @@ func TestClaudeRealSmokeHelpers(t *testing.T) {
 	})
 
 	t.Run("schema and command are stable and safe", func(t *testing.T) {
-		if strings.Contains(claudeSmokeSchema, "Cortex Catalog Marker") || !strings.HasPrefix(claudeSmokePrompt, "/cortex-catalog-marker\n") {
+		if strings.Contains(claudeSmokeSchema, "Requirements Analyst") || !strings.HasPrefix(claudeSmokePrompt, "/cortex-requirements-analyst\n") {
 			t.Fatal("unsafe schema or prompt")
 		}
 		var schema map[string]any
@@ -214,7 +214,7 @@ func runClaudeRealSmoke(home, authorization string) (string, error) {
 	if err != nil {
 		return "", newSmokeFailure(smokeFailureInternal)
 	}
-	installedPath := filepath.Join(home, ".claude", "skills", "cortex-catalog-marker", "SKILL.md")
+	installedPath := filepath.Join(home, ".claude", "skills", "cortex-requirements-analyst", "SKILL.md")
 	installed, err := os.ReadFile(installedPath)
 	if err != nil || !bytes.Equal(installed, marker) || sha256.Sum256(installed) != sha256.Sum256(marker) {
 		return "", newSmokeFailure(smokeFailureReadback)
@@ -366,7 +366,7 @@ func parseClaudeSmokeResult(data []byte) (smokeAcknowledgement, error) {
 				return smokeAcknowledgement{}, realSmokeError()
 			}
 			ack, parseErr := parseSmokeAcknowledgement(raw)
-			if parseErr != nil || ack.Name != "cortex-catalog-marker" || ack.Heading != "Cortex Catalog Marker" {
+			if parseErr != nil || ack.Name != "cortex-requirements-analyst" || ack.Heading != "Requirements Analyst" {
 				return smokeAcknowledgement{}, realSmokeError()
 			}
 			result = ack
@@ -383,7 +383,7 @@ func parseClaudeSmokeResult(data []byte) (smokeAcknowledgement, error) {
 }
 
 func claudeSmokeInstallOutput() string {
-	return "operation=install status=completed touch=applied create=2 replace=0 remove=0 unchanged=0 preserve=0\n" +
+	return "operation=install status=completed touch=applied create=7 replace=0 remove=0 unchanged=0 preserve=0\n" +
 		"runtime=pi presence=absent action=warn touch=denied\n" +
 		"runtime=opencode presence=absent action=warn touch=denied\n" +
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n"

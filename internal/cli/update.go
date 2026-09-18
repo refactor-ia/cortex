@@ -177,8 +177,11 @@ func buildUpdateCandidate(runtimeID runtimematrix.RuntimeID, catalogDir string, 
 		ResolveRoot: func(symbolic skilldest.Plan) (skillroot.Plan, error) {
 			return skillroot.Resolve(symbolic, inputs)
 		},
-		Actors:            bindPiActors,
-		NewInstallationID: installstate.DefaultInstallationIDGenerator().Generate,
+		Actors: bindPiActors,
+		// An installation ID names an installation, not one command run, so the
+		// identity already recorded at the resolved root is reused and a new one
+		// is minted only when that root carries no valid actor-aware state.
+		InstallationID: installcoord.ReuseInstallationID(installstate.DefaultInstallationIDGenerator()),
 	})
 	if err != nil {
 		return installplan.Plan{}, err

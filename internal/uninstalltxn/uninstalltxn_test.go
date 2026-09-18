@@ -265,6 +265,18 @@ func TestApplyLegacyDoesNotInferActors(t *testing.T) {
 	assertData(t, actor, "foreign actor")
 }
 
+func TestApplyRemovesActorArtifacts(t *testing.T) {
+	candidate := actorAwareCandidate(t, physicalTempDir(t), "000102030405060708090a0b0c0d0e0f")
+	materialize(t, candidate)
+	root := candidate.RootPath()
+	if _, err := Apply(root, observe(t, root), t.TempDir(), "backup"); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	for _, file := range candidate.Files() {
+		assertAbsent(t, file.AbsolutePath())
+	}
+}
+
 func TestOperationsPlaceStateLast(t *testing.T) {
 	root, _, _ := fixture(t, "alpha", "beta")
 	operations, err := operationsFor(observe(t, root))

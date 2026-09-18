@@ -99,7 +99,7 @@ func TestBuiltInSourceResolvesEmbeddedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolution, err := BuiltInSource().ResolveSnapshot(snapshot)
-	if err != nil || resolution.ID() != "catalog.1.6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88" || resolution.CatalogVersion() != 1 || resolution.Fingerprint() != "6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88" {
+	if err != nil || resolution.ID() != "catalog.1.6e182caced3a6d0432b00cd89365fef4aa287b74c4ef83a9e1dfb2983342b722" || resolution.CatalogVersion() != 1 || resolution.Fingerprint() != "6e182caced3a6d0432b00cd89365fef4aa287b74c4ef83a9e1dfb2983342b722" {
 		t.Fatalf("BuiltInSource().ResolveSnapshot() = (%+v, %v)", resolution, err)
 	}
 }

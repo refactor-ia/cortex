@@ -1,9 +1,12 @@
 package builtinassets
 
 import (
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
+	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skillartifact"
@@ -12,7 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
-const builtInFingerprint = "6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88"
+const builtInFingerprint = "6e182caced3a6d0432b00cd89365fef4aa287b74c4ef83a9e1dfb2983342b722"
 
 func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	snapshot, err := Snapshot()
@@ -22,13 +25,35 @@ func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	if snapshot.Manifest().SchemaVersion != 1 || len(snapshot.Families()) != 11 || snapshot.Fingerprint() != builtInFingerprint {
 		t.Fatalf("Snapshot() = schema %d, families %d, fingerprint %q", snapshot.Manifest().SchemaVersion, len(snapshot.Families()), snapshot.Fingerprint())
 	}
-	families := snapshot.Families()
-	if len(families[10].Capabilities()) != 1 || families[10].Capabilities()[0].Manifest().ID != "catalog-marker" || string(families[10].Capabilities()[0].Source().Content()) != "# Cortex Catalog Marker\n\nThis skill identifies the built-in Cortex lifecycle catalog. It defines no executable workflow and grants no permission to inspect data, invoke tools, or modify state.\n" {
-		t.Fatal("Snapshot() does not materialize the catalog marker")
+	qualityAssurance := familyByID(t, snapshot, "quality-assurance")
+	if len(qualityAssurance.Capabilities()) != 6 {
+		t.Fatalf("quality-assurance capabilities = %d, want 6", len(qualityAssurance.Capabilities()))
+	}
+	if total := totalCapabilities(snapshot); total != 6 {
+		t.Fatalf("embedded capabilities = %d, want 6", total)
 	}
 }
 
-func TestSnapshotProjectsCatalogMarkerToRuntimeDestinations(t *testing.T) {
+func familyByID(t *testing.T, snapshot catalog.CatalogSnapshot, id string) catalog.CatalogFamilySnapshot {
+	t.Helper()
+	for _, family := range snapshot.Families() {
+		if family.Manifest().ID == id {
+			return family
+		}
+	}
+	t.Fatalf("family %q is missing from the embedded catalog", id)
+	return catalog.CatalogFamilySnapshot{}
+}
+
+func totalCapabilities(snapshot catalog.CatalogSnapshot) int {
+	total := 0
+	for _, family := range snapshot.Families() {
+		total += len(family.Capabilities())
+	}
+	return total
+}
+
+func TestSnapshotProjectsEmbeddedCapabilitiesToRuntimeDestinations(t *testing.T) {
 	snapshot, err := Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -60,8 +85,27 @@ func TestSnapshotProjectsCatalogMarkerToRuntimeDestinations(t *testing.T) {
 			t.Fatal(err)
 		}
 		destinations, err := skilldest.Build(binding)
-		if err != nil || len(destinations.Destinations()) != 1 || destinations.Destinations()[0].RelativePath() != "skills/cortex-catalog-marker/SKILL.md" {
-			t.Fatalf("runtime destination = (%+v, %v)", destinations, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths := make([]string, 0, len(destinations.Destinations()))
+		for _, destination := range destinations.Destinations() {
+			paths = append(paths, destination.RelativePath())
+		}
+		sort.Strings(paths)
+		if !slices.Equal(paths, expectedDestinations) {
+			t.Fatalf("runtime destinations = %v, want %v", paths, expectedDestinations)
 		}
 	}
+}
+
+// expectedDestinations is one skill per embedded capability: the six
+// quality-assurance capabilities, the only capabilities the catalog carries.
+var expectedDestinations = []string{
+	"skills/cortex-adversarial-tester/SKILL.md",
+	"skills/cortex-evidence-auditor/SKILL.md",
+	"skills/cortex-exploratory-tester/SKILL.md",
+	"skills/cortex-requirements-analyst/SKILL.md",
+	"skills/cortex-test-designer/SKILL.md",
+	"skills/cortex-test-runner/SKILL.md",
 }

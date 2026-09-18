@@ -87,22 +87,35 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			assertMissing(t, states[i])
 		}
 	})
-	t.Run("group transaction failure reports no completed roots", func(t *testing.T) {
-		roots := uninstallRoots(t)
-		states, skills := installAll(t, roots)
-		code, stdout, stderr := runUninstallForTest(t, roots, func(deps *uninstallDependencies) {
-			deps.applyGroup = func([]uninstalltxn.GroupRequest, string, string) error {
-				return errors.New("private transaction failure")
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"private failure stays opaque", errors.New("private transaction failure"), "transaction_failed"},
+		{"ownership conflict is named", uninstalltxn.ErrConflict, "ownership_conflict"},
+		{"unsupported installation is named", uninstalltxn.ErrInvalid, "unsupported_installation"},
+	} {
+		t.Run("group transaction failure reports no completed roots: "+tc.name, func(t *testing.T) {
+			roots := uninstallRoots(t)
+			states, skills := installAll(t, roots)
+			code, stdout, stderr := runUninstallForTest(t, roots, func(deps *uninstallDependencies) {
+				deps.applyGroup = func([]uninstalltxn.GroupRequest, string, string) error {
+					return tc.err
+				}
+			})
+			if code != exitTransaction || stderr != "error="+tc.reason+"\n" || stdout != uninstallLines("failed", "failed", "failed") || strings.Contains(stdout, "rollback") {
+				t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
+			}
+			if strings.Contains(stderr, "private transaction failure") {
+				t.Fatalf("stderr leaked the underlying error: %q", stderr)
+			}
+			for index := range roots {
+				assertPresent(t, skills[index])
+				assertPresent(t, states[index])
 			}
 		})
-		if code != exitTransaction || stderr != "" || stdout != uninstallLines("failed", "failed", "failed") || strings.Contains(stdout, "rollback") {
-			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
-		}
-		for index := range roots {
-			assertPresent(t, skills[index])
-			assertPresent(t, states[index])
-		}
-	})
+	}
 }
 
 func TestRunUninstallObservationErrorDoesNotMutate(t *testing.T) {

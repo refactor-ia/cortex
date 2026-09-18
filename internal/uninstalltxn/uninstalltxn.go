@@ -306,7 +306,7 @@ func validCandidate(logicalID string, final bool) bool {
 	if logicalID == "state/install-state" {
 		return final
 	}
-	return !final && strings.HasPrefix(logicalID, "skills/")
+	return !final && (strings.HasPrefix(logicalID, "skills/") || strings.HasPrefix(logicalID, "actors/"))
 }
 
 func canonicalRoot(root string) bool {

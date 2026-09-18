@@ -313,6 +313,7 @@ func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 				preflight[index].status = "failed"
 			}
 		}
+		writeError(stderr, uninstallFailureReason(err))
 		return writeUninstallResult(stdout, stderr, preflight, exitTransaction)
 	}
 	for index := range preflight {
@@ -333,6 +334,20 @@ func uninstallRootExists(root string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// uninstallFailureReason classifies a group transaction failure as a stable
+// machine-readable code. It never surfaces the underlying error text, which
+// may carry private filesystem detail.
+func uninstallFailureReason(err error) string {
+	switch {
+	case errors.Is(err, uninstalltxn.ErrConflict):
+		return "ownership_conflict"
+	case errors.Is(err, uninstalltxn.ErrInvalid):
+		return "unsupported_installation"
+	default:
+		return "transaction_failed"
+	}
 }
 
 func writeUninstallResult(stdout, stderr io.Writer, results []uninstallPreflight, code int) int {

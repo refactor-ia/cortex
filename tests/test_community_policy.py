@@ -483,19 +483,30 @@ class CommunityPolicyTests(unittest.TestCase):
                 ):
                         self.assertIn(expected, support)
 
-        def test_ci_is_minimal_and_runs_this_contract(self) -> None:
+        def test_ci_is_minimal_and_pins_every_check(self) -> None:
                 workflow = read_text(".github/workflows/ci.yml")
                 for expected in (
                         "pull_request:",
                         "push:",
                         "- main",
                         "contents: read",
+                        "concurrency:",
+                        "cancel-in-progress: true",
+                        "timeout-minutes:",
                         "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
                         "persist-credentials: false",
                         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
                         'python-version: "3.11"',
                         "PyYAML==6.0.2",
+                        # Every check is pinned by name. Removing one must turn this
+                        # suite red, including the Go tests this file previously
+                        # asserted CI ran without ever checking for them.
+                        "go vet ./...",
+                        "go test ./...",
+                        "go test -race ./...",
                         "python -m unittest tests.test_community_policy",
+                        "python -m unittest tests.test_github_policy",
+                        "python -m unittest tests.test_runtime_adapter_contract",
                 ):
                         self.assertIn(expected, workflow)
                 for forbidden in (

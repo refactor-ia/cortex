@@ -131,7 +131,7 @@ func BuildCandidates(request CandidateRequest) ([]Candidate, projection.Plan, er
 	}
 	candidates := make([]Candidate, 0, len(final.TransactionTargets()))
 	for _, id := range final.TransactionTargets() {
-		candidate, err := buildOne(request, final, projected[id], id)
+		candidate, err := buildOne(request, sources, final, projected[id], id)
 		if err != nil {
 			return nil, projection.Plan{}, err
 		}
@@ -149,7 +149,7 @@ func buildAdapterPlan(request CandidateRequest) (adapterplan.Plan, error) {
 }
 
 // buildOne derives one runtime's candidate from an already-validated plan.
-func buildOne(request CandidateRequest, final projection.Plan, projected skillprojection.Plan, id runtimematrix.RuntimeID) (installplan.Plan, error) {
+func buildOne(request CandidateRequest, sources skillrender.Set, final projection.Plan, projected skillprojection.Plan, id runtimematrix.RuntimeID) (installplan.Plan, error) {
 	binding, err := skillartifact.Build(projected, final)
 	if err != nil {
 		return installplan.Plan{}, err
@@ -161,6 +161,23 @@ func buildOne(request CandidateRequest, final projection.Plan, projected skillpr
 	symbolic, err := skilldest.Build(binding)
 	if err != nil {
 		return installplan.Plan{}, err
+	}
+	// A catalog that declares no quality-assurance capabilities projects no QA
+	// destinations, so there is nothing to own and the check is skipped rather
+	// than failed. A catalog that declares some of them is not skipped: it
+	// reaches the validator and fails there. The ownership records are
+	// discarded — this call site wants the proof that every QA destination is
+	// byte-derived from its neutral source, not the records describing it.
+	//
+	// internal/lifecycleharness is the regression coverage for the skip: its
+	// synthetic catalog populates only the reasoning family, so it is the one
+	// place a quality-assurance family is empty while the build still has
+	// artifacts to plan. The shipped catalog cannot reach that state, because
+	// quality-assurance is the only family it populates.
+	if skilldest.QAFamilyProjected(request.Snapshot) {
+		if _, err := skilldest.ValidateQAProjection(request.Snapshot, sources, binding, symbolic); err != nil {
+			return installplan.Plan{}, fmt.Errorf("catalog projection has an unowned QA destination for %s: %w", id, err)
+		}
 	}
 	resolved, err := request.ResolveRoot(symbolic)
 	if err != nil {

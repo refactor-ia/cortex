@@ -21,7 +21,10 @@ type QAProjectionOwnership struct {
 	GeneratedSHA256     string
 }
 
-// ValidateQAProjection proves that the closed QA fleet is projected from its neutral sources.
+// ValidateQAProjection proves that the closed QA fleet is projected from its
+// neutral sources. It accepts a destination plan for any supported runtime —
+// Pi, OpenCode, and Claude Code — because the family carries the same
+// three-runtime parity as the rest of the catalog.
 func ValidateQAProjection(snapshot catalog.CatalogSnapshot, sources skillrender.Set, binding skillartifact.Binding, destinations Plan) ([]QAProjectionOwnership, error) {
 	manifest, manifestOK := binding.Manifest()
 	bundle, bundleOK := binding.Bundle()
@@ -90,8 +93,28 @@ func qaCapability(family catalog.CatalogFamilySnapshot, roleID string) (catalog.
 	return catalog.CatalogCapabilitySnapshot{}, catalog.CatalogFileSnapshot{}, false
 }
 
+// supportedQARuntime names the runtimes the quality-assurance family projects
+// to. It admits every runtime in runtimematrix because the family follows the
+// three-runtime parity stated in docs/architecture/overview.md:52: Cortex
+// targets Pi, OpenCode, and Claude Code with contract and function parity. The
+// helper stays as the single place that statement is encoded, so a future
+// runtime is admitted here deliberately rather than by silence.
 func supportedQARuntime(runtime runtimematrix.RuntimeID) bool {
-	return runtime == runtimematrix.RuntimePi || runtime == runtimematrix.RuntimeOpenCode
+	return runtime == runtimematrix.RuntimePi || runtime == runtimematrix.RuntimeOpenCode || runtime == runtimematrix.RuntimeClaudeCode
+}
+
+// QAFamilyProjected reports whether a snapshot carries a quality-assurance
+// family with capabilities to project. Every admitted catalog lists the family,
+// because a catalog manifest must name all eleven approved family IDs, but the
+// manifest may declare no capabilities. An empty family projects nothing, so
+// there is no ownership for ValidateQAProjection to prove and callers skip it.
+//
+// A partially populated family is not empty: it still reaches the validator and
+// still fails there, which is the intended answer for a catalog that ships some
+// of the closed fleet.
+func QAFamilyProjected(snapshot catalog.CatalogSnapshot) bool {
+	family, found := qaFamily(snapshot)
+	return found && len(family.Manifest().Capabilities) > 0
 }
 
 func invalidQAProjection() error { return errors.New("QA projection: invalid input") }

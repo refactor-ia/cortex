@@ -110,9 +110,20 @@ func TestValidateQAProjectionRejectsSnapshotAndRuntimeMismatches(t *testing.T) {
 		t.Fatalf("runtime mismatch result = (%#v, %v)", ownership, err)
 	}
 
-	claudeSources, claudeBinding, claudeDestinations := qaPipeline(t, snapshot, runtimematrix.RuntimeClaudeCode)
-	if ownership, err := ValidateQAProjection(snapshot, claudeSources, claudeBinding, claudeDestinations); err == nil || ownership != nil {
-		t.Fatalf("unsupported Claude Code result = (%#v, %v)", ownership, err)
+	// Claude Code is a supported destination, not a mismatch.
+	// See TestValidateQAProjectionAcceptsClaudeCodeDestinations.
+}
+
+// TestValidateQAProjectionAcceptsClaudeCodeDestinations pins the three-runtime
+// parity of docs/architecture/overview.md:52 for the quality-assurance family:
+// a Claude Code projection validates and owns every role, exactly as Pi and
+// OpenCode do.
+func TestValidateQAProjectionAcceptsClaudeCodeDestinations(t *testing.T) {
+	snapshot := qaSnapshot(t, false, false)
+	sources, binding, destinations := qaPipeline(t, snapshot, runtimematrix.RuntimeClaudeCode)
+	ownership, err := ValidateQAProjection(snapshot, sources, binding, destinations)
+	if err != nil || len(ownership) != 6 {
+		t.Fatalf("Claude Code result = (%#v, %v)", ownership, err)
 	}
 }
 

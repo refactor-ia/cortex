@@ -70,7 +70,9 @@ func TestShadowScannerRejectsUnsafeRoots(t *testing.T) {
 	}{
 		{"relative pi root", "relative", cwd},
 		{"unclean pi root", piRoot + string(filepath.Separator) + ".", cwd},
-		{"missing pi root", missing, cwd},
+		// A missing pi root is deliberately absent from this table: a runtime
+		// that was never installed holds no actor files, so it contributes no
+		// shadows. See TestShadowScannerAcceptsAbsentPiRootAndKeepsProjectRoots.
 		{"symlink pi root", link, cwd},
 		{"parent symlink pi root", filepath.Join(link, filepath.Base(piRoot)), cwd},
 		{"file pi root", file, cwd},
@@ -189,4 +191,43 @@ func shadowTempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func TestShadowScannerAcceptsAbsentPiRootAndKeepsProjectRoots(t *testing.T) {
+	home, cwd := shadowTempDir(t), shadowTempDir(t)
+	absentPiRoot := filepath.Join(home, ".pi", "agent")
+	writeShadowFile(t, filepath.Join(cwd, ".pi", "agents", "project-agent.md"), []byte("project agent"), 0o640)
+
+	got, err := scanActorRoots(absentPiRoot, cwd)
+	if err != nil {
+		t.Fatalf("scanActorRoots() with an absent Pi root = %v, want no error", err)
+	}
+	if len(got) != 1 || got[0].location != projectAgents || got[0].basename != "project-agent.md" {
+		t.Fatalf("candidates = %#v, want only the project agent", got)
+	}
+}
+
+func TestShadowScannerRejectsUnsafePiRootThatExists(t *testing.T) {
+	home, cwd := shadowTempDir(t), shadowTempDir(t)
+	target := filepath.Join(home, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "linked-root")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanActorRoots(link, cwd); err == nil {
+		t.Fatal("scanActorRoots() accepted a symlinked Pi root")
+	}
+
+	file := filepath.Join(home, "root-file")
+	writeShadowFile(t, file, []byte("not a directory"), 0o640)
+	if _, err := scanActorRoots(file, cwd); err == nil {
+		t.Fatal("scanActorRoots() accepted a Pi root that is a regular file")
+	}
+
+	if _, err := scanActorRoots("relative/root", cwd); err == nil {
+		t.Fatal("scanActorRoots() accepted a relative Pi root")
+	}
 }

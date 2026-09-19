@@ -90,7 +90,7 @@ A family package contains its manifest, router, subskills, justified agents, ref
 | --- | --- |
 | Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. |
 | Execution | Preserve generic queue lifecycle, budgets, state, and evidence; remove SDD governance. |
-| Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. |
+| Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. It installs to all three supported runtimes — Pi, OpenCode, and Claude Code — under the parity stated above, and Pi additionally receives the actor projection. |
 | Services and personal | Postmark v1 is guidance only. Do not promise Coolify until it is implemented. Credentialed or personal capabilities are dormant until configured, with no preconfigured profiles or personal data. `voice` and `learn` remain neutral and dormant until configured. |
 | Memory integration | `kb-feeder` is proposal-first and requires approval before writing. Never absorb `cortex-brains` server, storage, embedding, backup, doctor, or memory-skill responsibilities. |
 

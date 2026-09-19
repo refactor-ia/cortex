@@ -157,22 +157,29 @@ func admissionShadows(root, cwd string, role qarole.RoleID, actor []byte) error 
 }
 
 func scanActorRoots(piRoot, cwd string) ([]shadowCandidate, error) {
-	if err := validateShadowRoot(piRoot); err != nil {
+	piPresent, err := shadowRootPresent(piRoot)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateShadowRoot(cwd); err != nil {
 		return nil, err
 	}
-	roots := []struct {
+	type shadowRoot struct {
 		location shadowLocation
 		base     string
 		parts    []string
-	}{
-		{globalAgents, piRoot, []string{"agents"}},
-		{globalSubagents, piRoot, []string{"subagents"}},
-		{projectAgents, cwd, []string{".pi", "agents"}},
-		{projectSubagents, cwd, []string{".pi", "subagents"}},
 	}
+	roots := make([]shadowRoot, 0, 4)
+	if piPresent {
+		roots = append(roots,
+			shadowRoot{globalAgents, piRoot, []string{"agents"}},
+			shadowRoot{globalSubagents, piRoot, []string{"subagents"}},
+		)
+	}
+	roots = append(roots,
+		shadowRoot{projectAgents, cwd, []string{".pi", "agents"}},
+		shadowRoot{projectSubagents, cwd, []string{".pi", "subagents"}},
+	)
 	var candidates []shadowCandidate
 	retained := 0
 	for _, root := range roots {
@@ -206,6 +213,24 @@ func scanActorRoots(piRoot, cwd string) ([]shadowCandidate, error) {
 		}
 	}
 	return cloneShadowCandidates(candidates), nil
+}
+
+// shadowRootPresent reports whether root holds global shadow directories to
+// scan. A runtime that has never been installed leaves its root absent, and an
+// absent root holds no actor files at all, so it contributes no shadows. An
+// absent root is not an unsafe one; refusing it would block the first install.
+// A root that is present is still validated in full.
+func shadowRootPresent(root string) (bool, error) {
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return false, errors.New("shadow scan root is not canonical and absolute")
+	}
+	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err := validateShadowRoot(root); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateShadowRoot(root string) error {

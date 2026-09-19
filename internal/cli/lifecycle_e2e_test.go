@@ -17,7 +17,7 @@ import (
 
 // TestCLILifecycleOfflineThreeRuntime is synthetic offline coverage, not version certification.
 func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalHome(t)
 	install := compatibleInstallDependencies(t, home)
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
@@ -103,13 +103,30 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	// The embedded catalog projects the six quality-assurance capabilities as one
 	// skill each, on every runtime. Asserting the whole set in sorted order keeps
 	// the check honest: a count alone would also pass for six wrong skills.
-	expectedLogicalIDs := []string{
+	expectedSkillIDs := []string{
 		"skills/adversarial-tester",
 		"skills/evidence-auditor",
 		"skills/exploratory-tester",
 		"skills/requirements-analyst",
 		"skills/test-designer",
 		"skills/test-runner",
+	}
+	// Pi additionally binds one actor per capability, so its manifest carries the
+	// six actor artifacts alongside the six skills.
+	expectedPiLogicalIDs := []string{
+		"actors/adversarial-tester",
+		"actors/evidence-auditor",
+		"actors/exploratory-tester",
+		"actors/requirements-analyst",
+		"actors/test-designer",
+		"actors/test-runner",
+	}
+	expectedPiLogicalIDs = append(expectedPiLogicalIDs, expectedSkillIDs...)
+	expectedLogicalIDsFor := func(id runtimematrix.RuntimeID) []string {
+		if id == runtimematrix.RuntimePi {
+			return expectedPiLogicalIDs
+		}
+		return expectedSkillIDs
 	}
 	assertInstalled := func() {
 		t.Helper()
@@ -129,6 +146,7 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 				logicalIDs[j] = artifact.LogicalID()
 			}
 			sort.Strings(logicalIDs)
+			expectedLogicalIDs := expectedLogicalIDsFor(runtime.root.RuntimeID())
 			if !slices.Equal(logicalIDs, expectedLogicalIDs) {
 				t.Fatalf("%s installed logical IDs = %#v, want %#v", runtime.root.RuntimeID(), logicalIDs, expectedLogicalIDs)
 			}
@@ -166,21 +184,21 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	assertSentinels()
 	assertOwnedAbsent()
 
-	expect("install", exitOK, "operation=install status=completed touch=applied create=21 replace=0 remove=0 unchanged=0 preserve=0\n"+
+	expect("install", exitOK, "operation=install status=completed touch=applied create=27 replace=0 remove=0 unchanged=0 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertInstalled()
 
-	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=21 preserve=0\n"+
+	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=27 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertUnchangedArtifacts()
 
-	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=7 absent=0 conflict=0\n"+
+	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=13 absent=0 conflict=0\n"+
 		"runtime=opencode uninstall=completed remove=7 absent=0 conflict=0\n"+
 		"runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0\n")
 	assertSentinels()

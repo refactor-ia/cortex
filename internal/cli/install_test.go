@@ -33,8 +33,21 @@ func certifiedPiOnlyRunner() *fakeRunner {
 	}
 }
 
+// canonicalHome returns a temporary home with every symlink resolved. The
+// actor shadow scanner rejects a root reached through a symlinked ancestor, and
+// on macOS t.TempDir() is exactly that, so an actor-aware install needs the
+// resolved path. Mirrors newUpdateFixture in update_test.go.
+func canonicalHome(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestRunInstallCompatibleFreshRoot(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalHome(t)
 	deps := compatibleInstallDependencies(t, home)
 	calls := 0
 	apply := deps.applyGroup
@@ -56,7 +69,7 @@ func TestRunInstallCompatibleFreshRoot(t *testing.T) {
 		t.Fatalf("install state = %v", err)
 	}
 	stdout.Reset()
-	if code := runWithInstallDependencies(context.Background(), []string{"update"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitOK || !strings.Contains(stdout.String(), "unchanged=7") {
+	if code := runWithInstallDependencies(context.Background(), []string{"update"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitOK || !strings.Contains(stdout.String(), "unchanged=13") {
 		t.Fatalf("idempotent update = (%d, %q)", code, stdout.String())
 	}
 }

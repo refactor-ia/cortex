@@ -582,7 +582,8 @@ func smokeMarker() ([]byte, string, error) {
 	return nil, "", realSmokeError()
 }
 func piSmokeInstallOutput() string {
-	return "operation=install status=completed touch=applied create=7 replace=0 remove=0 unchanged=0 preserve=0\n" +
+	// Pi installs 13 artifacts: 6 skills, 6 actors and 1 install-state file.
+	return "operation=install status=completed touch=applied create=13 replace=0 remove=0 unchanged=0 preserve=0\n" +
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n" +
 		"runtime=opencode presence=absent action=warn touch=denied\n" +
 		"runtime=claude-code presence=absent action=warn touch=denied\n"

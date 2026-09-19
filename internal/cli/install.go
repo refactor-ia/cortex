@@ -16,6 +16,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installcoord"
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/installtxn"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/releasecatalog"
@@ -139,9 +140,18 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 			return err
 		},
 		ResolveRoot: deps.resolveRoot,
-		// Actors is deliberately unset: install writes the skill-only v1
-		// representation. Converging it with update is a separate change.
+		Actors:      bindPiActors,
+		// An installation ID names an installation, not one command run, so the
+		// identity already recorded at the resolved root is reused and a new one
+		// is minted only when that root carries no valid actor-aware state.
+		InstallationID: installcoord.ReuseInstallationID(installstate.DefaultInstallationIDGenerator()),
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// An actor-aware candidate is admitted against the shadows visible from the
+	// process working directory, so the group carries it for every request.
+	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,7 +161,7 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 		if err != nil {
 			return nil, nil, err
 		}
-		requests = append(requests, installtxn.GroupRequest{Plan: candidate.Plan, Observation: observation})
+		requests = append(requests, installtxn.GroupRequest{Plan: candidate.Plan, Observation: observation, CWD: cwd})
 	}
 	return requests, final.Results(), nil
 }

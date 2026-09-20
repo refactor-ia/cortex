@@ -184,6 +184,8 @@ EXPECTED_FILES = {
         "internal/qapi/backend.go",
         "internal/qapi/claude.go",
         "internal/qapi/claude_test.go",
+        "internal/qapi/opencode.go",
+        "internal/qapi/opencode_test.go",
         "internal/qapi/version.go",
         "internal/qapi/qualification.go",
         "internal/qapi/qualification_test.go",
@@ -224,6 +226,7 @@ EXPECTED_FILES = {
         "internal/qapi/testdata/claude-2.1.278/responses/stream-success.jsonl",
         "internal/qapi/testdata/claude-2.1.278/responses/stream-unauthenticated.jsonl",
         "internal/qapi/testdata/opencode-1.18.25/README.md",
+        "internal/qapi/testdata/opencode-1.18.25/responses/stream-error.json",
         "internal/qapi/testdata/opencode-1.18.25/responses/stream-success.json",
         "internal/catalog/load_catalog.go",
         "internal/catalog/load_catalog_test.go",
@@ -373,8 +376,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 322)
-                self.assertEqual(len(actual_files), 322)
+                self.assertEqual(len(EXPECTED_FILES), 325)
+                self.assertEqual(len(actual_files), 325)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

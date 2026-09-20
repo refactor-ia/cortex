@@ -163,6 +163,7 @@ const (
 	reportStageEnvelope = "envelope" // per-event record structure
 	reportStageMessage  = "message"  // assistant message and turn content
 	reportStageReport   = "report"   // extracted report text
+	reportStageResult   = "result"   // terminal result event of one run
 )
 
 const (
@@ -181,6 +182,13 @@ const (
 	reportReasonExtraMessages   = "extra_messages"
 	reportReasonRetryFlag       = "retry_flag"
 	reportReasonBlank           = "blank"
+	// A backend that reports its own terminal failure is not a malformed
+	// stream. These two reasons keep that distinction: the run was well
+	// formed and the backend said it could not answer, which a consumer must
+	// see as a typed availability or execution failure rather than as a
+	// parser rejection, and never as a silent fallback to another backend.
+	reportReasonBackendUnavailable = "backend_unavailable"
+	reportReasonBackendFailed      = "backend_failed"
 )
 
 type lookPathPi struct{}
@@ -192,12 +200,20 @@ func (lookPathPi) Resolve(ctx context.Context) (string, error) {
 // EncodeReportInput frames one bounded report input. Unlike EncodeInput it does
 // not demand an identity echo and carries no revision or candidate claim.
 func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
-	if !validRoute(route) || !validProfile(route) || !lowerSHA256(actorSHA256) || !lowerSHA256(skillSHA256) || !validTask(task) {
-		return nil, fmt.Errorf("invalid Pi report input")
+	return encodeReportInput(route, piBackendID, actorSHA256, skillSHA256, task)
+}
+
+// encodeReportInput frames one bounded report input for one backend. The frame
+// itself is backend-independent — same role instruction, same identity block,
+// same size bound — so a role reads the same request whichever runtime executes
+// it; only the backend token the route was pinned to differs.
+func encodeReportInput(route qaroute.ResolvedRoute, backendID, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
+	if !validRouteFor(route, backendID) || !validProfile(route) || !lowerSHA256(actorSHA256) || !lowerSHA256(skillSHA256) || !validTask(task) {
+		return nil, fmt.Errorf("invalid report input")
 	}
 	instruction, ok := reportInstruction(route.Role)
 	if !ok {
-		return nil, fmt.Errorf("invalid Pi report input")
+		return nil, fmt.Errorf("invalid report input")
 	}
 	identity := []byte(strings.Join([]string{
 		"input_contract " + InputContract,
@@ -217,7 +233,7 @@ func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 str
 	}, "\n"))
 	size := len("/skill:cortex-") + len(route.Role) + 1 + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction))
 	if size > qaadmission.MaxRequestBytes {
-		return nil, fmt.Errorf("Pi report input exceeds bound")
+		return nil, fmt.Errorf("report input exceeds bound")
 	}
 	frame := make([]byte, 0, size)
 	frame = append(frame, "/skill:cortex-"...)

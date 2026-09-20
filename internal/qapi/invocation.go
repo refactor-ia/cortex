@@ -82,6 +82,16 @@ func BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) 
 // than trusting the value it was handed, so a route that was mutated after
 // resolution — or resolved for another backend — cannot reach Pi's argv.
 func validRoute(route qaroute.ResolvedRoute) bool {
-	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: piBackendID}, qaroute.Snapshot{})
-	return failure.Code == "" && route.PolicyVersion == qaroute.PolicyVersion && route.Backend == piBackendID && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
+	return validRouteFor(route, piBackendID)
+}
+
+// validRouteFor pins one resolved route to one backend. It re-resolves rather
+// than trusting the value it was handed, so a route that was mutated after
+// resolution — or resolved for another backend — cannot reach that backend's
+// argv or input frame. A backend the route policy does not admit fails here,
+// which is what keeps a landed adapter unreachable until admitting it is a
+// deliberate policy change in qaroute.
+func validRouteFor(route qaroute.ResolvedRoute, backendID string) bool {
+	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: backendID}, qaroute.Snapshot{})
+	return failure.Code == "" && route.PolicyVersion == qaroute.PolicyVersion && route.Backend == backendID && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
 }

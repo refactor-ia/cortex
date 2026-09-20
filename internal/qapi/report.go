@@ -79,6 +79,23 @@ func RunLocalReport(ctx context.Context, request ReportRequest, pi PathResolver)
 	return runLocalReport(ctx, request, NewPiBackend(pi))
 }
 
+// RunLocalReportOn runs one bounded local QA report on the named backend. It
+// is RunLocalReport with the backend chosen by the caller instead of fixed,
+// and it is the entry point a caller that can select a runtime uses.
+//
+// The backend token must be one the route policy admits; an unadmitted token
+// is refused here, before any catalog, asset, or runtime work, and never falls
+// back to another backend. That refusal is the same typed code an unsupported
+// runtime reaches, because from the caller's side they are the same failure:
+// the requested backend cannot run this report.
+func RunLocalReportOn(ctx context.Context, request ReportRequest, id string, resolver PathResolver) (string, qaadmission.Code, error) {
+	backend, ok := NewBackend(id, resolver)
+	if !ok {
+		return "", qaadmission.CodeUnsupportedRuntime, fmt.Errorf("report backend is not admitted")
+	}
+	return runLocalReport(ctx, request, backend)
+}
+
 // runLocalReport sequences one report run against any backend. Everything that
 // makes the output evidence rather than opinion lives here and not in the
 // adapter: the route policy decides the backend is admissible, the catalog

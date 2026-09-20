@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -210,23 +211,60 @@ func TestClaudeBackendParseReportSuccess(t *testing.T) {
 	}
 }
 
-// TestClaudeRouteIsNotAdmittedYet records the route-policy boundary. The
-// adapter re-resolves the route against its own backend identity instead of
-// trusting the value it was handed, exactly as the Pi adapter does, so until
-// route policy admits "claude" no invocation and no input frame can be built
-// for it. Admitting the backend is a deliberate policy change owned by the
-// receipt-contract slice, not a side effect of this adapter landing.
-func TestClaudeRouteIsNotAdmittedYet(t *testing.T) {
-	route := qaroute.ResolvedRoute{
-		PolicyVersion: qaroute.PolicyVersion, Role: qarole.RequirementsAnalyst, Backend: "claude",
-		Provider: "nan", Model: "qwen3.6", Effort: "medium", ProfileID: "role-default",
+// TestClaudeRouteIsAdmitted is the positive counterpart of the boundary this
+// adapter landed behind. Route policy now admits "claude", so a route resolved
+// for it reaches the adapter — and one that was mutated afterwards, or
+// resolved for another backend, still does not: the adapter re-resolves rather
+// than trusting the value it was handed.
+func TestClaudeRouteIsAdmitted(t *testing.T) {
+	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("route policy rejected claude: %q", failure.Code)
 	}
 	backend := NewClaudeBackend(nil)
-	if _, err := backend.BuildInvocation(route, BoundInvocationPaths{}); err == nil {
-		t.Fatalf("BuildInvocation accepted a route policy does not admit")
+	paths, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/runtime/claude", "/assets/actor.md", "/assets/skill.md", "/workspace")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := backend.EncodeInput(route, "", "", []byte("task")); err == nil {
-		t.Fatalf("EncodeInput accepted a route policy does not admit")
+	if _, err := backend.BuildInvocation(route, paths); err != nil {
+		t.Fatalf("BuildInvocation rejected an admitted route: %v", err)
+	}
+	if _, err := backend.EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err != nil {
+		t.Fatalf("EncodeInput rejected an admitted route: %v", err)
+	}
+	mutated := route
+	mutated.Effort = "low"
+	if _, err := backend.BuildInvocation(mutated, paths); err == nil {
+		t.Fatalf("BuildInvocation accepted a mutated route")
+	}
+	foreign := route
+	foreign.Backend = "opencode"
+	if _, err := backend.EncodeInput(foreign, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err == nil {
+		t.Fatalf("EncodeInput accepted another backend's route")
+	}
+}
+
+// TestClaudeFrameNamesItsOwnContracts proves the per-adapter contract
+// versioning reaches the framed identity block: a Claude Code run must not
+// declare Pi's input or skill contract.
+func TestClaudeFrameNamesItsOwnContracts(t *testing.T) {
+	route, _ := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
+	frame, err := NewClaudeBackend(nil).EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"input_contract cortex.qa.claude-input.v1", "skill_contract cortex.qa.claude-skill.v1", "route_backend claude"} {
+		if !strings.Contains(string(frame), want) {
+			t.Fatalf("frame is missing %q", want)
+		}
+	}
+	// The actor contract is qaactor's and is shared by every backend, so it
+	// is deliberately not per-adapter; the three contracts this slice versions
+	// are.
+	for _, unwanted := range []string{"cortex.qa.pi-input", "cortex.qa.pi-skill", "cortex.qa.pi-result"} {
+		if strings.Contains(string(frame), unwanted) {
+			t.Fatalf("frame carries %q", unwanted)
+		}
 	}
 }
 

@@ -11,7 +11,14 @@ import (
 // invoked, or recorded in a receipt, no matter what adapters exist elsewhere.
 // Adding an entry is therefore a deliberate policy change, never a side effect
 // of a new adapter landing in another package.
-var allowedBackends = map[string]bool{"pi": true}
+var allowedBackends = map[string]bool{"pi": true, "claude": true, "opencode": true}
+
+// Admits reports whether the route policy admits one execution backend. It is
+// the single source every other package asks instead of carrying its own copy
+// of the set, so the policy stays one decision in one place.
+func Admits(backend string) bool {
+	return allowedBackends[backend]
+}
 
 func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 	base, allowed := defaults[request.Role]

@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 // never performs provider, authentication, or network work.
 func fakePi() int {
 	if os.Args[1] == "--version" {
-		fmt.Println(qapi.RuntimeVersion)
+		fmt.Println(qapi.PiSDKVersion)
 		return 0
 	}
 	// The two out-of-band availability probes the report pipeline now runs

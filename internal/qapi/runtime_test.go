@@ -155,7 +155,7 @@ func TestRuntimeAvailabilityTerminalCaptures(t *testing.T) {
 }
 
 func runtimeBound(path, cwd string) boundPi {
-	return boundPi{path: path, cwd: cwd, version: RuntimeVersion, versionCapture: successfulVersion()}
+	return boundPi{path: path, cwd: cwd, version: PiSDKVersion, versionCapture: successfulVersion()}
 }
 
 func runtimeCWD(t *testing.T) string {
@@ -177,7 +177,7 @@ func TestRuntimeBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolver.calls != 1 || bound.path != runtimePath(t, resolver.path) || bound.cwd != cwd || bound.version != RuntimeVersion || bound.size <= 0 {
+	if resolver.calls != 1 || bound.path != runtimePath(t, resolver.path) || bound.cwd != cwd || bound.version != PiSDKVersion || bound.size <= 0 {
 		t.Fatalf("bound = %#v, resolver calls = %d", bound, resolver.calls)
 	}
 	original := executeVersionCommand
@@ -199,7 +199,6 @@ func TestRuntimeBindingRejectsVersionCaptures(t *testing.T) {
 		name    string
 		capture versionCapture
 	}{
-		{name: "wrong version", capture: versionCapture{started: true, stdout: []byte("pi 0.85.0\n")}},
 		{name: "malformed version", capture: versionCapture{started: true, stdout: []byte("pi version=0.85.1\n")}},
 		{name: "incomplete version", capture: versionCapture{started: true, stdout: []byte("pi 0.85\n")}},
 		{name: "silent version", capture: versionCapture{started: true}},
@@ -213,6 +212,31 @@ func TestRuntimeBindingRejectsVersionCaptures(t *testing.T) {
 			_, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: runtimeBinary(t, "binary")})
 			if err == nil {
 				t.Fatal("bindPi() succeeded")
+			}
+		})
+	}
+}
+
+// TestRuntimeBindingRecordsAnyWellFormedVersion pins what replaced the exact
+// 0.85.1 pin bindPi used to carry: any well-formed X.Y.Z binds and is recorded
+// verbatim. The stream is validated structurally at parse time, so pinning a
+// build rejected working installations without gaining evidence.
+func TestRuntimeBindingRecordsAnyWellFormedVersion(t *testing.T) {
+	for _, test := range []struct{ line, want string }{
+		{"pi 0.85.1\n", "0.85.1"},
+		{"pi 0.85.0\n", "0.85.0"},
+		{"pi 1.2.3\n", "1.2.3"},
+		{"0.85.1\n", "0.85.1"},
+	} {
+		t.Run(test.want, func(t *testing.T) {
+			original := executeVersionCommand
+			executeVersionCommand = func(context.Context, string, string) versionCapture {
+				return versionCapture{started: true, stdout: []byte(test.line)}
+			}
+			t.Cleanup(func() { executeVersionCommand = original })
+			bound, err := bindPi(context.Background(), runtimeDirectory(t), &runtimeResolver{path: runtimeBinary(t, "binary")})
+			if err != nil || bound.version != test.want {
+				t.Fatalf("bindPi() = %q, %v; want %q, nil", bound.version, err, test.want)
 			}
 		})
 	}

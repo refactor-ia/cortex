@@ -77,7 +77,7 @@ func expectedResponse(binding InputBinding) (responseResult, bool) {
 	}
 	route := binding.Route
 	return responseResult{
-		contract: resultContract, inputContract: InputContract, role: string(route.Role),
+		contract: resultContractFor(route.Backend), inputContract: InputContractFor(route.Backend), role: string(route.Role),
 		actorContract: binding.ActorContract, actorSHA256: binding.ActorSHA256,
 		skillContract: binding.SkillContract, skillSHA256: binding.SkillSHA256,
 		revision: binding.Revision, fingerprint: binding.Fingerprint,

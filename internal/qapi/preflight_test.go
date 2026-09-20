@@ -142,9 +142,9 @@ func TestPrelaunchReceiptBasisMapsPreflightIdentityWithoutTerminalFacts(t *testi
 		t.Fatalf("prelaunchReceiptBasis() code=%q, err=%v", code, err)
 	}
 	if got.Contract != qaadmission.Contract || got.Role != fixture.request.Role || got.Backend != fixture.request.Backend ||
-		got.Versions != (qaadmission.Versions{Receipt: qaadmission.Contract, Policy: flight.route.PolicyVersion, Profile: qaroute.ProfileContract, Adapter: "cortex.qa.pi-admission.v1", ActorContract: qaactor.ActorContractVersion, SkillContract: skillContract, InputContract: InputContract, ProbeContract: ProbeContract, Runtime: pi.version}) ||
+		got.Versions != (qaadmission.Versions{Receipt: qaadmission.Contract, Policy: flight.route.PolicyVersion, Profile: qaroute.ProfileContract, Adapter: piContracts().Adapter, ActorContract: qaactor.ActorContractVersion, SkillContract: piContracts().Skill, InputContract: piContracts().Input, ProbeContract: piContracts().Probe, Runtime: pi.version}) ||
 		got.Installation.ID != flight.assets.InstallationID() || got.Installation.CatalogSHA256 != flight.assets.CatalogFingerprint() || got.Installation.ActorSourceSHA256 != flight.assets.ActorSourceSHA256() || got.Installation.ActorGeneratedSHA256 != flight.assets.ActorSHA256() || got.Installation.ActorBindingSHA256 != flight.assets.ActorBindingSHA256() || got.Installation.SkillGeneratedSHA256 != flight.assets.SkillSHA256() ||
-		got.Target != (qaadmission.TargetIdentity{CWDIdentity: flight.git.CWDIdentity, Revision: flight.git.Revision, Tree: flight.git.Tree, Fingerprint: flight.git.Fingerprint}) || got.Binary.Contract != qaadmission.BinaryContract || got.Binary.SHA256 != fmt.Sprintf("%x", pi.digest) || got.Binary.SizeBytes != pi.size ||
+		got.Target != (qaadmission.TargetIdentity{CWDIdentity: flight.git.CWDIdentity, Revision: flight.git.Revision, Tree: flight.git.Tree, Fingerprint: flight.git.Fingerprint}) || got.Binary.Contract != piContracts().Binary || got.Binary.SHA256 != fmt.Sprintf("%x", pi.digest) || got.Binary.SizeBytes != pi.size ||
 		got.Route.Requested != (qaadmission.RequestedIdentity{Provider: fixture.request.Override.Provider, Model: fixture.request.Override.Model, Effort: fixture.request.Override.Effort}) || !reflect.DeepEqual(got.Route.Resolved, flight.route) || got.Route.Observed != (qaadmission.ObservedIdentity{Effort: qaadmission.UnobservableEffort()}) || got.Bounds != wantBounds {
 		t.Fatalf("prelaunchReceiptBasis() provenance = %#v", got)
 	}
@@ -207,7 +207,7 @@ func syntheticBoundPi(cwd ...string) boundPi {
 	for index := range digest {
 		digest[index] = byte(index + 1)
 	}
-	pi := boundPi{version: RuntimeVersion, digest: digest, size: 1}
+	pi := boundPi{version: PiSDKVersion, digest: digest, size: 1}
 	if len(cwd) == 1 {
 		pi.cwd = cwd[0]
 	}

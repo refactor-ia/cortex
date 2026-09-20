@@ -75,7 +75,7 @@ func (opencodeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding Boun
 	if !validRouteFor(route, opencodeBackendID) || route.Role != binding.role || !absolutePaths(binding.binary, binding.actor, binding.skill, binding.cwd) {
 		return Invocation{}, errors.New("invalid OpenCode invocation binding")
 	}
-	return Invocation{binary: binding.binary, cwd: binding.cwd, argv: openCodeArgv()}, nil
+	return Invocation{binary: binding.binary, cwd: binding.cwd, argv: openCodeArgv(route)}, nil
 }
 
 // openCodeArgv is the exact, input-independent token contract for one headless
@@ -102,13 +102,22 @@ func (opencodeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding Boun
 // opencode 1.18.25: piping the prompt with no positional argument produced the
 // same step_start -> text -> step_finish stream.
 //
+// -m carries the resolved route's own provider and model, in the
+// provider/model form OpenCode's model listing prints and its availability
+// probe reads. It is the reason this backend's receipt records a routed model
+// relationship rather than a runtime-fixed one: what answers is what policy
+// chose, not whatever the operator last selected. Without it OpenCode would
+// fall back to the operator's configured default, which is exactly the ambient
+// state the rest of this argv neutralizes. It is passed only now that route
+// policy admits this backend; before that a model flag had no admitted route
+// to carry and nothing to test it against.
+//
 // What is absent is as deliberate as what is present. No -c/--continue,
 // -s/--session or --fork, so every run opens a fresh session and can never
 // resume or inherit one. No --share, so no session leaves the machine. No
-// --auto, so a tool call cannot be auto-approved into execution. No --agent
-// and no -m/--model, because both would select from the operator's own
-// configuration rather than from the resolved route; choosing the model per
-// route is the receipt-contract slice's work, not this adapter's.
+// --auto, so a tool call cannot be auto-approved into execution. No --agent,
+// because it would select an agent from the operator's own configuration
+// rather than from the resolved route.
 //
 // One isolation gap is recorded rather than worked around: OpenCode still
 // loads the project context files of its working directory and there is no
@@ -118,8 +127,8 @@ func (opencodeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding Boun
 // is the directory under review, so its instructions reach the role. This is
 // the OpenCode equivalent of an unresolved question and belongs to the
 // end-to-end observation task, not to a flag invented here.
-func openCodeArgv() []string {
-	return []string{"run", "--format", "json", "--pure"}
+func openCodeArgv(route qaroute.ResolvedRoute) []string {
+	return []string{"run", "--format", "json", "--pure", "-m", route.Provider + "/" + route.Model}
 }
 
 // EncodeInput frames one bounded report input for OpenCode. The frame is the

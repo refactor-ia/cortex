@@ -7,8 +7,10 @@ import (
 	"github.com/refactor-ia/cortex/internal/qarole"
 )
 
-// ToolPolicyNone is the only admitted tool policy: report-mode Pi runs launch
-// with --no-tools, so the assistant can neither read nor execute anything.
+// ToolPolicyNone is the only admitted tool policy. Pi enforces it with
+// --no-tools; the adapters whose runtimes offer no such flag enforce it at
+// parse time by rejecting a stream that reached for a tool. Either way an
+// admitted run neither read nor executed anything.
 const ToolPolicyNone = "none"
 
 const Contract = "cortex.qa.actor-admission.v1"
@@ -98,15 +100,19 @@ type Receipt struct {
 	AttemptedRun bool
 	Role         qarole.RoleID
 	Backend      string
-	Versions     Versions
-	Installation InstallationIdentity
-	Target       TargetIdentity
-	Binary       BinaryIdentity
-	Route        RouteIdentity
-	Availability AvailabilityFacts
-	Execution    ExecutionFacts
-	Bounds       BoundsFacts
-	Diagnostic   *BoundedDiagnostic
+	// BackendIdentity names the runtime that executed the role and the model
+	// relationship its contract carries. See BackendIdentity for exactly what
+	// that records and what it must not be read as claiming.
+	BackendIdentity BackendIdentity
+	Versions        Versions
+	Installation    InstallationIdentity
+	Target          TargetIdentity
+	Binary          BinaryIdentity
+	Route           RouteIdentity
+	Availability    AvailabilityFacts
+	Execution       ExecutionFacts
+	Bounds          BoundsFacts
+	Diagnostic      *BoundedDiagnostic
 }
 type Versions struct {
 	Receipt, Policy, Profile, Adapter                          string
@@ -120,8 +126,6 @@ type InstallationIdentity struct {
 type TargetIdentity struct {
 	CWDIdentity, Revision, Tree, Fingerprint string
 }
-
-const BinaryContract = "cortex.qa.pi-binary.v1"
 
 type BinaryIdentity struct {
 	Contract  string

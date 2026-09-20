@@ -41,7 +41,7 @@ func TestQualify(t *testing.T) {
 				if code != "" {
 					t.Fatalf("Qualify() code = %q, want pass", code)
 				}
-				if result.RuntimeVersion != RuntimeVersion || result.ProbeContract != ProbeContract {
+				if result.RuntimeVersion != PiSDKVersion || result.ProbeContract != piContracts().Probe {
 					t.Fatalf("Qualify() result = %#v", result)
 				}
 				return

@@ -9,6 +9,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 // AdmissionBinding is the caller-supplied catalog projection expected for one
@@ -87,7 +88,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 
 func validAdmissionBinding(binding AdmissionBinding) bool {
 	_, err := qarole.ValidateSquad([]qarole.RoleID{binding.Role})
-	return err == nil && binding.Backend == "pi" && validHash(binding.CatalogFingerprint) &&
+	return err == nil && qaroute.Admits(binding.Backend) && validHash(binding.CatalogFingerprint) &&
 		validHash(binding.ActorSHA256) && validHash(binding.ActorSourceSHA256) && validHash(binding.ActorBindingSHA256) && validHash(binding.SkillSHA256)
 }
 

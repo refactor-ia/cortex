@@ -175,8 +175,13 @@ func prelaunchReceiptBasis(request AdmissionRequest, flight preflight, pi boundP
 	if flight.assets.RoleID() != request.Role || flight.assets.Backend() != request.Backend || flight.route.Role != request.Role || flight.route.Backend != request.Backend || flight.git.Revision != request.Revision || flight.git.Fingerprint != request.Fingerprint {
 		return qaadmission.Receipt{}, "", identityInsufficient("preflight", errors.New("inconsistent preflight binding"))
 	}
-	if pi.version != RuntimeVersion || pi.size <= 0 || zeroDigest(pi.digest) {
+	if !wellFormedRuntimeVersion(pi.version) || pi.size <= 0 || zeroDigest(pi.digest) {
 		return qaadmission.Receipt{}, "", identityInsufficient("binary", errors.New("incomplete Pi binary identity"))
+	}
+	contracts, known := qaadmission.ContractsFor(request.Backend)
+	identity, admitted := qaadmission.NewBackendIdentity(request.Backend)
+	if !known || !admitted {
+		return qaadmission.Receipt{}, "", identityInsufficient("backend", errors.New("unadmitted backend"))
 	}
 	bounds, ok := qaadmission.BoundsForTimeout(request.TimeoutSeconds)
 	if !ok {
@@ -184,13 +189,14 @@ func prelaunchReceiptBasis(request AdmissionRequest, flight preflight, pi boundP
 	}
 
 	basis := qaadmission.Receipt{
-		Contract: qaadmission.Contract,
-		Role:     request.Role,
-		Backend:  request.Backend,
+		Contract:        qaadmission.Contract,
+		Role:            request.Role,
+		Backend:         request.Backend,
+		BackendIdentity: identity,
 		Versions: qaadmission.Versions{
 			Receipt: qaadmission.Contract, Policy: flight.route.PolicyVersion, Profile: qaroute.ProfileContract,
-			Adapter: "cortex.qa.pi-admission.v1", ActorContract: qaactor.ActorContractVersion,
-			SkillContract: skillContract, InputContract: InputContract, ProbeContract: ProbeContract, Runtime: pi.version,
+			Adapter: contracts.Adapter, ActorContract: qaactor.ActorContractVersion,
+			SkillContract: contracts.Skill, InputContract: contracts.Input, ProbeContract: contracts.Probe, Runtime: pi.version,
 		},
 		Installation: qaadmission.InstallationIdentity{
 			ID: flight.assets.InstallationID(), CatalogSHA256: flight.assets.CatalogFingerprint(),
@@ -200,7 +206,7 @@ func prelaunchReceiptBasis(request AdmissionRequest, flight preflight, pi boundP
 		Target: qaadmission.TargetIdentity{
 			CWDIdentity: flight.git.CWDIdentity, Revision: flight.git.Revision, Tree: flight.git.Tree, Fingerprint: flight.git.Fingerprint,
 		},
-		Binary: qaadmission.BinaryIdentity{Contract: qaadmission.BinaryContract, SHA256: fmt.Sprintf("%x", pi.digest), SizeBytes: pi.size},
+		Binary: qaadmission.BinaryIdentity{Contract: contracts.Binary, SHA256: fmt.Sprintf("%x", pi.digest), SizeBytes: pi.size},
 		Route: qaadmission.RouteIdentity{
 			Requested: qaadmission.RequestedIdentity{Provider: request.Override.Provider, Model: request.Override.Model, Effort: request.Override.Effort},
 			Resolved:  flight.route,

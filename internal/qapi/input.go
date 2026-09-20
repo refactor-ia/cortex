@@ -13,13 +13,13 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
-const (
-	InputContract  = "cortex.qa.pi-input.v1"
-	skillContract  = "cortex.qa.pi-skill.v1"
-	resultContract = "cortex.qa.pi-result.v1"
-)
-
-var resultRequirement = []byte("Return exactly one closed JSON object conforming to " + resultContract + ". It must contain only contract, input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint; every non-route field must be a string. route must contain only route_policy, route_backend, route_provider, route_model, route_effort, route_profile, route_profile_sha256, and route_override_fields; every route field must be a string. Match every field exactly.")
+// resultRequirementFor is the admission result contract one backend's role is
+// asked to satisfy. The instruction is the same for every backend; only the
+// contract token it names differs, so a role reads the same request whichever
+// runtime executes it.
+func resultRequirementFor(backend string) []byte {
+	return []byte("Return exactly one closed JSON object conforming to " + resultContractFor(backend) + ". It must contain only contract, input_contract, role, actor_contract, actor_sha256, skill_contract, skill_sha256, route, revision, and fingerprint; every non-route field must be a string. route must contain only route_policy, route_backend, route_provider, route_model, route_effort, route_profile, route_profile_sha256, and route_override_fields; every route field must be a string. Match every field exactly.")
+}
 
 // InputBinding contains the preflight-resolved identities required by one input.
 type InputBinding struct {
@@ -35,6 +35,7 @@ func EncodeInput(binding InputBinding, task []byte) ([]byte, error) {
 		return nil, errors.New("invalid Pi input")
 	}
 	identity := inputIdentity(binding)
+	resultRequirement := resultRequirementFor(binding.Route.Backend)
 	size := len("/skill:cortex-") + len(binding.Route.Role) + 1 + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", resultRequirement)
 	if size > qaadmission.MaxRequestBytes {
 		return nil, errors.New("Pi input exceeds bound")
@@ -52,7 +53,7 @@ func EncodeInput(binding InputBinding, task []byte) ([]byte, error) {
 func inputIdentity(binding InputBinding) []byte {
 	route := binding.Route
 	return []byte(strings.Join([]string{
-		"input_contract " + InputContract,
+		"input_contract " + InputContractFor(route.Backend),
 		"role " + string(route.Role),
 		"actor_contract " + binding.ActorContract,
 		"actor_sha256 " + binding.ActorSHA256,
@@ -86,11 +87,13 @@ func sectionSize(name string, value []byte) int {
 
 func validInputBinding(binding InputBinding) bool {
 	route := binding.Route
-	if _, err := qarole.ValidateSquad([]qarole.RoleID{route.Role}); err != nil || binding.ActorContract != qaactor.ActorContractVersion || binding.SkillContract != skillContract || !lowerSHA256(binding.ActorSHA256) || !lowerSHA256(binding.SkillSHA256) || !validRevision(binding.Revision) || !validFingerprint(binding.Fingerprint) {
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{route.Role}); err != nil || binding.ActorContract != qaactor.ActorContractVersion || binding.SkillContract != skillContractFor(route.Backend) || !lowerSHA256(binding.ActorSHA256) || !lowerSHA256(binding.SkillSHA256) || !validRevision(binding.Revision) || !validFingerprint(binding.Fingerprint) {
 		return false
 	}
-	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: "pi"}, qaroute.Snapshot{})
-	return failure.Code == "" && route.PolicyVersion == allowed.PolicyVersion && route.Role == allowed.Role && route.Backend == allowed.Backend && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort && validProfile(route) && validOverrideFields(route.OverrideFields)
+	// The route is re-resolved against the backend it names, through the same
+	// helper the invocation path uses. There is no second copy of the check
+	// here and no hardcoded backend: one route validator, one backend set.
+	return validRouteFor(route, route.Backend) && validProfile(route) && validOverrideFields(route.OverrideFields)
 }
 
 func validProfile(route qaroute.ResolvedRoute) bool {

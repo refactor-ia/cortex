@@ -73,7 +73,7 @@ func MinimumSize(basis Receipt) (int, error) {
 	basis.Diagnostic = nil
 	basis.Route.Observed = ObservedIdentity{Effort: UnobservableEffort()}
 
-	if basis.Contract != Contract || basis.Backend != "pi" {
+	if basis.Contract != Contract || !KnownBackend(basis.Backend) {
 		return unsatisfiableSize(basis), fmt.Errorf("invalid receipt basis")
 	}
 	if err := validateIdentity(basis); err != nil {
@@ -115,7 +115,11 @@ func minimumCandidate(basis Receipt, code Code, attempted bool) Receipt {
 	if code == CodeAdmitted {
 		candidate.Status = StatusAdmitted
 		candidate.Availability = AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}
-		candidate.Execution = ExecutionFacts{InvocationContract: "cortex.qa.pi-admission.v1", ToolPolicy: ToolPolicyNone, RenderedInputSHA256: "0000000000000000000000000000000000000000000000000000000000000000", Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"}
+		contracts, known := ContractsFor(candidate.Backend)
+		if !known {
+			return candidate
+		}
+		candidate.Execution = ExecutionFacts{InvocationContract: contracts.Adapter, ToolPolicy: ToolPolicyNone, RenderedInputSHA256: "0000000000000000000000000000000000000000000000000000000000000000", Stop: "none", Usage: "unavailable", Completeness: "complete", Truncation: "none"}
 		candidate.Route.Observed.Provider = candidate.Route.Resolved.Provider
 		candidate.Route.Observed.Model = candidate.Route.Resolved.Model
 	}

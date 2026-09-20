@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"unicode/utf8"
 
+	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
@@ -376,4 +377,37 @@ func stringFieldPresent(object map[string]json.RawMessage, field string) bool {
 // trailing newline is dropped rather than yielding a trailing empty event.
 func splitStreamLines(data []byte) [][]byte {
 	return bytes.Split(data[:len(data)-1], []byte("\n"))
+}
+
+// claudeAuthArgv is the exact token contract for Claude Code's availability
+// probe. `claude auth status --json` is the cheapest honest answer this CLI
+// offers: it reads the installed credential state and prints it, without
+// opening a session, contacting a provider, or spending a turn.
+//
+// It was established by capture rather than by reading terminal_reason out of
+// a failed run, because a failed run is not evidence of unavailability — it is
+// evidence that one run failed. Both states were observed on claude 2.1.278:
+// with the operator's own configuration the command exits 0 and reports
+// loggedIn true; with HOME redirected to an empty directory, which T3 had
+// already established de-authenticates Claude Code, it exits 1 and reports
+// loggedIn false. Both captures are committed under testdata/.
+func claudeAuthArgv() []string {
+	return []string{"auth", "status", "--json"}
+}
+
+// ProbeAvailability answers whether this Claude Code install can run a report,
+// before anything is launched. There is one probe and not two: see
+// ProbeClaudeAuth for why a model probe would be a question Claude Code cannot
+// answer honestly.
+func (claudeBackend) ProbeAvailability(ctx context.Context, bound BoundRuntime, _ qaroute.ResolvedRoute) AvailabilityVerdict {
+	claude, ok := bound.(boundClaude)
+	if !ok || ctx == nil || !absolutePaths(claude.executable.path, claude.cwd) {
+		return AvailabilityVerdict{Code: qaadmission.CodeUnsupportedRuntime}
+	}
+	capture := executeProbeCommand(ctx, claude.executable.path, claude.cwd, claudeAuthArgv(), maxAuthOutputBytes, maxAuthOutputBytes)
+	auth := ProbeClaudeAuth(BackendProbeInput{Stdout: capture.stdout, ExitCode: capture.exitCode, Complete: capture.complete()})
+	if !auth.Ready {
+		return AvailabilityVerdict{Code: auth.Code}
+	}
+	return AvailabilityVerdict{Available: true}
 }

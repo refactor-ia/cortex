@@ -66,3 +66,46 @@ Only values that identify a machine, an operator or a session were replaced:
   paths under their home directory
 
 Re-capture rather than hand-editing these files when the stream contract changes.
+
+## `auth/` — the pre-run availability probe
+
+`auth/status-authenticated.json` and `auth/status-unauthenticated.json` are real
+`claude auth status --json` captures taken on 2026-09-20 from the same build.
+They exist because availability is probed out of band, before launch, and is
+never inferred from a run's stream.
+
+Both were captured under the runner's own minimal environment so the probe's
+answer matches what a run would find:
+
+```sh
+env -i LC_ALL=C LANG=C NO_COLOR=1 TERM=dumb PATH="$PATH" HOME="$HOME" USER="$USER" \
+  claude auth status --json
+```
+
+```sh
+env -i LC_ALL=C LANG=C NO_COLOR=1 TERM=dumb PATH="$PATH" HOME=<empty-dir> USER="$USER" \
+  claude auth status --json
+```
+
+Observed: authenticated exits `0` with `"loggedIn": true`; unauthenticated
+exits `1` with `"loggedIn": false` and no `email`/`orgId`/`orgName`/
+`subscriptionType` fields. Both are well-formed documents, so the
+unauthenticated case is a typed answer rather than a parser rejection.
+
+`USER` is load-bearing on macOS and is recorded here as an observation, not as
+a change: with `USER` absent from the environment, Claude Code cannot reach its
+keychain credentials and reports `"loggedIn": false` even with the operator's
+real `HOME`. The QA runner's `minimalEnvironment` does not forward `USER`
+today, so on this machine the probe correctly reports this backend as not
+authenticated — which is the honest answer for a run that would fail the same
+way.
+
+### What was scrubbed
+
+Field names, field order and the exit codes are byte-faithful to the capture.
+Only operator-identifying values were replaced:
+
+- home directory paths -> `/home/user`
+- `email` -> `user@example.invalid`
+- `orgId` -> `00000000-0000-4000-8000-000000000000`
+- `orgName` -> `Example Organization`

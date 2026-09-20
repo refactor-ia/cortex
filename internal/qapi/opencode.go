@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"unicode/utf8"
 
+	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
@@ -331,4 +332,49 @@ func openCodePart(event map[string]json.RawMessage) (map[string]json.RawMessage,
 		return nil, &ReportNormalizationError{reportStageMessage, reportReasonInvalidMessage}
 	}
 	return part, nil
+}
+
+// openCodeModelsArgv and openCodeAuthArgv are the exact token contracts for
+// OpenCode's two availability probes. Both were confirmed present on opencode
+// 1.18.25 and both were captured in their available and unavailable states.
+//
+// `models` reads the cached model catalogue; --refresh is deliberately absent
+// so the probe never reaches the network. `auth list` reads the credential
+// file. --pure is on both for the same reason it is on the run itself: without
+// it the operator's external plugins load and write to the stream the parser
+// reads.
+func openCodeModelsArgv() []string {
+	return []string{"models", "--pure"}
+}
+
+func openCodeAuthArgv() []string {
+	return []string{"auth", "list", "--pure"}
+}
+
+// ProbeAvailability runs OpenCode's two fixed probes in the same order Pi's
+// availability probe uses: the model catalogue first, then the credentials. The
+// order is not cosmetic — the model listing is the narrower question, so an
+// install that cannot reach the resolved route is named CodeModelUnavailable
+// rather than being reported as a credential problem it may not have.
+//
+// This is decision B in full: the OpenCode run stream collapses authentication
+// failure and every other provider failure into one opaque envelope, so it can
+// never answer "is this backend available". These two commands can, and they
+// answer it before launch.
+func (opencodeBackend) ProbeAvailability(ctx context.Context, bound BoundRuntime, route qaroute.ResolvedRoute) AvailabilityVerdict {
+	opencode, ok := bound.(boundOpenCode)
+	if !ok || ctx == nil || !absolutePaths(opencode.executable.path, opencode.cwd) {
+		return AvailabilityVerdict{Code: qaadmission.CodeUnsupportedRuntime}
+	}
+	models := executeProbeCommand(ctx, opencode.executable.path, opencode.cwd, openCodeModelsArgv(), maxModelOutputBytes, maxAuthOutputBytes)
+	model := ProbeOpenCodeModel(BackendProbeInput{Stdout: models.stdout, ExitCode: models.exitCode, Complete: models.complete()}, route.Provider, route.Model)
+	if !model.Available {
+		return AvailabilityVerdict{Code: model.Code}
+	}
+	credentials := executeProbeCommand(ctx, opencode.executable.path, opencode.cwd, openCodeAuthArgv(), maxAuthOutputBytes, maxAuthOutputBytes)
+	auth := ProbeOpenCodeAuth(BackendProbeInput{Stdout: credentials.stdout, ExitCode: credentials.exitCode, Complete: credentials.complete()})
+	if !auth.Ready {
+		return AvailabilityVerdict{Code: auth.Code}
+	}
+	return AvailabilityVerdict{Available: true}
 }

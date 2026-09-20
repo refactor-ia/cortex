@@ -24,7 +24,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "--model") {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "--model" || os.Args[1] == "--list-models" || os.Args[1] == "auth") {
 		os.Exit(fakePi())
 	}
 	os.Exit(m.Run())
@@ -35,6 +35,21 @@ func TestMain(m *testing.M) {
 func fakePi() int {
 	if os.Args[1] == "--version" {
 		fmt.Println(qapi.RuntimeVersion)
+		return 0
+	}
+	// The two out-of-band availability probes the report pipeline now runs
+	// before it launches a run. The real Pi answers both; the fake has to
+	// answer them too, or every scenario below stops at "unavailable" instead
+	// of reaching the stream it exists to produce.
+	if os.Args[1] == "--list-models" {
+		fmt.Print("provider      model                context  max-out  thinking  images\n" +
+			"nan           qwen3.6              262.1K   16.4K    yes       no\n" +
+			"nan           glm5.3               262.1K   16.4K    yes       no\n" +
+			"nan           deepseek-v4-flash    262.1K   16.4K    yes       no\n")
+		return 0
+	}
+	if os.Args[1] == "auth" {
+		fmt.Print(`{"status":"ready","provider":"nan","authType":"api_key"}` + "\n")
 		return 0
 	}
 	switch scenario, err := os.ReadFile("qa-report-scenario"); {

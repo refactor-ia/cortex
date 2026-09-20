@@ -3,7 +3,6 @@ package qapi
 import (
 	"bytes"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,7 +27,7 @@ func TestInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := os.ReadFile(filepath.Join("testdata", "pi-0.85.1", "input", tc.golden))
+			want, err := os.ReadFile(backendTestdata(piFixtureBackend, piFixtureVersion, "input", tc.golden))
 			if err != nil {
 				t.Fatal(err)
 			}

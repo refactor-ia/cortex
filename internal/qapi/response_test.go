@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -236,7 +235,7 @@ func responseToolContent(data []byte) []byte {
 }
 func responseFixture(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "pi-0.85.1", "responses", "source-derived-minimal.jsonl"))
+	data, err := os.ReadFile(backendTestdata(piFixtureBackend, piFixtureVersion, "responses", "source-derived-minimal.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

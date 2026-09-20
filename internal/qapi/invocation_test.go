@@ -2,7 +2,6 @@ package qapi
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -110,7 +109,7 @@ type goldenInvocation struct {
 
 func readInvocationGolden(t *testing.T, name string) goldenInvocation {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "pi-0.85.1", "invocation", name))
+	data, err := os.ReadFile(backendTestdata(piFixtureBackend, piFixtureVersion, "invocation", name))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package qapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -24,57 +23,6 @@ func claudeCapture(t *testing.T, name string) []byte {
 		t.Fatalf("read capture %s: %v", name, err)
 	}
 	return data
-}
-
-// claudeStreamLines splits one captured stream into its events; the captures
-// are JSON Lines and always end with a terminating newline.
-func claudeStreamLines(t *testing.T, stream []byte) [][]byte {
-	t.Helper()
-	if len(stream) == 0 || stream[len(stream)-1] != '\n' {
-		t.Fatalf("capture is not newline terminated")
-	}
-	return bytes.Split(stream[:len(stream)-1], []byte("\n"))
-}
-
-// claudeStream reassembles a JSON Lines stream from events.
-func claudeStream(lines [][]byte) []byte {
-	var stream bytes.Buffer
-	for _, line := range lines {
-		stream.Write(line)
-		stream.WriteByte('\n')
-	}
-	return stream.Bytes()
-}
-
-// claudeEventIndex finds the first event of one type in a split capture.
-func claudeEventIndex(t *testing.T, lines [][]byte, kind string) int {
-	t.Helper()
-	for index, line := range lines {
-		var event map[string]any
-		if json.Unmarshal(line, &event) == nil && event["type"] == kind {
-			return index
-		}
-	}
-	t.Fatalf("capture carries no %q event", kind)
-	return -1
-}
-
-// claudeMutate rewrites one event of a split capture through a decoded map, so
-// a mutation targets a field rather than a byte sequence of the capture.
-func claudeMutate(t *testing.T, lines [][]byte, index int, mutate func(map[string]any)) [][]byte {
-	t.Helper()
-	var event map[string]any
-	if err := json.Unmarshal(lines[index], &event); err != nil {
-		t.Fatalf("decode event %d: %v", index, err)
-	}
-	mutate(event)
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		t.Fatalf("encode event %d: %v", index, err)
-	}
-	mutated := slices.Clone(lines)
-	mutated[index] = encoded
-	return mutated
 }
 
 func TestClaudeBackendIdentity(t *testing.T) {
@@ -129,10 +77,10 @@ func TestParseClaudeReportStreamSuccess(t *testing.T) {
 // rate_limit_event between the assistant event and the result, so the sequence
 // is not fixed and an unknown event must be skipped rather than rejected.
 func TestParseClaudeReportStreamSkipsUnknownEvents(t *testing.T) {
-	lines := claudeStreamLines(t, claudeCapture(t, "stream-success.jsonl"))
-	index := claudeEventIndex(t, lines, "result")
+	lines := streamLines(t, claudeCapture(t, "stream-success.jsonl"))
+	index := streamEventIndex(t, lines, "result")
 	injected := slices.Insert(slices.Clone(lines), index, []byte(`{"type":"fixture_unknown_event","payload":{"nested":[1,2,3]}}`))
-	report, diagnostic := parseClaudeReportStream(claudeStream(injected))
+	report, diagnostic := parseClaudeReportStream(joinStream(injected))
 	if diagnostic != nil {
 		t.Fatalf("unknown event rejected: %v", diagnostic)
 	}
@@ -164,10 +112,10 @@ func TestParseClaudeReportStreamUnauthenticated(t *testing.T) {
 // reason. A diagnostic never carries stream content, which the loop asserts.
 func TestParseClaudeReportStreamRejections(t *testing.T) {
 	capture := claudeCapture(t, "stream-success.jsonl")
-	lines := claudeStreamLines(t, capture)
-	assistant := claudeEventIndex(t, lines, "assistant")
-	result := claudeEventIndex(t, lines, "result")
-	system := claudeEventIndex(t, lines, "system")
+	lines := streamLines(t, capture)
+	assistant := streamEventIndex(t, lines, "assistant")
+	result := streamEventIndex(t, lines, "result")
+	system := streamEventIndex(t, lines, "system")
 
 	cases := []struct {
 		name   string
@@ -179,13 +127,13 @@ func TestParseClaudeReportStreamRejections(t *testing.T) {
 		{"unterminated stream", capture[:len(capture)-1], reportStageStream, reportReasonUnterminated},
 		{"truncated stream", append(slices.Clone(capture[:len(capture)/2]), '\n'), reportStageStream, reportReasonMalformedRecord},
 		{"invalid utf8", append(slices.Clone(capture), 0xff, '\n'), reportStageStream, reportReasonInvalidUTF8},
-		{"malformed record", claudeStream(append(slices.Clone(lines), []byte(`{"type":`))), reportStageStream, reportReasonMalformedRecord},
-		{"missing type", claudeStream(append(slices.Clone(lines), []byte(`{"subtype":"init"}`))), reportStageEnvelope, reportReasonMissingType},
-		{"missing terminal result", claudeStream(slices.Delete(slices.Clone(lines), result, result+1)), reportStageStream, reportReasonIncomplete},
-		{"missing session init", claudeStream(slices.Delete(slices.Clone(lines), system, system+1)), reportStageEnvelope, reportReasonUnexpected},
+		{"malformed record", joinStream(append(slices.Clone(lines), []byte(`{"type":`))), reportStageStream, reportReasonMalformedRecord},
+		{"missing type", joinStream(append(slices.Clone(lines), []byte(`{"subtype":"init"}`))), reportStageEnvelope, reportReasonMissingType},
+		{"missing terminal result", joinStream(slices.Delete(slices.Clone(lines), result, result+1)), reportStageStream, reportReasonIncomplete},
+		{"missing session init", joinStream(slices.Delete(slices.Clone(lines), system, system+1)), reportStageEnvelope, reportReasonUnexpected},
 		{
 			name: "tool use in the stream",
-			stream: claudeStream(claudeMutate(t, lines, assistant, func(event map[string]any) {
+			stream: joinStream(mutateStreamEvent(t, lines, assistant, func(event map[string]any) {
 				message, _ := event["message"].(map[string]any)
 				message["content"] = []any{map[string]any{"type": "tool_use", "id": "toolu_fixture", "name": "Bash", "input": map[string]any{}}}
 			})),
@@ -193,19 +141,19 @@ func TestParseClaudeReportStreamRejections(t *testing.T) {
 		},
 		{
 			name: "more than one turn",
-			stream: claudeStream(claudeMutate(t, lines, result, func(event map[string]any) {
+			stream: joinStream(mutateStreamEvent(t, lines, result, func(event map[string]any) {
 				event["num_turns"] = 2
 			})),
 			stage: reportStageResult, reason: reportReasonTurnMismatch,
 		},
 		{
 			name:   "more than one assistant message",
-			stream: claudeStream(slices.Insert(slices.Clone(lines), result, lines[assistant])),
+			stream: joinStream(slices.Insert(slices.Clone(lines), result, lines[assistant])),
 			stage:  reportStageMessage, reason: reportReasonExtraMessages,
 		},
 		{
 			name: "non-text assistant content",
-			stream: claudeStream(claudeMutate(t, lines, assistant, func(event map[string]any) {
+			stream: joinStream(mutateStreamEvent(t, lines, assistant, func(event map[string]any) {
 				message, _ := event["message"].(map[string]any)
 				message["content"] = []any{map[string]any{"type": "image", "source": map[string]any{}}}
 			})),
@@ -213,19 +161,19 @@ func TestParseClaudeReportStreamRejections(t *testing.T) {
 		},
 		{
 			name: "non-string terminal text",
-			stream: claudeStream(claudeMutate(t, lines, result, func(event map[string]any) {
+			stream: joinStream(mutateStreamEvent(t, lines, result, func(event map[string]any) {
 				event["result"] = []any{"OK"}
 			})),
 			stage: reportStageResult, reason: reportReasonInvalidText,
 		},
 		{
 			name:   "result after the terminal result",
-			stream: claudeStream(append(slices.Clone(lines), lines[result])),
+			stream: joinStream(append(slices.Clone(lines), lines[result])),
 			stage:  reportStageResult, reason: reportReasonExtraMessages,
 		},
 		{
 			name: "failed terminal result",
-			stream: claudeStream(claudeMutate(t, lines, result, func(event map[string]any) {
+			stream: joinStream(mutateStreamEvent(t, lines, result, func(event map[string]any) {
 				event["is_error"] = true
 				event["terminal_reason"] = "refusal"
 			})),

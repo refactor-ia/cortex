@@ -192,7 +192,7 @@ func replaceResult(t *testing.T, data []byte, binding InputBinding, edit func(st
 }
 func resultFor(binding InputBinding) resultEcho {
 	route := binding.Route
-	return resultEcho{resultContract, InputContract, string(route.Role), binding.ActorContract, binding.ActorSHA256, binding.SkillContract, binding.SkillSHA256, routeEcho{route.PolicyVersion, route.Backend, route.Provider, route.Model, route.Effort, route.ProfileID, route.ProfileSHA256, strings.Join(route.OverrideFields, ",")}, binding.Revision, binding.Fingerprint}
+	return resultEcho{resultContractFor(route.Backend), InputContractFor(route.Backend), string(route.Role), binding.ActorContract, binding.ActorSHA256, binding.SkillContract, binding.SkillSHA256, routeEcho{route.PolicyVersion, route.Backend, route.Provider, route.Model, route.Effort, route.ProfileID, route.ProfileSHA256, strings.Join(route.OverrideFields, ",")}, binding.Revision, binding.Fingerprint}
 }
 func mutateResult(t *testing.T, data []byte, binding InputBinding, field, mutation string) []byte {
 	t.Helper()

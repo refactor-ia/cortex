@@ -244,11 +244,11 @@ func encodeReportInput(route qaroute.ResolvedRoute, backendID, actorSHA256, skil
 		return nil, fmt.Errorf("invalid report input")
 	}
 	identity := []byte(strings.Join([]string{
-		"input_contract " + InputContract,
+		"input_contract " + InputContractFor(backendID),
 		"role " + string(route.Role),
 		"actor_contract " + qaactor.ActorContractVersion,
 		"actor_sha256 " + actorSHA256,
-		"skill_contract " + skillContract,
+		"skill_contract " + skillContractFor(backendID),
 		"skill_sha256 " + skillSHA256,
 		"route_policy " + route.PolicyVersion,
 		"route_backend " + route.Backend,

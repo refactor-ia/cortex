@@ -46,6 +46,7 @@ func receiptFields(receipt Receipt) []string {
 	}
 	fields := []string{
 		receipt.Contract, string(receipt.Status), string(receipt.Code), strconv.FormatBool(receipt.AttemptedRun), string(receipt.Role), receipt.Backend,
+		receipt.BackendIdentity.Contract, receipt.BackendIdentity.Backend, receipt.BackendIdentity.ModelRelationship,
 		receipt.Versions.Receipt, receipt.Versions.Policy, receipt.Versions.Profile, receipt.Versions.Adapter, receipt.Versions.ActorContract, receipt.Versions.SkillContract, receipt.Versions.InputContract, receipt.Versions.ProbeContract, receipt.Versions.Runtime,
 		string(receipt.Installation.ID), receipt.Installation.CatalogSHA256, receipt.Installation.ActorSourceSHA256, receipt.Installation.ActorGeneratedSHA256, receipt.Installation.ActorBindingSHA256, receipt.Installation.SkillGeneratedSHA256,
 		receipt.Target.CWDIdentity, receipt.Target.Revision, receipt.Target.Tree, receipt.Target.Fingerprint,

@@ -51,14 +51,23 @@ func TestValidateKeepsRequestedResolvedAndObservedFactsSeparate(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresCurrentPiRuntime(t *testing.T) {
+func TestValidateRequiresAWellFormedRuntimeVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		runtime string
 		wantErr bool
 	}{
 		{name: "accepts-current-runtime", runtime: "0.85.1"},
-		{name: "rejects-previous-runtime", runtime: "0.84.4", wantErr: true},
+		// No backend pins one exact build any more: the receipt records the
+		// observed runtime version and requires only that it be well formed.
+		// Pinning a build rejected working installations without gaining
+		// evidence, and it was pinned on one backend out of three while every
+		// receipt read as equally strong.
+		{name: "accepts-another-well-formed-runtime", runtime: "0.84.4"},
+		{name: "accepts-a-later-runtime", runtime: "1.0.0"},
+		{name: "rejects-malformed-runtime", runtime: "0.85", wantErr: true},
+		{name: "rejects-decorated-runtime", runtime: "pi 0.85.1", wantErr: true},
+		{name: "rejects-missing-runtime", runtime: "", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			receipt := testReceipt()

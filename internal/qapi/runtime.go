@@ -58,6 +58,17 @@ func (capture versionCapture) complete() bool {
 // executeVersionCommand is a private fixed-command seam for local tests.
 var executeVersionCommand = runVersionCommand
 
+// bindPi resolves and verifies Pi once for one run.
+//
+// It requires a well-formed version line and records it; it does not pin one
+// exact build, and it used to. Three adapters carried two different
+// runtime-trust contracts — Pi pinned 0.85.1 while the Claude Code and
+// OpenCode bindings accepted any well-formed X.Y.Z — while every receipt read
+// as equally strong, and the asymmetry was the defect, not the absence of a
+// pin: the stream is validated structurally at parse time, so pinning a build
+// rejects working installations without gaining evidence. A build whose stream
+// does not satisfy the parser still fails closed with a named reason rather
+// than producing a report.
 func bindPi(ctx context.Context, cwd string, resolver PathResolver) (boundPi, error) {
 	if ctx == nil || resolver == nil {
 		return boundPi{}, errors.New("Pi binding dependencies are unavailable")
@@ -80,7 +91,7 @@ func bindPi(ctx context.Context, cwd string, resolver PathResolver) (boundPi, er
 	}
 	capture := executeVersionCommand(ctx, bound.path, bound.cwd)
 	version, valid := parseVersion(capture)
-	if !valid || version != RuntimeVersion {
+	if !valid {
 		return boundPi{}, errors.New("Pi version is unsupported")
 	}
 	bound.version, bound.versionCapture = version, capture
@@ -98,7 +109,7 @@ func revalidatePi(bound boundPi) error {
 		return nil
 	}
 	version, valid := parseVersion(bound.versionCapture)
-	if !valid || version != RuntimeVersion || bound.version != version {
+	if !valid || bound.version != version {
 		return errors.New("invalid Pi binding")
 	}
 	return nil
@@ -382,5 +393,14 @@ func fixedAvailabilityCommand(kind availabilityCommand) ([]string, int, int, boo
 
 func validProbeBinding(bound boundPi) bool {
 	version, valid := parseVersion(bound.versionCapture)
-	return absolutePaths(bound.path, bound.cwd) && bound.version == RuntimeVersion && valid && version == RuntimeVersion
+	return absolutePaths(bound.path, bound.cwd) && valid && bound.version == version && wellFormedRuntimeVersion(version)
 }
+
+// wellFormedRuntimeVersion reports whether a recorded runtime version has the
+// shape every backend's receipt requires. No backend pins one exact build; see
+// bindPi for why.
+func wellFormedRuntimeVersion(version string) bool {
+	return runtimeVersionShape.MatchString(version)
+}
+
+var runtimeVersionShape = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)

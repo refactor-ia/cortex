@@ -11,8 +11,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
-const AdmissionRequestContract = "cortex.qa.pi-admission-request.v1"
-
 var errInvalidAdmissionRequest = errors.New("invalid admission request")
 
 // AdmissionRequest is the closed, decoded input for one Pi admission attempt.
@@ -44,11 +42,17 @@ func DecodeAdmissionRequest(data []byte) (AdmissionRequest, error) {
 
 	version, ok := admissionInt(fields["schemaVersion"])
 	contract, contractOK := admissionString(fields["contract"])
-	if !ok || version != 1 || !contractOK || contract != AdmissionRequestContract {
+	if !ok || version != 1 || !contractOK {
 		return AdmissionRequest{}, errInvalidAdmissionRequest
 	}
 	request, ok := decodeAdmissionValues(fields)
 	if !ok || !validAdmissionRequest(request) {
+		return AdmissionRequest{}, errInvalidAdmissionRequest
+	}
+	// The request contract is per-backend and is checked against the backend
+	// the request itself names, after that backend has been validated. A
+	// request cannot declare one adapter's contract and ask for another's run.
+	if contract != AdmissionRequestContractFor(request.Backend) {
 		return AdmissionRequest{}, errInvalidAdmissionRequest
 	}
 	return request, nil
@@ -163,7 +167,7 @@ func admissionInt(raw json.RawMessage) (int, bool) {
 }
 
 func validAdmissionRequest(request AdmissionRequest) bool {
-	if _, err := qarole.ValidateSquad([]qarole.RoleID{request.Role}); err != nil || request.Backend != "pi" || !absolutePaths(request.CurrentDirectory) || !validRevision(request.Revision) || !validFingerprint(request.Fingerprint) || !validTask([]byte(request.Task)) {
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{request.Role}); err != nil || !qaroute.Admits(request.Backend) || !absolutePaths(request.CurrentDirectory) || !validRevision(request.Revision) || !validFingerprint(request.Fingerprint) || !validTask([]byte(request.Task)) {
 		return false
 	}
 	return (request.Profile == "" || validProfileID(request.Profile)) && request.TimeoutSeconds >= qaadmission.MinimumTimeoutSeconds && request.TimeoutSeconds <= qaadmission.MaximumTimeoutSeconds

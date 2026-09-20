@@ -12,8 +12,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
-const piRuntimeVersion = "0.85.1"
-
 var (
 	hex64     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	id32      = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -25,7 +23,7 @@ var (
 )
 
 func Validate(receipt Receipt) error {
-	if receipt.Contract != Contract || receipt.Versions.Receipt != Contract || receipt.Backend != "pi" || !IsTerminalCode(receipt.Code) || (receipt.Status == StatusAdmitted) != (receipt.Code == CodeAdmitted) || (receipt.Status != StatusAdmitted && receipt.Status != StatusNonPassing) || (mustAttempt(receipt.Code) && !receipt.AttemptedRun) || (!mayAttempt(receipt.Code) && receipt.AttemptedRun) {
+	if receipt.Contract != Contract || receipt.Versions.Receipt != Contract || !KnownBackend(receipt.Backend) || !validBackendIdentity(receipt) || !IsTerminalCode(receipt.Code) || (receipt.Status == StatusAdmitted) != (receipt.Code == CodeAdmitted) || (receipt.Status != StatusAdmitted && receipt.Status != StatusNonPassing) || (mustAttempt(receipt.Code) && !receipt.AttemptedRun) || (!mayAttempt(receipt.Code) && receipt.AttemptedRun) {
 		return fmt.Errorf("invalid terminal receipt")
 	}
 	if err := validateIdentity(receipt); err != nil {
@@ -37,7 +35,11 @@ func Validate(receipt Receipt) error {
 	if !oneOf(receipt.Availability.Model, "", "available", "unavailable") || !oneOf(receipt.Availability.Authentication, "", "ready", "not-ready") || !oneOf(receipt.Availability.Fallback, "", "none", "observed") {
 		return fmt.Errorf("invalid availability facts")
 	}
-	if err := validateExecution(receipt.Execution); err != nil {
+	executionContracts, known := ContractsFor(receipt.Backend)
+	if !known {
+		return fmt.Errorf("invalid execution facts")
+	}
+	if err := validateExecution(receipt.Execution, executionContracts); err != nil {
 		return err
 	}
 	if receipt.Diagnostic != nil {
@@ -69,7 +71,11 @@ func CanonicalJSON(receipt Receipt) ([]byte, error) {
 }
 
 func validateIdentity(receipt Receipt) error {
-	if _, err := qarole.ValidateSquad([]qarole.RoleID{receipt.Role}); err != nil || !id32.MatchString(string(receipt.Installation.ID)) || !cwd.MatchString(receipt.Target.CWDIdentity) || !oid.MatchString(receipt.Target.Revision) || !oid.MatchString(receipt.Target.Tree) || !fp.MatchString(receipt.Target.Fingerprint) || receipt.Binary.Contract != BinaryContract || !hex64.MatchString(receipt.Binary.SHA256) || receipt.Binary.SizeBytes <= 0 || !validBounds(receipt.Bounds) || receipt.Route.Observed.Effort != UnobservableEffort() {
+	contracts, known := ContractsFor(receipt.Backend)
+	if !known {
+		return fmt.Errorf("invalid bound identity")
+	}
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{receipt.Role}); err != nil || !id32.MatchString(string(receipt.Installation.ID)) || !cwd.MatchString(receipt.Target.CWDIdentity) || !oid.MatchString(receipt.Target.Revision) || !oid.MatchString(receipt.Target.Tree) || !fp.MatchString(receipt.Target.Fingerprint) || receipt.Binary.Contract != contracts.Binary || !hex64.MatchString(receipt.Binary.SHA256) || receipt.Binary.SizeBytes <= 0 || !validBounds(receipt.Bounds) || receipt.Route.Observed.Effort != UnobservableEffort() {
 		return fmt.Errorf("invalid bound identity")
 	}
 	for _, value := range []string{receipt.Installation.CatalogSHA256, receipt.Installation.ActorSourceSHA256, receipt.Installation.ActorGeneratedSHA256, receipt.Installation.ActorBindingSHA256, receipt.Installation.SkillGeneratedSHA256} {
@@ -77,13 +83,25 @@ func validateIdentity(receipt Receipt) error {
 			return fmt.Errorf("invalid identity hash")
 		}
 	}
-	if !validVersions(receipt.Versions) {
+	if !validVersions(receipt.Versions, contracts) {
 		return fmt.Errorf("invalid receipt versions")
 	}
 	return nil
 }
-func validVersions(versions Versions) bool {
-	return versions.Receipt == Contract && versions.Policy == qaroute.PolicyVersion && versions.Profile == qaroute.ProfileContract && versions.Adapter == "cortex.qa.pi-admission.v1" && versions.ActorContract == qaactor.ActorContractVersion && versions.SkillContract == "cortex.qa.pi-skill.v1" && versions.InputContract == "cortex.qa.pi-input.v1" && versions.ProbeContract == "cortex.qa.pi-probe/v1" && versions.Runtime == piRuntimeVersion
+
+// validVersions pins every contract in the receipt to the executing backend's
+// own, and the runtime version to a well-formed X.Y.Z rather than one exact
+// build. See runtimeVersion for why no backend pins a build any more.
+func validVersions(versions Versions, contracts Contracts) bool {
+	return versions.Receipt == Contract && versions.Policy == qaroute.PolicyVersion && versions.Profile == qaroute.ProfileContract && versions.Adapter == contracts.Adapter && versions.ActorContract == qaactor.ActorContractVersion && versions.SkillContract == contracts.Skill && versions.InputContract == contracts.Input && versions.ProbeContract == contracts.Probe && runtimeVersion.MatchString(versions.Runtime)
+}
+
+// validBackendIdentity requires the recorded backend identity to be the one
+// this backend's contract defines. A receipt cannot name one backend and carry
+// another's model relationship.
+func validBackendIdentity(receipt Receipt) bool {
+	want, known := NewBackendIdentity(receipt.Backend)
+	return known && receipt.BackendIdentity == want
 }
 func validateRoute(receipt Receipt) error {
 	route := receipt.Route.Resolved
@@ -126,8 +144,8 @@ func validateRoute(receipt Receipt) error {
 	}
 	return nil
 }
-func validateExecution(facts ExecutionFacts) error {
-	if !oneOf(facts.InvocationContract, "", "cortex.qa.pi-admission.v1") || !oneOf(facts.ToolPolicy, "", ToolPolicyNone) || (facts.RenderedInputSHA256 != "" && !hex64.MatchString(facts.RenderedInputSHA256)) || !oneOf(facts.Stop, "", "none", "launch_failed", "execution_timed_out", "execution_failed", "output_silent", "output_truncated", "normalization_failed", "observed_identity_mismatch", "fallback_observed", "policy_violation", "binding_stale") || !oneOf(facts.Usage, "", "unavailable") {
+func validateExecution(facts ExecutionFacts, contracts Contracts) error {
+	if !oneOf(facts.InvocationContract, "", contracts.Adapter) || !oneOf(facts.ToolPolicy, "", ToolPolicyNone) || (facts.RenderedInputSHA256 != "" && !hex64.MatchString(facts.RenderedInputSHA256)) || !oneOf(facts.Stop, "", "none", "launch_failed", "execution_timed_out", "execution_failed", "output_silent", "output_truncated", "normalization_failed", "observed_identity_mismatch", "fallback_observed", "policy_violation", "binding_stale") || !oneOf(facts.Usage, "", "unavailable") {
 		return fmt.Errorf("invalid execution facts")
 	}
 	if facts.Completeness == "" && facts.Truncation == "" {
@@ -142,8 +160,10 @@ func validateExecution(facts ExecutionFacts) error {
 	return fmt.Errorf("invalid execution completeness")
 }
 func hasAdmittedEvidence(receipt Receipt) bool {
-	return receipt.Availability == (AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}) &&
-		receipt.Execution.InvocationContract == "cortex.qa.pi-admission.v1" &&
+	contracts, known := ContractsFor(receipt.Backend)
+	return known &&
+		receipt.Availability == (AvailabilityFacts{Model: "available", Authentication: "ready", Fallback: "none"}) &&
+		receipt.Execution.InvocationContract == contracts.Adapter &&
 		receipt.Execution.ToolPolicy == ToolPolicyNone &&
 		hex64.MatchString(receipt.Execution.RenderedInputSHA256) &&
 		receipt.Execution.Stop == "none" &&

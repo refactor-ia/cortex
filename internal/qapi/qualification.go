@@ -96,8 +96,8 @@ func Qualify(packet []byte, expected ExpectedBindings) (Qualification, qaadmissi
 	}
 
 	return Qualification{
-		ProbeContract:  ProbeContract,
-		RuntimeVersion: RuntimeVersion,
+		ProbeContract:  piContracts().Probe,
+		RuntimeVersion: PiSDKVersion,
 		Tools:          append([]string(nil), allowedTools...),
 	}, ""
 }
@@ -107,7 +107,7 @@ func validExpectedBindings(expected ExpectedBindings) bool {
 }
 
 func validObservation(observed qualificationPacket, expected ExpectedBindings) bool {
-	if observed.SDK.PackageVersion != RuntimeVersion || !sameStrings(observed.SDK.ActiveToolNames, allowedTools) || !validTools(observed.SDK.ToolDefinitions) {
+	if observed.SDK.PackageVersion != PiSDKVersion || !sameStrings(observed.SDK.ActiveToolNames, allowedTools) || !validTools(observed.SDK.ToolDefinitions) {
 		return false
 	}
 	if len(observed.SDK.LoadedSkills) != 1 || observed.SDK.LoadedSkills[0].Name != expected.SkillName {

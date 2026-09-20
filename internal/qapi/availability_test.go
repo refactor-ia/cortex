@@ -187,7 +187,7 @@ func TestPiAvailabilityProbeIsUnchanged(t *testing.T) {
 		completeCapture([]byte(`{"status":"ready","provider":"nan","authType":"api_key"}`+"\n"), 0),
 	}}
 	recorder.install(t)
-	bound := boundPi{path: filepath.Join(cwd, "pi"), cwd: cwd, version: RuntimeVersion, versionCapture: successfulVersion()}
+	bound := boundPi{path: filepath.Join(cwd, "pi"), cwd: cwd, version: PiSDKVersion, versionCapture: successfulVersion()}
 	verdict := NewPiBackend(nil).ProbeAvailability(context.Background(), bound, availabilityRoute(piBackendID))
 	if !verdict.Available || verdict.Code != "" {
 		t.Fatalf("verdict = %#v", verdict)

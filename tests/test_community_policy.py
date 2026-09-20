@@ -166,6 +166,8 @@ EXPECTED_FILES = {
         "internal/qaroute/profile_test.go",
         "internal/qaadmission/receipt.go",
         "internal/qaadmission/identity.go",
+        "internal/qaadmission/backend.go",
+        "internal/qaadmission/backend_test.go",
         "internal/qaadmission/bounds.go",
         "internal/qaadmission/redact.go",
         "internal/qaadmission/receipt_test.go",
@@ -184,6 +186,7 @@ EXPECTED_FILES = {
         "internal/qapi/backend.go",
         "internal/qapi/availability_test.go",
         "internal/qapi/claude.go",
+        "internal/qapi/contracts.go",
         "internal/qapi/claude_test.go",
         "internal/qapi/opencode.go",
         "internal/qapi/opencode_test.go",
@@ -383,8 +386,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 332)
-                self.assertEqual(len(actual_files), 332)
+                self.assertEqual(len(EXPECTED_FILES), 335)
+                self.assertEqual(len(actual_files), 335)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

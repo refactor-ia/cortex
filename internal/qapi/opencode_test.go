@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -36,9 +37,22 @@ func TestOpenCodeBackendIdentity(t *testing.T) {
 // isolation token and is asserted verbatim: without it the invoking operator's
 // external plugins load and inject context into the run.
 func TestOpenCodeArgvContract(t *testing.T) {
-	want := []string{"run", "--format", "json", "--pure"}
-	if got := openCodeArgv(); !slices.Equal(got, want) {
+	want := []string{"run", "--format", "json", "--pure", "-m", "nan/qwen3.6"}
+	if got := openCodeArgv(availabilityRoute(opencodeBackendID)); !slices.Equal(got, want) {
 		t.Fatalf("opencode argv = %q, want %q", got, want)
+	}
+}
+
+// TestOpenCodeArgvCarriesTheResolvedModel proves -m comes from the resolved
+// route and not from a constant, so the operator's configured default can
+// never decide which model answers.
+func TestOpenCodeArgvCarriesTheResolvedModel(t *testing.T) {
+	route := availabilityRoute(opencodeBackendID)
+	route.Provider, route.Model = "nan", "glm5.3"
+	argv := openCodeArgv(route)
+	index := slices.Index(argv, "-m")
+	if index < 0 || index+1 >= len(argv) || argv[index+1] != "nan/glm5.3" {
+		t.Fatalf("opencode argv = %q, want -m nan/glm5.3", argv)
 	}
 }
 
@@ -47,7 +61,7 @@ func TestOpenCodeArgvContract(t *testing.T) {
 // the no-session property the QA vertical depends on.
 func TestOpenCodeArgvOptsOutOfSessionContinuation(t *testing.T) {
 	for _, forbidden := range []string{"-c", "--continue", "-s", "--session", "--fork", "--share", "--auto", "--attach"} {
-		if slices.Contains(openCodeArgv(), forbidden) {
+		if slices.Contains(openCodeArgv(availabilityRoute(opencodeBackendID)), forbidden) {
 			t.Fatalf("argv carries %q", forbidden)
 		}
 	}
@@ -57,7 +71,7 @@ func TestOpenCodeArgvOptsOutOfSessionContinuation(t *testing.T) {
 // argv. `opencode run` takes the message as a positional argument but also
 // reads it from stdin, and stdin is what this adapter uses.
 func TestOpenCodeInvocationCarriesNoRoleInput(t *testing.T) {
-	for _, argument := range openCodeArgv() {
+	for _, argument := range openCodeArgv(availabilityRoute(opencodeBackendID)) {
 		if bytes.Contains([]byte(argument), []byte("cortex-")) {
 			t.Fatalf("argv carries role input: %q", argument)
 		}
@@ -216,23 +230,36 @@ func TestOpenCodeBackendParseReportSuccess(t *testing.T) {
 	}
 }
 
-// TestOpenCodeRouteIsNotAdmittedYet records the route-policy boundary, exactly
-// as the Claude adapter does. The adapter re-resolves the route against its own
-// backend identity instead of trusting the value it was handed, so until route
-// policy admits "opencode" no invocation and no input frame can be built for
-// it. Admitting the backend is a deliberate policy change owned by the
-// receipt-contract slice, not a side effect of this adapter landing.
-func TestOpenCodeRouteIsNotAdmittedYet(t *testing.T) {
-	route := qaroute.ResolvedRoute{
-		PolicyVersion: qaroute.PolicyVersion, Role: qarole.RequirementsAnalyst, Backend: "opencode",
-		Provider: "nan", Model: "qwen3.6", Effort: "medium", ProfileID: "role-default",
+// TestOpenCodeRouteIsAdmitted is the positive counterpart of the boundary this
+// adapter landed behind. Route policy now admits "opencode", so a route
+// resolved for it reaches the adapter — and one that was mutated afterwards,
+// or resolved for another backend, still does not: the adapter re-resolves
+// rather than trusting the value it was handed.
+func TestOpenCodeRouteIsAdmitted(t *testing.T) {
+	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "opencode"}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("route policy rejected opencode: %q", failure.Code)
 	}
 	backend := NewOpenCodeBackend(nil)
-	if _, err := backend.BuildInvocation(route, BoundInvocationPaths{}); err == nil {
-		t.Fatalf("BuildInvocation accepted a route policy does not admit")
+	paths, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/runtime/opencode", "/assets/actor.md", "/assets/skill.md", "/workspace")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := backend.EncodeInput(route, "", "", []byte("task")); err == nil {
-		t.Fatalf("EncodeInput accepted a route policy does not admit")
+	if _, err := backend.BuildInvocation(route, paths); err != nil {
+		t.Fatalf("BuildInvocation rejected an admitted route: %v", err)
+	}
+	if _, err := backend.EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err != nil {
+		t.Fatalf("EncodeInput rejected an admitted route: %v", err)
+	}
+	mutated := route
+	mutated.Model = "qwen9.9-absent"
+	if _, err := backend.BuildInvocation(mutated, paths); err == nil {
+		t.Fatalf("BuildInvocation accepted a mutated route")
+	}
+	foreign := route
+	foreign.Backend = "claude"
+	if _, err := backend.EncodeInput(foreign, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err == nil {
+		t.Fatalf("EncodeInput accepted another backend's route")
 	}
 }
 

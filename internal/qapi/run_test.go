@@ -89,7 +89,7 @@ func TestShebangEnvironmentVersionAndRun(t *testing.T) {
 	t.Setenv("NODE_OPTIONS", "--synthetic-forbidden-option")
 	t.Setenv("CORTEX_TEST_SECRET", "must-not-reach-child")
 	capture := runVersionCommand(context.Background(), script, directory)
-	if version, valid := parseVersion(capture); !valid || version != RuntimeVersion {
+	if version, valid := parseVersion(capture); !valid || version != PiSDKVersion {
 		t.Fatalf("shebang version failed: %#v, stderr=%q", capture, capture.stderr)
 	}
 	invocation := Invocation{binary: script, cwd: directory, argv: []string{"run"}}

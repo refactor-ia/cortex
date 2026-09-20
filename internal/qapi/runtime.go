@@ -115,37 +115,64 @@ func revalidatePiFile(bound boundPi) error {
 	return nil
 }
 
-func inspectPi(path string) (boundPi, error) {
+// executableIdentity is the verified file identity of one runtime executable:
+// its canonical path plus everything needed to prove the same file is still
+// there later. It is backend-independent on purpose — every backend binds a
+// binary the same way, and only the version contract differs.
+type executableIdentity struct {
+	path     string
+	identity os.FileInfo
+	mode     os.FileMode
+	size     int64
+	digest   [sha256.Size]byte
+}
+
+// inspectExecutable canonicalizes, stats, and hashes one runtime executable,
+// proving the file did not change between the stat and the hash.
+func inspectExecutable(path string) (executableIdentity, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil || !absolutePaths(absolute) {
-		return boundPi{}, errors.New("invalid Pi path")
+		return executableIdentity{}, errors.New("invalid runtime path")
 	}
 	canonical, err := filepath.EvalSymlinks(absolute)
 	if err != nil || !absolutePaths(canonical) {
-		return boundPi{}, errors.New("invalid Pi path")
+		return executableIdentity{}, errors.New("invalid runtime path")
 	}
 	before, err := executableFile(canonical)
 	if err != nil {
-		return boundPi{}, err
+		return executableIdentity{}, err
 	}
 	file, err := os.Open(canonical)
 	if err != nil {
-		return boundPi{}, errors.New("Pi open failed")
+		return executableIdentity{}, errors.New("runtime open failed")
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil || !samePiInfo(before, opened) {
-		return boundPi{}, errors.New("Pi changed before hashing")
+		return executableIdentity{}, errors.New("runtime changed before hashing")
 	}
 	hash := sha256.New()
 	size, err := io.Copy(hash, io.LimitReader(file, maxPiBinaryBytes+1))
 	after, statErr := executableFile(canonical)
 	if err != nil || statErr != nil || size <= 0 || size > maxPiBinaryBytes || !samePiInfo(before, after) || after.Size() != size {
-		return boundPi{}, errors.New("Pi hashing failed")
+		return executableIdentity{}, errors.New("runtime hashing failed")
 	}
 	var digest [sha256.Size]byte
 	copy(digest[:], hash.Sum(nil))
-	return boundPi{path: canonical, identity: after, mode: after.Mode(), size: size, digest: digest}, nil
+	return executableIdentity{path: canonical, identity: after, mode: after.Mode(), size: size, digest: digest}, nil
+}
+
+// sameExecutable reports whether two inspections observed the same file.
+func sameExecutable(left, right executableIdentity) bool {
+	return os.SameFile(left.identity, right.identity) && left.mode == right.mode && left.size == right.size && left.digest == right.digest
+}
+
+func inspectPi(path string) (boundPi, error) {
+	found, err := inspectExecutable(path)
+	if err != nil {
+		return boundPi{}, err
+	}
+	return boundPi{path: found.path, identity: found.identity, mode: found.mode, size: found.size, digest: found.digest}, nil
 }
 
 func executableFile(path string) (os.FileInfo, error) {
@@ -181,10 +208,17 @@ func canonicalRuntimeDirectory(path string) (string, error) {
 }
 
 func parseVersion(capture versionCapture) (string, bool) {
+	return parseVersionWith(capture, versionOutput)
+}
+
+// parseVersionWith bounds and matches one fixed version capture against the
+// version line contract of a single runtime. The bounds are shared; only the
+// expected line shape is backend-specific.
+func parseVersionWith(capture versionCapture, contract *regexp.Regexp) (string, bool) {
 	if !capture.complete() || capture.exitCode != 0 || len(capture.stdout) == 0 || len(capture.stdout) > maxVersionOutputBytes || len(capture.stderr) > maxVersionOutputBytes {
 		return "", false
 	}
-	match := versionOutput.FindStringSubmatch(strings.TrimSpace(string(capture.stdout)))
+	match := contract.FindStringSubmatch(strings.TrimSpace(string(capture.stdout)))
 	if len(match) != 2 {
 		return "", false
 	}

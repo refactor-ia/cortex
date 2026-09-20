@@ -53,17 +53,17 @@ Then install:
 
 ```
 $ cortex install
-operation=install status=completed touch=applied create=21 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
+operation=install status=completed touch=applied create=27 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
 runtime=pi presence=present compatibility=compatible action=configure touch=applied
 runtime=opencode presence=present compatibility=compatible action=configure touch=applied
 runtime=claude-code presence=present compatibility=uncertified action=configure touch=applied
 ```
 
-That is the six quality-assurance roles on each of the three runtimes, plus one state manifest each. Running it again is a no-op, and reports that honestly as `create=0 unchanged=21`. `uninstall` removes only what Cortex owns:
+That is the six quality-assurance roles on each of the three runtimes, plus one state manifest each, and six Pi actor definitions — Pi represents a role as both a skill and an agent, so Cortex writes both rather than approximating one with the other. Running it again is a no-op, and reports that honestly as `create=0 unchanged=27`. `uninstall` removes only what Cortex owns:
 
 ```
 $ cortex uninstall
-runtime=pi uninstall=completed remove=7 absent=0 conflict=0
+runtime=pi uninstall=completed remove=13 absent=0 conflict=0
 runtime=opencode uninstall=completed remove=7 absent=0 conflict=0
 runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0
 ```

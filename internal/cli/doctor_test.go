@@ -66,6 +66,93 @@ func certifiedRunner() *fakeRunner {
 	}}
 }
 
+// stubQABackendProbe replaces doctor's backend availability probe with a fixed
+// answer. Without it these tests would launch the real runtimes of whatever
+// machine they run on, so their output would depend on the operator's
+// credentials rather than on the fixture runner — the probe reaches PATH, not
+// the fakeRunner.
+func stubQABackendProbe(t *testing.T, answers map[string]string) {
+	t.Helper()
+	original := qaBackendProbe
+	qaBackendProbe = func(_ context.Context, backend string) string {
+		answer, known := answers[backend]
+		if !known {
+			t.Fatalf("doctor probed an unexpected backend: %q", backend)
+		}
+		return answer
+	}
+	t.Cleanup(func() { qaBackendProbe = original })
+}
+
+// readyQABackends answers ready for all three backends, which keeps the
+// presence and compatibility tests focused on what they pin.
+func readyQABackends(t *testing.T) {
+	t.Helper()
+	stubQABackendProbe(t, map[string]string{"pi": "ready", "opencode": "ready", "claude": "ready"})
+}
+
+// TestDoctorReportsBackendAvailabilityPerRuntime pins the fact doctor exists
+// to report: a runtime can be present, detected and compatible while its QA
+// backend cannot run a report. Presence and availability are separate fields
+// and an unauthenticated backend is legible as unauthenticated.
+func TestDoctorReportsBackendAvailabilityPerRuntime(t *testing.T) {
+	stubQABackendProbe(t, map[string]string{
+		"pi": "ready", "opencode": "model_unavailable", "claude": "auth_not_ready",
+	})
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), []string{"doctor"}, stdout, stderr, certifiedRunner()); code != exitOK {
+		t.Fatalf("doctor = %d, stderr %q", code, stderr.String())
+	}
+	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=model_unavailable\n" +
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=auth_not_ready\n"
+	if stdout.String() != want {
+		t.Fatalf("doctor = %q, want %q", stdout.String(), want)
+	}
+	// An unavailable backend is a report, not an install blocker: doctor's exit
+	// code still answers whether an install can proceed.
+	if stderr.Len() != 0 {
+		t.Fatalf("doctor wrote to stderr: %q", stderr.String())
+	}
+}
+
+// TestDoctorDoesNotProbeAbsentRuntimes pins doctor's subprocess bound. An
+// absent runtime has nothing to ask, and "not_probed" is the absence of a
+// claim rather than a claim of unavailability.
+func TestDoctorDoesNotProbeAbsentRuntimes(t *testing.T) {
+	var probed []string
+	original := qaBackendProbe
+	qaBackendProbe = func(_ context.Context, backend string) string {
+		probed = append(probed, backend)
+		return "ready"
+	}
+	t.Cleanup(func() { qaBackendProbe = original })
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	runner := &fakeRunner{lookup: map[string]error{
+		"pi": exec.ErrNotFound, "opencode": exec.ErrNotFound, "claude": exec.ErrNotFound,
+	}}
+	if code := Run(context.Background(), []string{"doctor"}, stdout, stderr, runner); code != exitOK {
+		t.Fatalf("doctor = %d, stderr %q", code, stderr.String())
+	}
+	if len(probed) != 0 {
+		t.Fatalf("doctor probed absent runtimes: %v", probed)
+	}
+	if !strings.Contains(stdout.String(), "qa_availability=not_probed") {
+		t.Fatalf("doctor did not report not_probed: %q", stdout.String())
+	}
+}
+
+// TestInstallReportKeepsItsLineContract pins that backend availability is
+// doctor's question alone. The shared per-runtime line the install and update
+// reports emit must be unchanged, or every command grows a field only one of
+// them was asked for.
+func TestInstallReportKeepsItsLineContract(t *testing.T) {
+	line := installRuntimeLine(runtimematrix.RuntimePi, runtimematrix.OutcomePresentCompatible, runtimematrix.Configure, false)
+	if strings.Contains(line, "qa_") {
+		t.Fatalf("the shared runtime line grew a QA field: %q", line)
+	}
+}
+
 func TestRunDoctor(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -81,17 +168,17 @@ func TestRunDoctor(t *testing.T) {
 				"pi": exec.ErrNotFound, "opencode": exec.ErrNotFound, "claude": exec.ErrNotFound,
 			}},
 			wantCode: 0,
-			wantStdout: "runtime=pi presence=absent action=warn touch=denied\n" +
-				"runtime=opencode presence=absent action=warn touch=denied\n" +
-				"runtime=claude-code presence=absent action=warn touch=denied\n",
+			wantStdout: "runtime=pi presence=absent action=warn touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=not_probed\n" +
+				"runtime=opencode presence=absent action=warn touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=not_probed\n" +
+				"runtime=claude-code presence=absent action=warn touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=not_probed\n",
 		},
 		{
 			name:     "certified runtimes are compatible under the default policy in canonical order",
 			runner:   certifiedRunner(),
 			wantCode: exitOK,
-			wantStdout: "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
-				"runtime=opencode presence=present compatibility=compatible action=configure touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied\n",
+			wantStdout: "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n",
 			assert: func(t *testing.T, runner *fakeRunner, output string) {
 				t.Helper()
 				if !reflect.DeepEqual(runner.calls, []string{"/private/pi --version", "/private/opencode --version", "/private/claude --version"}) {
@@ -108,9 +195,9 @@ func TestRunDoctor(t *testing.T) {
 			name:     "identified uncertified runtimes are admissible so the host is not uncertain",
 			runner:   readyRunner(),
 			wantCode: exitOK,
-			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied\n" +
-				"runtime=opencode presence=present compatibility=uncertified action=configure touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied\n",
+			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=opencode presence=present compatibility=uncertified action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n",
 			assert: func(t *testing.T, _ *fakeRunner, output string) {
 				t.Helper()
 				for _, forbidden := range []string{"1.2.3", "2.3.4", "3.4.5", "/private/"} {
@@ -124,9 +211,9 @@ func TestRunDoctor(t *testing.T) {
 			name:     "an unidentified version keeps the host uncertain",
 			runner:   unidentifiedRunner(),
 			wantCode: exitUnknown,
-			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied\n" +
-				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+			wantStdout: "runtime=pi presence=present compatibility=unknown action=warn touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=opencode presence=present compatibility=unknown action=warn touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n",
 		},
 		{
 			name: "mixed present unknown and absent",
@@ -138,9 +225,9 @@ func TestRunDoctor(t *testing.T) {
 				},
 			},
 			wantCode: 2,
-			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied\n" +
-				"runtime=opencode presence=absent action=warn touch=denied\n" +
-				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied\n",
+			wantStdout: "runtime=pi presence=present compatibility=uncertified action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+				"runtime=opencode presence=absent action=warn touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=not_probed\n" +
+				"runtime=claude-code presence=present compatibility=unknown action=warn touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n",
 			assert: func(t *testing.T, _ *fakeRunner, output string) {
 				t.Helper()
 				if strings.Contains(output, "credential=private") {
@@ -158,6 +245,7 @@ func TestRunDoctor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			readyQABackends(t)
 			var stdout, stderr bytes.Buffer
 			if got := Run(context.Background(), []string{"doctor"}, &stdout, &stderr, tt.runner); got != tt.wantCode {
 				t.Fatalf("Run() exit code = %d, want %d", got, tt.wantCode)
@@ -176,6 +264,7 @@ func TestRunDoctor(t *testing.T) {
 }
 
 func TestRunDoctorReportsInjectedPolicyCompatibility(t *testing.T) {
+	readyQABackends(t)
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
 		{ID: runtimematrix.RuntimeOpenCode, KnownIncompatible: []string{"2.3.4"}},
@@ -191,15 +280,16 @@ func TestRunDoctorReportsInjectedPolicyCompatibility(t *testing.T) {
 	if got := runWithInstallDependencies(context.Background(), []string{"doctor"}, &stdout, &stderr, readyRunner(), deps); got != exitUnknown {
 		t.Fatalf("doctor exit code = %d, want %d", got, exitUnknown)
 	}
-	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
-		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied\n" +
-		"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied\n"
+	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n"
 	if stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
 	}
 }
 
 func TestRunDoctorReturnsOKForCompatibleAndAbsentRuntimes(t *testing.T) {
+	readyQABackends(t)
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
 		{ID: runtimematrix.RuntimeOpenCode},
@@ -219,9 +309,9 @@ func TestRunDoctorReturnsOKForCompatibleAndAbsentRuntimes(t *testing.T) {
 	if got := runWithInstallDependencies(context.Background(), []string{"doctor"}, &stdout, &stderr, runner, deps); got != exitOK {
 		t.Fatalf("doctor exit code = %d, want %d", got, exitOK)
 	}
-	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
-		"runtime=opencode presence=absent action=warn touch=denied\n" +
-		"runtime=claude-code presence=absent action=warn touch=denied\n"
+	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=opencode presence=absent action=warn touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=not_probed\n" +
+		"runtime=claude-code presence=absent action=warn touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=not_probed\n"
 	if stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
 	}

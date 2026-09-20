@@ -89,7 +89,7 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 		writeError(stderr, "probe_failed")
 		return exitFailure
 	}
-	if _, err := io.WriteString(stdout, runtimeReport(matrix)); err != nil {
+	if _, err := io.WriteString(stdout, doctorReport(ctx, matrix)); err != nil {
 		writeError(stderr, "output_failed")
 		return exitFailure
 	}
@@ -107,23 +107,46 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 }
 
 const (
-	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir>\n"
+	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode]\n"
 	// qaReportNote surfaces the honest runtime prerequisites on every failure.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
 	// no model fallback and owns no automatic configuration.
-	// Still Pi-shaped on purpose: it stays a single-runtime note until the
-	// per-backend availability report lands (T6 of the backend port).
-	qaReportNote = "note=prerequisites: Pi 0.85.1 runtime and installed cortex assets; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
+	//
+	// It names the three backends rather than one runtime, and pins no version
+	// on any of them: the route policy admits all three, and decision A of the
+	// backend port removed the exact version pin from every binding, so a note
+	// that still demanded "Pi 0.85.1" named a prerequisite that no longer
+	// exists and hid two that do. `cortex doctor` is named because it is the
+	// command that answers, per runtime, which of them can actually run.
+	qaReportNote = "note=prerequisites: one of the pi, claude or opencode runtimes with a usable backend and installed cortex assets; run cortex doctor for per-runtime backend availability; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
 )
 
-// qaPiResolver is the Pi binary resolution seam; nil selects the production
-// constrained lookup.
+// errUnknownQABackend refuses a backend token the route policy does not admit.
+var errUnknownQABackend = errors.New("unknown qa backend")
+
+// qaPiResolver is the runtime binary resolution seam; nil selects the
+// production constrained lookup for whichever backend was selected.
 var qaPiResolver qapi.PathResolver
 
 // runQA executes one local QA report command. It never mutates user
 // configuration and never claims admission.
 func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	backend := "pi"
+	if len(args) == 9 {
+		if args[7] != "--backend" || args[8] == "" {
+			writeError(stderr, "invalid_arguments")
+			_, _ = io.WriteString(stderr, qaUsage)
+			return exitUsage
+		}
+		backend = args[8]
+		args = args[:7]
+	}
 	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+		writeError(stderr, "invalid_arguments")
+		_, _ = io.WriteString(stderr, qaUsage)
+		return exitUsage
+	}
+	if _, known := qaBackendRuntimes[backend]; !known {
 		writeError(stderr, "invalid_arguments")
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage
@@ -143,14 +166,14 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil || absErr != nil {
 		return qaFailure(stderr, "invalid_request")
 	}
-	installRoot, err := piInstallRoot()
+	installRoot, err := qaInstallRoot(backend)
 	if err != nil {
 		return qaFailure(stderr, "actor_unavailable")
 	}
-	report, code, err := qapi.RunLocalReport(ctx, qapi.ReportRequest{
+	report, code, err := qapi.RunLocalReportOn(ctx, qapi.ReportRequest{
 		Role: role, CatalogRoot: catalogRoot, InstallRoot: installRoot,
 		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
-	}, qaPiResolver)
+	}, backend, qaPiResolver)
 	if err != nil || code != "" {
 		failure := qaFailure(stderr, string(code))
 		if code == qaadmission.CodeNormalizationFailed {
@@ -180,23 +203,6 @@ func readRequestTask(path string) ([]byte, error) {
 		return nil, fmt.Errorf("request is not a bounded regular file")
 	}
 	return os.ReadFile(path)
-}
-
-// piInstallRoot resolves the installed asset root for Pi only. It stays
-// Pi-shaped until the receipt contract carries backend identity (T5 of the
-// backend port), which is what lets the caller ask for the root of whichever
-// backend it resolved rather than assuming one.
-func piInstallRoot() (string, error) {
-	roots, err := skillroot.ResolveSystemUninstallRoots()
-	if err != nil {
-		return "", err
-	}
-	for _, root := range roots {
-		if root.RuntimeID() == runtimematrix.RuntimePi {
-			return root.RootPath(), nil
-		}
-	}
-	return "", fmt.Errorf("pi root unavailable")
 }
 
 func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {
@@ -241,6 +247,30 @@ func runtimeReport(matrix runtimematrix.Matrix) string {
 	var output strings.Builder
 	for _, decision := range matrix.Decisions {
 		output.WriteString(installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false))
+	}
+	return output.String()
+}
+
+// doctorReport extends the shared per-runtime line with what doctor alone is
+// asked for: whether that runtime's QA backend could actually run a report.
+//
+// It extends rather than restructures. The presence and compatibility fields
+// keep their exact existing spelling and order, and the QA fields are appended
+// after them, because presence, compatibility and backend availability are
+// three separate facts about one runtime and a maintainer needs to be able to
+// read them apart. installRuntimeLine stays untouched and shared, so the
+// install and update reports are unchanged: backend availability is doctor's
+// question, not a field every command should grow.
+//
+// It stays read-only. Only the runtimes the matrix reports present are probed,
+// and a probe is that backend's own fixed availability commands — never a
+// report run, and never a configuration write.
+func doctorReport(ctx context.Context, matrix runtimematrix.Matrix) string {
+	var output strings.Builder
+	for _, decision := range matrix.Decisions {
+		line := installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false)
+		present := decision.Outcome != runtimematrix.OutcomeAbsent
+		output.WriteString(strings.TrimSuffix(line, "\n") + qaBackendLine(ctx, decision.ID, present) + "\n")
 	}
 	return output.String()
 }

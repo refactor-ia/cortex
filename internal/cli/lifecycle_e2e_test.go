@@ -177,9 +177,13 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 		}
 	}
 
-	const compatibleReport = "runtime=pi presence=present compatibility=compatible action=configure touch=denied\n" +
-		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied\n" +
-		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied\n"
+	// The offline lifecycle owns no credentials, so doctor's QA backend probe
+	// is stubbed ready here rather than launching the host's real runtimes.
+	// This fixture is about install and uninstall, not about availability.
+	readyQABackends(t)
+	const compatibleReport = "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n"
 	expect("doctor", exitOK, compatibleReport)
 	assertSentinels()
 	assertOwnedAbsent()

@@ -271,6 +271,51 @@ func TestQARunReport(t *testing.T) {
 			t.Fatalf("usage = %d stderr %q", code, stderr.String())
 		}
 	})
+	// An explicit --backend pi must reach exactly the run an omitted flag
+	// reaches. The flag selects a backend; it does not open a second path.
+	t.Run("explicit pi backend matches the default", func(t *testing.T) {
+		mustOK(os.WriteFile("qa-report-scenario", []byte("report"), 0o600))
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(append([]string{}, args...), "--backend", "pi"), stdout, stderr, nil); code != exitOK {
+			t.Fatalf("explicit pi = %d stderr %q", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Password minimum length is 8 characters") || stderr.Len() != 0 {
+			t.Fatalf("explicit pi report = %q stderr %q", stdout.String(), stderr.String())
+		}
+	})
+	// A backend the route policy does not admit is refused as usage, before
+	// any catalog, asset or runtime work, and never silently runs on another.
+	t.Run("an unadmitted backend is refused with usage", func(t *testing.T) {
+		for _, backend := range []string{"codex", "", "PI"} {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), append(append([]string{}, args...), "--backend", backend), stdout, stderr, nil); code != exitUsage ||
+				stdout.Len() != 0 || !strings.Contains(stderr.String(), "error=invalid_arguments") || !strings.Contains(stderr.String(), "usage:") {
+				t.Fatalf("backend %q = %d stdout %q stderr %q", backend, code, stdout.String(), stderr.String())
+			}
+		}
+	})
+	// The usage line must name the flag and the admitted set, or a maintainer
+	// cannot discover that a second backend is selectable at all.
+	t.Run("usage documents the backend flag", func(t *testing.T) {
+		for _, expected := range []string{"--backend", "pi", "claude", "opencode"} {
+			if !strings.Contains(qaUsage, expected) {
+				t.Fatalf("usage omits %q: %q", expected, qaUsage)
+			}
+		}
+	})
+	// The prerequisite note must not pin a version on any runtime: decision A
+	// removed the exact pin from every binding, so a note demanding one names
+	// a prerequisite that does not exist.
+	t.Run("the prerequisite note names three backends and pins no version", func(t *testing.T) {
+		for _, expected := range []string{"pi", "claude", "opencode", "cortex doctor"} {
+			if !strings.Contains(qaReportNote, expected) {
+				t.Fatalf("note omits %q: %q", expected, qaReportNote)
+			}
+		}
+		if strings.Contains(qaReportNote, "0.85.1") {
+			t.Fatalf("note still pins a runtime version: %q", qaReportNote)
+		}
+	})
 }
 
 // TestQARunSelectsEveryKnownRole exercises the closed six-role catalog through

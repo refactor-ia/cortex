@@ -182,6 +182,7 @@ EXPECTED_FILES = {
         "internal/qagit/testdata/clean-binding/sha256-head.oid",
         "internal/qagit/testdata/clean-binding/sha256-tree.oid",
         "internal/qapi/backend.go",
+        "internal/qapi/availability_test.go",
         "internal/qapi/claude.go",
         "internal/qapi/claude_test.go",
         "internal/qapi/opencode.go",
@@ -223,9 +224,15 @@ EXPECTED_FILES = {
         "internal/qapi/testdata/pi-0.85.1/qualification/sdk-no-skill.json",
         "internal/qapi/testdata/pi-0.85.1/responses/source-derived-minimal.jsonl",
         "internal/qapi/testdata/claude-2.1.278/README.md",
+        "internal/qapi/testdata/claude-2.1.278/auth/status-authenticated.json",
+        "internal/qapi/testdata/claude-2.1.278/auth/status-unauthenticated.json",
         "internal/qapi/testdata/claude-2.1.278/responses/stream-success.jsonl",
         "internal/qapi/testdata/claude-2.1.278/responses/stream-unauthenticated.jsonl",
         "internal/qapi/testdata/opencode-1.18.25/README.md",
+        "internal/qapi/testdata/opencode-1.18.25/auth/credentials-absent.txt",
+        "internal/qapi/testdata/opencode-1.18.25/auth/credentials-present.txt",
+        "internal/qapi/testdata/opencode-1.18.25/models/available.txt",
+        "internal/qapi/testdata/opencode-1.18.25/models/unavailable.txt",
         "internal/qapi/testdata/opencode-1.18.25/responses/stream-error.json",
         "internal/qapi/testdata/opencode-1.18.25/responses/stream-success.json",
         "internal/catalog/load_catalog.go",
@@ -376,8 +383,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 325)
-                self.assertEqual(len(actual_files), 325)
+                self.assertEqual(len(EXPECTED_FILES), 332)
+                self.assertEqual(len(actual_files), 332)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

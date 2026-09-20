@@ -3,6 +3,7 @@ package qapi
 import (
 	"context"
 
+	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
@@ -20,9 +21,15 @@ import (
 // the boundary, which keeps "what to run" backend-specific and "how it runs"
 // uniform.
 //
-// Availability and qualification probes are also excluded. They answer a
-// different question than running a report, they are Pi-shaped today, and
-// RunLocalReport produces no receipt, so nothing in this path needs them.
+// Availability is the one thing besides the four steps that crosses, and it
+// crosses as a probe rather than as a reading of the run. A stream can say the
+// run failed; it cannot always say why, and at least one backend collapses
+// authentication failure and every other provider failure into one opaque
+// envelope. Asking before launch keeps "is this backend usable" and "did this
+// run succeed" separate questions with separate answers.
+//
+// Qualification probes stay excluded: they answer a third question, they are
+// Pi-shaped, and nothing in this path needs them.
 type Backend interface {
 	// ID is the stable backend token recorded in the route and the catalog
 	// admission binding. It is policy identity, not a display name.
@@ -34,10 +41,28 @@ type Backend interface {
 	BuildInvocation(route qaroute.ResolvedRoute, paths BoundInvocationPaths) (Invocation, error)
 	// EncodeInput frames one bounded report input for this backend.
 	EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error)
+	// ProbeAvailability answers, before anything is launched, whether this
+	// backend can run a report at all. It runs the backend's own fixed,
+	// bounded probe commands through the shared runner and never inspects a
+	// report run. bound must be the binding this same backend produced.
+	ProbeAvailability(ctx context.Context, bound BoundRuntime, route qaroute.ResolvedRoute) AvailabilityVerdict
 	// ParseReport extracts one substantive report from this backend's stdout.
 	// A nil error is the only signal of success; on rejection it reports which
 	// fixed parser condition failed and never echoes stream content.
 	ParseReport(stdout []byte) (string, *ReportNormalizationError)
+}
+
+// AvailabilityVerdict is one backend's pre-run answer to "can this backend run
+// a report". It is deliberately two values and not an error: an unavailable
+// backend is a typed, terminal outcome a consumer must be able to read, never a
+// diagnostic string, and never a silent fallback to another backend.
+//
+// Code is empty exactly when Available is true. Otherwise it is the fixed
+// admission code the probe reached — CodeModelUnavailable, CodeAuthNotReady, or
+// CodeNormalizationFailed when the probe itself could not be read.
+type AvailabilityVerdict struct {
+	Available bool
+	Code      qaadmission.Code
 }
 
 // BoundRuntime is the part of a verified runtime binding that crosses the
@@ -102,6 +127,26 @@ func (piBackend) BuildInvocation(route qaroute.ResolvedRoute, paths BoundInvocat
 
 func (piBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
 	return EncodeReportInput(route, actorSHA256, skillSHA256, task)
+}
+
+// ProbeAvailability runs Pi's two fixed probes, in order, exactly as the
+// admission preflight path already does: the model table first, then the
+// no-refresh auth check. Decision B generalized this shape to every backend;
+// Pi's own probe contract did not move with it, and the admission path still
+// calls probeAvailability directly so its receipts are untouched.
+func (piBackend) ProbeAvailability(ctx context.Context, bound BoundRuntime, route qaroute.ResolvedRoute) AvailabilityVerdict {
+	pi, ok := bound.(boundPi)
+	if !ok {
+		return AvailabilityVerdict{Code: qaadmission.CodeUnsupportedRuntime}
+	}
+	probes := probeAvailability(ctx, pi, route.Provider, route.Model)
+	if !probes.model.Available {
+		return AvailabilityVerdict{Code: probes.model.Code}
+	}
+	if !probes.auth.Ready {
+		return AvailabilityVerdict{Code: probes.auth.Code}
+	}
+	return AvailabilityVerdict{Available: true}
 }
 
 func (piBackend) ParseReport(stdout []byte) (string, *ReportNormalizationError) {

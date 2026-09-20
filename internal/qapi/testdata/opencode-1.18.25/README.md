@@ -70,3 +70,46 @@ Only session-identifying values were replaced:
 - `error.data.ref` -> `err_00000000`
 
 Re-capture rather than hand-editing this file when the stream contract changes.
+
+## `models/` and `auth/` — the pre-run availability probes
+
+Real captures from the same build on 2026-09-20. Availability is probed out of
+band, before launch, because the run stream collapses authentication failure
+and every other provider failure into one opaque envelope and therefore cannot
+answer "is this backend available".
+
+```sh
+env -i LC_ALL=C LANG=C NO_COLOR=1 TERM=dumb PATH="$PATH" HOME="$HOME" \
+  opencode models --pure
+env -i LC_ALL=C LANG=C NO_COLOR=1 TERM=dumb PATH="$PATH" HOME="$HOME" \
+  opencode auth list --pure
+```
+
+`models/unavailable.txt` and `auth/credentials-absent.txt` are the same two
+commands with `HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` pointed at an empty
+directory.
+
+Observed, and the reason these two commands are the probe:
+
+- `opencode models` prints one `provider/model` identifier per line, exits `0`,
+  and reads the cached catalogue — `--refresh` is deliberately not passed, so
+  the probe never reaches the network. With credentials the listing carries the
+  route's `nan/*` models; without them those rows disappear entirely and only
+  the credential-free `opencode/*` models remain. A route that cannot be
+  reached is therefore absent rather than merely unusable.
+- `opencode auth list` exits `0` in both states and reports the credential
+  count on its last line — `1 credentials` against `0 credentials`. It names
+  credentials by display label ("OpenAI"), not by the provider token a route
+  resolves to, so it answers only "does this install hold any credential at
+  all". The narrower per-route question is the model listing's to answer, which
+  is why both run.
+- The free-model rows differ between captures of the same build; the parser
+  checks membership, never the whole listing.
+
+### What was scrubbed
+
+The `models` captures are verbatim: they carry model identifiers only. In the
+`auth` captures the ANSI escapes, box-drawing characters and line order are
+byte-faithful; only the credential file path was normalized to
+`~/.local/share/opencode/auth.json` so the isolated-home capture does not carry
+a scratch path.

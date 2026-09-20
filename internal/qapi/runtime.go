@@ -325,12 +325,29 @@ func runAvailabilityCommand(ctx context.Context, bound boundPi, kind availabilit
 	if ctx == nil || !validKind || !validProbeBinding(bound) {
 		return probeCapture{startFailed: true}
 	}
+	return executeProbeCommand(ctx, bound.path, bound.cwd, arguments, stdoutLimit, stderrLimit)
+}
+
+// executeProbeCommand is a private fixed-command seam for local tests. It
+// defaults to the real runner, so every test that exercises a probe against a
+// helper process still goes through the same code path production does.
+var executeProbeCommand = runProbeCommand
+
+// runProbeCommand runs one fixed, bounded, out-of-band probe command and
+// returns its complete capture. It is the shared body every backend's
+// availability probe launches through, so no adapter can widen the isolation
+// the QA vertical depends on: a minimal environment, one child process, a
+// fixed timeout, and independently capped stdout and stderr.
+//
+// The caller chooses the tokens; it never chooses how they run. That is the
+// same split the Backend port makes for the report run itself.
+func runProbeCommand(ctx context.Context, binary, cwd string, arguments []string, stdoutLimit, stderrLimit int) probeCapture {
 	runContext, cancel := context.WithTimeout(ctx, availabilityProbeTimeout)
 	defer cancel()
 	stdout := cappedWriter{maximum: stdoutLimit}
 	stderr := cappedWriter{maximum: stderrLimit}
-	command := exec.CommandContext(runContext, bound.path, arguments...)
-	command.Dir = bound.cwd
+	command := exec.CommandContext(runContext, binary, arguments...)
+	command.Dir = cwd
 	command.Env = minimalEnvironment()
 	command.Stdout = &stdout
 	command.Stderr = &stderr

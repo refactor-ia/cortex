@@ -119,6 +119,14 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	if err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
+	// Availability is asked out of band and before launch, never inferred from
+	// the run's own stream. A backend that cannot answer at all therefore
+	// fails here, with its own typed code, and its stdout never reaches the
+	// parser. That is what keeps the terminal codes below narrow: they mean
+	// the backend was available, ran, and the run itself failed.
+	if verdict := backend.ProbeAvailability(ctx, bound, route); !verdict.Available {
+		return "", verdict.Code, fmt.Errorf("report backend is unavailable")
+	}
 	facts := runOnce(ctx, invocation, frame, time.Duration(request.TimeoutSeconds)*time.Second)
 	switch {
 	case facts.invalid:
@@ -136,12 +144,32 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	}
 	report, diagnostic := backend.ParseReport(facts.stdout)
 	if diagnostic != nil {
-		return "", qaadmission.CodeNormalizationFailed, diagnostic
+		return "", reportFailureCode(diagnostic), diagnostic
 	}
 	if strings.TrimSpace(report) == "" {
 		return "", qaadmission.CodeNormalizationFailed, &ReportNormalizationError{reportStageReport, reportReasonBlank}
 	}
 	return report, "", nil
+}
+
+// reportFailureCode maps one parser diagnostic onto its terminal admission
+// code. A malformed stream is a normalization failure; a well-formed stream in
+// which the backend reported its own terminal failure is not, and calling it
+// one is what T3 flagged.
+//
+// Both typed backend reasons land on CodeExecutionFailed, and the collapse is
+// deliberate. Availability is settled before launch by ProbeAvailability, so a
+// backend that reaches the parser at all was available: a terminal failure it
+// reports afterwards is a run that failed, not an install that is unusable.
+// CodeAuthNotReady and CodeModelUnavailable keep one producer each — the
+// pre-run probe — instead of two that can disagree.
+func reportFailureCode(diagnostic *ReportNormalizationError) qaadmission.Code {
+	switch diagnostic.Reason {
+	case reportReasonBackendUnavailable, reportReasonBackendFailed:
+		return qaadmission.CodeExecutionFailed
+	default:
+		return qaadmission.CodeNormalizationFailed
+	}
 }
 
 // ReportNormalizationError is the bounded diagnostic for one rejected report

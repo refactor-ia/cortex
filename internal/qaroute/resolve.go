@@ -5,9 +5,17 @@ import (
 	"fmt"
 )
 
+// allowedBackends is the closed set of execution backends the route policy
+// admits. Route resolution is the only place that decides which backend a role
+// may run on, so a backend missing from this set can never be resolved,
+// invoked, or recorded in a receipt, no matter what adapters exist elsewhere.
+// Adding an entry is therefore a deliberate policy change, never a side effect
+// of a new adapter landing in another package.
+var allowedBackends = map[string]bool{"pi": true}
+
 func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 	base, allowed := defaults[request.Role]
-	if !allowed || request.Backend != "pi" {
+	if !allowed || !allowedBackends[request.Backend] {
 		return ResolvedRoute{}, Failure{Code: "route_disallowed"}
 	}
 	profileID, digest := "role-default", ""

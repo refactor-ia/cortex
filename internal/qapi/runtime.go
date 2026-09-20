@@ -23,11 +23,6 @@ var (
 	versionOutput       = regexp.MustCompile(`^(?:pi )?([0-9]+\.[0-9]+\.[0-9]+)$`)
 )
 
-// PiPathResolver resolves one Pi candidate for a single binding attempt.
-type PiPathResolver interface {
-	ResolvePi(context.Context) (string, error)
-}
-
 type boundPi struct {
 	path, cwd      string
 	identity       os.FileInfo
@@ -45,6 +40,17 @@ type versionCapture struct {
 	stdoutTruncated, stderrTruncated           bool
 }
 
+// Path and CWD project the two binding values that cross the backend port.
+// The rest of boundPi stays unexported because revalidation, not the report
+// sequence, is what needs the executable's identity, mode, size, and digest.
+func (bound boundPi) Path() string {
+	return bound.path
+}
+
+func (bound boundPi) CWD() string {
+	return bound.cwd
+}
+
 func (capture versionCapture) complete() bool {
 	return capture.started && !capture.startFailed && !capture.timedOut && !capture.waitFailed && !capture.stdoutTruncated && !capture.stderrTruncated
 }
@@ -52,11 +58,11 @@ func (capture versionCapture) complete() bool {
 // executeVersionCommand is a private fixed-command seam for local tests.
 var executeVersionCommand = runVersionCommand
 
-func bindPi(ctx context.Context, cwd string, resolver PiPathResolver) (boundPi, error) {
+func bindPi(ctx context.Context, cwd string, resolver PathResolver) (boundPi, error) {
 	if ctx == nil || resolver == nil {
 		return boundPi{}, errors.New("Pi binding dependencies are unavailable")
 	}
-	path, err := resolver.ResolvePi(ctx)
+	path, err := resolver.Resolve(ctx)
 	if err != nil {
 		return boundPi{}, errors.New("Pi resolution failed")
 	}

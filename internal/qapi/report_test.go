@@ -2,10 +2,12 @@ package qapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -328,4 +330,55 @@ func TestParseReportStreamPromptEcho(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPreflightBudgetIsNotTheRunBudget pins the separation T6 found missing:
+// preflight never spends the caller's execution budget, and the run receives
+// the budget the caller granted rather than whatever preflight left behind.
+func TestPreflightBudgetIsNotTheRunBudget(t *testing.T) {
+	t.Run("preflight does not inherit the caller deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		preflight, end := preflightContext(ctx)
+		deadline, ok := preflight.Deadline()
+		if !ok || time.Until(deadline) < preflightBudget/2 {
+			t.Fatalf("preflight deadline = %v ok %v, want its own %v bound", deadline, ok, preflightBudget)
+		}
+		if spent := end(); spent < 0 {
+			t.Fatalf("preflight spent = %v", spent)
+		}
+	})
+	t.Run("preflight still stops on caller cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		preflight, end := preflightContext(ctx)
+		defer end()
+		cancel()
+		select {
+		case <-preflight.Done():
+		case <-time.After(time.Second):
+			t.Fatal("preflight ignored caller cancellation")
+		}
+	})
+	t.Run("the run budget is restored by what preflight spent", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+		spent := 300 * time.Millisecond
+		run, cancelRun := runBudget(ctx, spent)
+		defer cancelRun()
+		deadline, ok := run.Deadline()
+		if !ok || time.Until(deadline) <= spent {
+			t.Fatalf("run deadline = %v ok %v, want more than the %v preflight spent", deadline, ok, spent)
+		}
+		if run.Err() != nil {
+			t.Fatalf("run budget already exhausted: %v", run.Err())
+		}
+	})
+	t.Run("a caller without a deadline keeps its context", func(t *testing.T) {
+		ctx := context.Background()
+		run, cancelRun := runBudget(ctx, time.Second)
+		defer cancelRun()
+		if _, ok := run.Deadline(); ok {
+			t.Fatal("runBudget invented a deadline for an unbounded caller")
+		}
+	})
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -120,7 +121,10 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	if err != nil {
 		return "", qaadmission.CodeActorUnavailable, err
 	}
-	bound, err := backend.Bind(ctx, request.CurrentDirectory)
+	// Binding and availability probing are preflight, and they are charged to
+	// their own budget rather than to the run's; see preflightContext.
+	preflight, endPreflight := preflightContext(ctx)
+	bound, err := backend.Bind(preflight, request.CurrentDirectory)
 	if err != nil {
 		return "", qaadmission.CodeUnsupportedRuntime, err
 	}
@@ -141,10 +145,24 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	// fails here, with its own typed code, and its stdout never reaches the
 	// parser. That is what keeps the terminal codes below narrow: they mean
 	// the backend was available, ran, and the run itself failed.
-	if verdict := backend.ProbeAvailability(ctx, bound, route); !verdict.Available {
+	verdict := backend.ProbeAvailability(preflight, bound, route)
+	spent := endPreflight()
+	if !verdict.Available {
 		return "", verdict.Code, fmt.Errorf("report backend is unavailable")
 	}
-	facts := runOnce(ctx, invocation, frame, time.Duration(request.TimeoutSeconds)*time.Second)
+	run, cancelRun := runBudget(ctx, spent)
+	defer cancelRun()
+	// A run with no budget left must not be launched and then read as a
+	// format failure. Both ways that happens are named here: the caller's
+	// deadline is a timeout and the caller's cancellation is a failed run.
+	// Neither is a malformed stream, and neither may reach the parser.
+	if err := run.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", qaadmission.CodeExecutionTimedOut, nil
+		}
+		return "", qaadmission.CodeExecutionFailed, fmt.Errorf("report run was cancelled before launch")
+	}
+	facts := runOnce(run, invocation, frame, time.Duration(request.TimeoutSeconds)*time.Second)
 	switch {
 	case facts.invalid:
 		return "", qaadmission.CodeInvalidRequest, fmt.Errorf("invalid report run")
@@ -167,6 +185,67 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 		return "", qaadmission.CodeNormalizationFailed, &ReportNormalizationError{reportStageReport, reportReasonBlank}
 	}
 	return report, "", nil
+}
+
+// preflightBudget bounds the whole pre-launch sequence of one report run:
+// binding the runtime and probing its availability. Each step already bounds
+// its own child process (versionProbeTimeout, availabilityProbeTimeout); this
+// is the ceiling on the sequence, so preflight cannot outlive a plausible run
+// even when every step is slow.
+const preflightBudget = 45 * time.Second
+
+// preflightContext detaches preflight from the report run's execution budget
+// and returns the time preflight spent.
+//
+// Binding and probing each spawn their own child process. Charging them to the
+// caller's deadline means that on a slow machine a bounded report run can
+// spend its budget before the run starts — and what the consumer sees then is
+// not a deadline. The run is cancelled before or during launch, its stream is
+// empty or its probe capture is incomplete, and an incomplete capture is
+// reported as normalization_failed: the output format blamed for a budget that
+// was already gone. Preflight is not the run, so it does not spend the run's
+// budget; the run keeps the whole budget the caller granted it.
+//
+// The returned context keeps the caller's explicit cancellation and drops only
+// the caller's deadline. A maintainer's interrupt must still stop preflight.
+func preflightContext(ctx context.Context) (context.Context, func() time.Duration) {
+	started := time.Now()
+	preflight, cancel := context.WithTimeout(context.WithoutCancel(ctx), preflightBudget)
+	stop := forwardCancellation(ctx, cancel)
+	return preflight, func() time.Duration {
+		stop()
+		cancel()
+		return time.Since(started)
+	}
+}
+
+// runBudget returns the context the report run executes under: the caller's
+// context with its deadline pushed out by the time preflight spent, so the run
+// is bounded by the budget the caller granted rather than by its remainder. A
+// caller with no deadline has nothing to restore.
+func runBudget(ctx context.Context, spent time.Duration) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok || spent <= 0 {
+		return ctx, func() {}
+	}
+	run, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(spent))
+	stop := forwardCancellation(ctx, cancel)
+	return run, func() {
+		stop()
+		cancel()
+	}
+}
+
+// forwardCancellation propagates only ctx's explicit cancellation to a derived
+// context built with context.WithoutCancel. The standard library offers no
+// derivation that keeps cancellation while dropping the deadline, so the
+// cancellation half is re-attached here and the deadline half is not.
+func forwardCancellation(ctx context.Context, cancel context.CancelFunc) func() bool {
+	return context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			cancel()
+		}
+	})
 }
 
 // reportFailureCode maps one parser diagnostic onto its terminal admission

@@ -78,7 +78,17 @@ func minimalEnvironment() []string {
 	environment := []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb"}
 	// HOME is required: Pi resolves its config under the home directory and
 	// provider API keys configured as shell commands may expand $HOME.
-	for _, name := range []string{"PATH", "HOME", "TMPDIR", "TMP", "TEMP"} {
+	//
+	// USER is required for credential resolution, not for cosmetics. Measured
+	// on macOS with claude 2.1.278 and the operator's real HOME: without USER,
+	// `claude auth status --json` reports "loggedIn": false and exits 1; adding
+	// USER alone flips it to "loggedIn": true and exit 0. Claude Code's
+	// credentials live in the login keychain and the lookup needs the account
+	// name. LOGNAME, SHELL and TMPDIR were each measured individually, and
+	// LOGNAME together with SHELL, and none of them is a substitute. Removing
+	// USER makes every claude-backed QA run fail its pre-run availability probe
+	// as unauthenticated on a fully authenticated machine.
+	for _, name := range []string{"PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP"} {
 		if value, ok := os.LookupEnv(name); ok {
 			environment = append(environment, name+"="+value)
 		}

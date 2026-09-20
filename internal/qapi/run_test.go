@@ -29,8 +29,9 @@ func TestCappedWriterAndMinimalEnvironment(t *testing.T) {
 	t.Setenv("PATH", "/synthetic/path")
 	t.Setenv("HOME", "/synthetic/home")
 	t.Setenv("PI_OFFLINE", "1")
+	t.Setenv("USER", "synthetic-user")
 	got := strings.Join(minimalEnvironment(), "\n")
-	for _, expected := range []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "TMPDIR=/synthetic/tmpdir", "TMP=/synthetic/tmp", "TEMP=/synthetic/temp", "PATH=/synthetic/path", "HOME=/synthetic/home"} {
+	for _, expected := range []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "TMPDIR=/synthetic/tmpdir", "TMP=/synthetic/tmp", "TEMP=/synthetic/temp", "PATH=/synthetic/path", "HOME=/synthetic/home", "USER=synthetic-user"} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("minimal environment omitted %q: %q", expected, got)
 		}
@@ -63,6 +64,38 @@ func TestMinimalEnvironmentPathPresence(t *testing.T) {
 			}
 			if (count == 1) != tc.present || count > 1 {
 				t.Fatalf("PATH entries=%d, present=%t", count, tc.present)
+			}
+		})
+	}
+}
+
+// TestMinimalEnvironmentUserPresence pins the credential-resolution
+// pass-through. USER is forwarded when the parent has it and is never
+// synthesized when the parent does not, so the child sees the operator's own
+// identity or no identity at all.
+func TestMinimalEnvironmentUserPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		present     bool
+	}{{"present", "fixture-operator", true}, {"empty", "", true}, {"unset", "", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("USER", tc.value)
+			if !tc.present {
+				if err := os.Unsetenv("USER"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			count := 0
+			for _, entry := range minimalEnvironment() {
+				if strings.HasPrefix(entry, "USER=") {
+					count++
+					if entry != "USER="+tc.value {
+						t.Fatalf("unexpected USER: %q", entry)
+					}
+				}
+			}
+			if (count == 1) != tc.present || count > 1 {
+				t.Fatalf("USER entries=%d, present=%t", count, tc.present)
 			}
 		})
 	}

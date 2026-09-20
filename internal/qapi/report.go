@@ -71,15 +71,23 @@ type ReportRequest struct {
 	TimeoutSeconds   int
 }
 
-// RunLocalReport runs one bounded local QA report for an installed role. It
-// reuses the admission asset identity chain, route resolution, invocation
+// RunLocalReport runs one bounded local QA report for an installed role on Pi.
+// It reuses the admission asset identity chain, route resolution, invocation
 // runner, and runtime bounds, but returns the substantive report text and never
 // an admission receipt or an admitted claim.
-func RunLocalReport(ctx context.Context, request ReportRequest, pi PiPathResolver) (string, qaadmission.Code, error) {
-	if pi == nil {
-		pi = lookPathPi{}
-	}
-	route, failure := qaroute.Resolve(qaroute.Request{Role: request.Role, Backend: "pi"}, qaroute.Snapshot{})
+func RunLocalReport(ctx context.Context, request ReportRequest, pi PathResolver) (string, qaadmission.Code, error) {
+	return runLocalReport(ctx, request, NewPiBackend(pi))
+}
+
+// runLocalReport sequences one report run against any backend. Everything that
+// makes the output evidence rather than opinion lives here and not in the
+// adapter: the route policy decides the backend is admissible, the catalog
+// admission binding and installed assets are verified before anything is
+// launched, the process runs once under shared bounds, and every terminal
+// condition maps to a fixed admission code. A backend contributes only its
+// identity, its binding, its argv, its input frame, and its stream parser.
+func runLocalReport(ctx context.Context, request ReportRequest, backend Backend) (string, qaadmission.Code, error) {
+	route, failure := qaroute.Resolve(qaroute.Request{Role: request.Role, Backend: backend.ID()}, qaroute.Snapshot{})
 	if failure.Code != "" {
 		return "", qaadmission.Code(failure.Code), fmt.Errorf("report route: %s", failure.Code)
 	}
@@ -87,7 +95,7 @@ func RunLocalReport(ctx context.Context, request ReportRequest, pi PiPathResolve
 	if err != nil {
 		return "", qaadmission.CodeAdapterUnavailable, err
 	}
-	expected, err := CatalogAdmissionBinding(snapshot, request.Role, "pi")
+	expected, err := CatalogAdmissionBinding(snapshot, request.Role, backend.ID())
 	if err != nil {
 		return "", qaadmission.CodeAdapterUnavailable, err
 	}
@@ -95,19 +103,19 @@ func RunLocalReport(ctx context.Context, request ReportRequest, pi PiPathResolve
 	if err != nil {
 		return "", qaadmission.CodeActorUnavailable, err
 	}
-	bound, err := bindPi(ctx, request.CurrentDirectory, pi)
+	bound, err := backend.Bind(ctx, request.CurrentDirectory)
 	if err != nil {
 		return "", qaadmission.CodeUnsupportedRuntime, err
 	}
-	paths, err := BindInvocationPaths(request.Role, bound.path, assets.ActorPath(), assets.SkillPath(), bound.cwd)
+	paths, err := BindInvocationPaths(request.Role, bound.Path(), assets.ActorPath(), assets.SkillPath(), bound.CWD())
 	if err != nil {
 		return "", qaadmission.CodeActorUnavailable, err
 	}
-	invocation, err := BuildInvocation(route, paths)
+	invocation, err := backend.BuildInvocation(route, paths)
 	if err != nil {
 		return "", qaadmission.CodeActorUnavailable, err
 	}
-	frame, err := EncodeReportInput(route, assets.ActorSHA256(), assets.SkillSHA256(), request.Task)
+	frame, err := backend.EncodeInput(route, assets.ActorSHA256(), assets.SkillSHA256(), request.Task)
 	if err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
@@ -126,8 +134,8 @@ func RunLocalReport(ctx context.Context, request ReportRequest, pi PiPathResolve
 	case len(facts.stdout) == 0:
 		return "", qaadmission.CodeOutputSilent, nil
 	}
-	report, ok, diagnostic := parseReportStream(facts.stdout)
-	if !ok {
+	report, diagnostic := backend.ParseReport(facts.stdout)
+	if diagnostic != nil {
 		return "", qaadmission.CodeNormalizationFailed, diagnostic
 	}
 	if strings.TrimSpace(report) == "" {
@@ -177,7 +185,7 @@ const (
 
 type lookPathPi struct{}
 
-func (lookPathPi) ResolvePi(ctx context.Context) (string, error) {
+func (lookPathPi) Resolve(ctx context.Context) (string, error) {
 	return exec.LookPath("pi")
 }
 

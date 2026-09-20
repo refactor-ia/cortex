@@ -241,7 +241,7 @@ func TestRuntimeBindingSupportsSymlinkEntrypoint(t *testing.T) {
 func TestRuntimeBindingRejectsUnsafeInputs(t *testing.T) {
 	for _, test := range []struct {
 		name     string
-		resolver PiPathResolver
+		resolver PathResolver
 		context  context.Context
 	}{
 		{name: "nil resolver", context: context.Background()},
@@ -368,7 +368,7 @@ type runtimeResolver struct {
 	calls int
 }
 
-func (resolver *runtimeResolver) ResolvePi(context.Context) (string, error) {
+func (resolver *runtimeResolver) Resolve(context.Context) (string, error) {
 	resolver.calls++
 	return resolver.path, nil
 }

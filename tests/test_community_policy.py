@@ -181,6 +181,7 @@ EXPECTED_FILES = {
         "internal/qagit/testdata/clean-binding/sha1-tree.oid",
         "internal/qagit/testdata/clean-binding/sha256-head.oid",
         "internal/qagit/testdata/clean-binding/sha256-tree.oid",
+        "internal/qapi/backend.go",
         "internal/qapi/version.go",
         "internal/qapi/qualification.go",
         "internal/qapi/qualification_test.go",
@@ -364,8 +365,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 313)
-                self.assertEqual(len(actual_files), 313)
+                self.assertEqual(len(EXPECTED_FILES), 314)
+                self.assertEqual(len(actual_files), 314)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

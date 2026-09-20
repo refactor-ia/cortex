@@ -33,7 +33,10 @@ func absolutePaths(paths ...string) bool {
 	return true
 }
 
-// Invocation is the immutable process value for the exact Pi token contract.
+// Invocation is the immutable process value for one backend's exact token
+// contract, and the only value that crosses the Backend port into the shared
+// runner. Keeping it opaque means an adapter chooses the tokens but can never
+// choose the environment, the bounds, or the number of turns.
 type Invocation struct {
 	binary, cwd string
 	argv        []string
@@ -52,6 +55,7 @@ func (invocation Invocation) Argv() []string {
 }
 
 // BuildInvocation constructs no process, shell, filesystem, or provider call.
+// It is the Pi backend's token contract, reached through Backend.BuildInvocation.
 func BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) (Invocation, error) {
 	if !validRoute(route) || route.Role != binding.role || !absolutePaths(binding.binary, binding.actor, binding.skill, binding.cwd) {
 		return Invocation{}, errors.New("invalid Pi invocation binding")
@@ -74,7 +78,10 @@ func BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) 
 	}, nil
 }
 
+// validRoute pins one resolved route to the Pi backend. It re-resolves rather
+// than trusting the value it was handed, so a route that was mutated after
+// resolution — or resolved for another backend — cannot reach Pi's argv.
 func validRoute(route qaroute.ResolvedRoute) bool {
-	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: "pi"}, qaroute.Snapshot{})
-	return failure.Code == "" && route.PolicyVersion == qaroute.PolicyVersion && route.Backend == "pi" && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
+	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: piBackendID}, qaroute.Snapshot{})
+	return failure.Code == "" && route.PolicyVersion == qaroute.PolicyVersion && route.Backend == piBackendID && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
 }

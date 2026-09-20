@@ -111,12 +111,14 @@ const (
 	// qaReportNote surfaces the honest runtime prerequisites on every failure.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
 	// no model fallback and owns no automatic configuration.
+	// Still Pi-shaped on purpose: it stays a single-runtime note until the
+	// per-backend availability report lands (T6 of the backend port).
 	qaReportNote = "note=prerequisites: Pi 0.85.1 runtime and installed cortex assets; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
 )
 
 // qaPiResolver is the Pi binary resolution seam; nil selects the production
 // constrained lookup.
-var qaPiResolver qapi.PiPathResolver
+var qaPiResolver qapi.PathResolver
 
 // runQA executes one local QA report command. It never mutates user
 // configuration and never claims admission.
@@ -180,6 +182,10 @@ func readRequestTask(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// piInstallRoot resolves the installed asset root for Pi only. It stays
+// Pi-shaped until the receipt contract carries backend identity (T5 of the
+// backend port), which is what lets the caller ask for the root of whichever
+// backend it resolved rather than assuming one.
 func piInstallRoot() (string, error) {
 	roots, err := skillroot.ResolveSystemUninstallRoots()
 	if err != nil {

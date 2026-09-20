@@ -129,7 +129,7 @@ func mustOK(err error) {
 
 type fixturePi struct{ path string }
 
-func (fixture fixturePi) ResolvePi(context.Context) (string, error) { return fixture.path, nil }
+func (fixture fixturePi) Resolve(context.Context) (string, error) { return fixture.path, nil }
 
 // reportFixture materializes the installed requirements-analyst role from the
 // production catalog and points the command at it with the fake Pi binary.

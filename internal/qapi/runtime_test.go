@@ -421,7 +421,7 @@ func runtimeOversizedBinary(t *testing.T) string {
 	if err := os.WriteFile(path, []byte("binary"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Truncate(path, maxPiBinaryBytes+1); err != nil {
+	if err := os.Truncate(path, maxRuntimeBinaryBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -544,4 +544,35 @@ func main() {
 		t.Fatalf("build helper: %v: %s", err, output)
 	}
 	return helper
+}
+
+// TestRuntimeBinaryBoundAdmitsRealRuntimes pins the bound against the sizes the
+// three bindings actually meet. The 64 MiB it carried while it was Pi-shaped
+// refused claude (~208 MiB) and opencode (~137 MiB) before either could be
+// probed, so the guard is exercised here at a size larger than that.
+func TestRuntimeBinaryBoundAdmitsRealRuntimes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("local large-file coverage")
+	}
+	const observedClaudeBytes = 217695408
+	if maxRuntimeBinaryBytes <= observedClaudeBytes {
+		t.Fatalf("bound = %d, want more than the %d-byte claude executable", maxRuntimeBinaryBytes, observedClaudeBytes)
+	}
+	path := filepath.Join(t.TempDir(), "large")
+	if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, observedClaudeBytes); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := inspectExecutable(path)
+	if err != nil {
+		t.Fatalf("inspectExecutable(%d bytes) = %v, want an accepted binding", observedClaudeBytes, err)
+	}
+	// The bound refuses; it never truncates. An accepted binding therefore
+	// hashed every byte, which is what lets Binary.SizeBytes and the recorded
+	// digest identify the whole executable.
+	if inspected.size != observedClaudeBytes {
+		t.Fatalf("observed size = %d, want the whole %d bytes", inspected.size, observedClaudeBytes)
+	}
 }

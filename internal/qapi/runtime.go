@@ -15,7 +15,30 @@ import (
 
 const (
 	maxVersionOutputBytes = 64 << 10
-	maxPiBinaryBytes      = 64 << 20
+	// maxRuntimeBinaryBytes bounds the executable every backend binding
+	// hashes. The guard exists because hashing an unbounded file is unbounded
+	// work, not because any one runtime is small: it is shared by the pi,
+	// claude, and opencode bindings and is named for what it guards.
+	//
+	// The previous 64 MiB was sized for Pi, which ships as a 660-byte cli.js
+	// shim. Real installs of the other two are far larger — claude 217695408
+	// bytes (~208 MiB), opencode 144123746 bytes (~137 MiB) — so both were
+	// refused before their availability probes ever ran, and doctor reported
+	// unsupported_runtime instead of an auth state.
+	//
+	// The bound is raised to what the work costs rather than to what today's
+	// binaries measure. Hashing the 208 MiB claude executable takes ~80ms on
+	// an Apple-silicon machine (~2.6 GiB/s with hardware SHA-256); a binding
+	// hashes twice, before and after the version capture, so ~160ms per bind,
+	// once per report run or per doctor probe and never per availability
+	// probe. At 512 MiB the same guard costs ~200ms per hash, which stays a
+	// small fraction of a run bounded by qaadmission.DefaultTimeoutSeconds
+	// while leaving headroom for runtimes that keep growing.
+	//
+	// The bound stays a refusal, not a truncation: a file over it is rejected
+	// rather than partially read, so Binary.SizeBytes remains the whole
+	// observed size and the recorded digest still identifies the whole binary.
+	maxRuntimeBinaryBytes = 512 << 20
 )
 
 var (
@@ -163,9 +186,9 @@ func inspectExecutable(path string) (executableIdentity, error) {
 		return executableIdentity{}, errors.New("runtime changed before hashing")
 	}
 	hash := sha256.New()
-	size, err := io.Copy(hash, io.LimitReader(file, maxPiBinaryBytes+1))
+	size, err := io.Copy(hash, io.LimitReader(file, maxRuntimeBinaryBytes+1))
 	after, statErr := executableFile(canonical)
-	if err != nil || statErr != nil || size <= 0 || size > maxPiBinaryBytes || !samePiInfo(before, after) || after.Size() != size {
+	if err != nil || statErr != nil || size <= 0 || size > maxRuntimeBinaryBytes || !samePiInfo(before, after) || after.Size() != size {
 		return executableIdentity{}, errors.New("runtime hashing failed")
 	}
 	var digest [sha256.Size]byte
@@ -188,8 +211,8 @@ func inspectPi(path string) (boundPi, error) {
 
 func executableFile(path string) (os.FileInfo, error) {
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() <= 0 || info.Size() > maxPiBinaryBytes {
-		return nil, errors.New("Pi is not an executable regular file")
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() <= 0 || info.Size() > maxRuntimeBinaryBytes {
+		return nil, errors.New("runtime is not an executable regular file")
 	}
 	return info, nil
 }

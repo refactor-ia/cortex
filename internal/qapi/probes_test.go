@@ -87,7 +87,7 @@ func authInput(stdout []byte, exitCode int) AuthProbeInput {
 
 func readProbeFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "pi-0.85.1", filepath.FromSlash(name)))
+	data, err := os.ReadFile(backendTestdata(piFixtureBackend, piFixtureVersion, filepath.FromSlash(name)))
 	if err != nil {
 		t.Fatal(err)
 	}

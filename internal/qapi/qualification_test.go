@@ -2,7 +2,6 @@ package qapi
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,7 +55,7 @@ func TestQualify(t *testing.T) {
 
 func readQualificationFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	bytes, err := os.ReadFile(filepath.Join("testdata", "pi-0.85.1", "qualification", name))
+	bytes, err := os.ReadFile(backendTestdata(piFixtureBackend, piFixtureVersion, "qualification", name))
 	if err != nil {
 		t.Fatal(err)
 	}

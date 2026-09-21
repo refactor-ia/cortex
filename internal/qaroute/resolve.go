@@ -55,6 +55,21 @@ func BindsInstalledActor(backend string) bool {
 	return backend == "pi"
 }
 
+// InlinesSkillText reports whether one backend's input frame must carry the
+// skill's own text instead of asking the runtime to load it.
+//
+// The opening line `/skill:cortex-<role>` means two different things depending
+// on who reads it. Pi loads the installed skill from it. Claude Code and
+// OpenCode implement it as a slash command and answer it with a tool call —
+// which a QA run forbids on purpose and which would spend its single turn
+// anyway — so on those runtimes the reference is not merely useless, it ends
+// the run before the role produces anything. They receive the skill as text,
+// which executes nothing. Like BindsInstalledActor this is a property of the
+// runtime's own interface, not a policy knob.
+func InlinesSkillText(backend string) bool {
+	return Admits(backend) && backend != "pi"
+}
+
 func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 	base, allowed := defaults[request.Role]
 	if !allowed || !allowedBackends[request.Backend] {

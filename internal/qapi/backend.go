@@ -39,8 +39,12 @@ type Backend interface {
 	// BuildInvocation constructs no process, shell, filesystem, or provider
 	// call; it only assembles the exact token contract for this backend.
 	BuildInvocation(route qaroute.ResolvedRoute, paths BoundInvocationPaths) (Invocation, error)
-	// EncodeInput frames one bounded report input for this backend.
-	EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error)
+	// EncodeInput frames one bounded report input for this backend. skill is
+	// the digest-verified text of the installed skill: a backend whose runtime
+	// has no way to be told to load a skill carries it in the frame, and one
+	// whose runtime loads it by name ignores it rather than sending the same
+	// bytes twice.
+	EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, skill, task []byte) ([]byte, error)
 	// ProbeAvailability answers, before anything is launched, whether this
 	// backend can run a report at all. It runs the backend's own fixed,
 	// bounded probe commands through the shared runner and never inspects a
@@ -125,7 +129,11 @@ func (piBackend) BuildInvocation(route qaroute.ResolvedRoute, paths BoundInvocat
 	return BuildInvocation(route, paths)
 }
 
-func (piBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
+// EncodeInput ignores the skill text. Pi's frame names the installed skill in
+// its opening line and Pi loads it from there, so inlining the same bytes
+// would change a frame that works into a larger one that says the same thing
+// twice.
+func (piBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, _, task []byte) ([]byte, error) {
 	return EncodeReportInput(route, actorSHA256, skillSHA256, task)
 }
 

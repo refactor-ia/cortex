@@ -130,11 +130,11 @@ func claudeArgv() []string {
 }
 
 // EncodeInput frames one bounded report input for Claude Code. The frame is
-// the shared one: the backend token inside it differs, nothing else does, so a
-// role receives the same instruction and the same identity block whichever
-// runtime executes it.
-func (claudeBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
-	return encodeReportInput(route, claudeBackendID, actorSHA256, skillSHA256, task)
+// the shared one — same instruction, same identity block — with one runtime
+// difference it cannot avoid: Claude Code answers `/skill:cortex-<role>` with
+// a tool call, so this frame carries the skill's text and records that it did.
+func (claudeBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, skill, task []byte) ([]byte, error) {
+	return encodeReportInput(route, claudeBackendID, actorSHA256, skillSHA256, skill, task)
 }
 
 func (claudeBackend) ParseReport(stdout []byte) (string, *ReportNormalizationError) {

@@ -36,3 +36,7 @@ coverage/
 *~
 .qa-test-cache/
 .qa-test-tmp/
+
+# Maintainer working notes. ODD feature documents are the maintainer's own task
+# tracking, not a product artifact, so they stay out of the published tree.
+odd/

@@ -382,3 +382,81 @@ func TestPreflightBudgetIsNotTheRunBudget(t *testing.T) {
 		}
 	})
 }
+
+// TestInlinedSkillFrameCarriesTheSkillText pins T9's decision: a backend whose
+// runtime answers a slash command with a tool call must not be handed one. Its
+// frame carries the skill's own text as a length-prefixed section instead, and
+// says so, so a consumer can tell a frame that referenced an installed skill
+// from one that carried it.
+func TestInlinedSkillFrameCarriesTheSkillText(t *testing.T) {
+	skill := []byte("---\nname: cortex-requirements-analyst\n---\n\nAssess requirements.\n")
+	for _, backend := range []string{"claude", "opencode"} {
+		t.Run(backend, func(t *testing.T) {
+			route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: backend}, qaroute.Snapshot{})
+			if failure.Code != "" {
+				t.Fatalf("qaroute.Resolve(%s) failed: %s", backend, failure.Code)
+			}
+			frame, err := encodeReportInput(route, backend, strings.Repeat("a", 64), strings.Repeat("b", 64), skill, []byte("task"))
+			if err != nil {
+				t.Fatalf("encodeReportInput() = %v", err)
+			}
+			if strings.HasPrefix(string(frame), "/") {
+				t.Fatalf("frame opens with a slash command: %q", frame[:32])
+			}
+			if !strings.HasPrefix(string(frame), "skill "+strconv.Itoa(len(skill))+"\n"+string(skill)+"\n") {
+				t.Fatalf("frame does not open with the inlined skill section: %q", frame[:64])
+			}
+			if !strings.Contains(string(frame), "skill_delivery inline") {
+				t.Fatal("frame does not record that it carried the skill text")
+			}
+		})
+	}
+}
+
+// TestInlinedSkillFrameRefusesAnUnusableSkill proves the inlined bytes are held
+// to the same closed rules as everything else the frame carries, and that an
+// oversized skill fails loudly instead of being truncated into a silently
+// mutilated role definition.
+func TestInlinedSkillFrameRefusesAnUnusableSkill(t *testing.T) {
+	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("qaroute.Resolve failed: %s", failure.Code)
+	}
+	for name, skill := range map[string][]byte{
+		"empty":     nil,
+		"invalid":   []byte("skill \x00 text"),
+		"oversized": bytes.Repeat([]byte("x"), qaadmission.MaxRequestBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame, err := encodeReportInput(route, "claude", strings.Repeat("a", 64), strings.Repeat("b", 64), skill, []byte("task"))
+			if err == nil || frame != nil {
+				t.Fatalf("encodeReportInput() = %q, %v; want rejection", frame, err)
+			}
+		})
+	}
+}
+
+// TestPiFrameStillReferencesTheInstalledSkill keeps Pi byte-identical. Pi loads
+// its installed skill from the opening line and is the one runtime for which
+// that line is not a tool call, so nothing about its frame moves — not even
+// when skill bytes are available to inline.
+func TestPiFrameStillReferencesTheInstalledSkill(t *testing.T) {
+	route := reportRouteFixture(t, qarole.RequirementsAnalyst)
+	want, err := EncodeReportInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := encodeReportInput(route, "pi", strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("an installed skill body"), []byte("task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(want, got) {
+		t.Fatalf("pi frame changed:\n got %q\nwant %q", got, want)
+	}
+	if !strings.HasPrefix(string(got), "/skill:cortex-requirements-analyst\n") {
+		t.Fatalf("pi frame lost its skill reference: %q", got[:40])
+	}
+	if strings.Contains(string(got), "skill_delivery") {
+		t.Fatal("pi frame gained a delivery field it never needed")
+	}
+}

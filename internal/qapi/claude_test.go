@@ -229,7 +229,7 @@ func TestClaudeRouteIsAdmitted(t *testing.T) {
 	if _, err := backend.BuildInvocation(route, paths); err != nil {
 		t.Fatalf("BuildInvocation rejected an admitted route: %v", err)
 	}
-	if _, err := backend.EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err != nil {
+	if _, err := backend.EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("skill text"), []byte("task")); err != nil {
 		t.Fatalf("EncodeInput rejected an admitted route: %v", err)
 	}
 	mutated := route
@@ -239,7 +239,7 @@ func TestClaudeRouteIsAdmitted(t *testing.T) {
 	}
 	foreign := route
 	foreign.Backend = "opencode"
-	if _, err := backend.EncodeInput(foreign, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task")); err == nil {
+	if _, err := backend.EncodeInput(foreign, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("skill text"), []byte("task")); err == nil {
 		t.Fatalf("EncodeInput accepted another backend's route")
 	}
 }
@@ -249,7 +249,7 @@ func TestClaudeRouteIsAdmitted(t *testing.T) {
 // declare Pi's input or skill contract.
 func TestClaudeFrameNamesItsOwnContracts(t *testing.T) {
 	route, _ := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
-	frame, err := NewClaudeBackend(nil).EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("task"))
+	frame, err := NewClaudeBackend(nil).EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("skill text"), []byte("task"))
 	if err != nil {
 		t.Fatal(err)
 	}

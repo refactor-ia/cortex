@@ -329,3 +329,31 @@ func TestAdmissionAssetsRejectAnotherRuntimesLedger(t *testing.T) {
 		t.Fatal("ObserveAdmissionAssets() admitted a skills-only ledger for the pi backend")
 	}
 }
+
+// TestAdmissionAssetsCarryTheVerifiedSkillText pins that the bytes a frame may
+// inline are the ones admission already read and digest-verified, on every
+// backend. A caller that needed the skill's content had no way to reach it
+// without opening the file again behind admission's back, which would attest
+// one set of bytes and send another.
+func TestAdmissionAssetsCarryTheVerifiedSkillText(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture admissionFixture
+	}{
+		{name: "pi", fixture: newAdmissionFixture(t)},
+		{name: "claude", fixture: newSkillOnlyAdmissionFixture(t, "claude", runtimematrix.RuntimeClaudeCode, skilldest.RootKindClaudeCodeUser)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assets, err := installobserve.ObserveAdmissionAssets(tc.fixture.root, tc.fixture.cwd, tc.fixture.expected)
+			if err != nil {
+				t.Fatalf("ObserveAdmissionAssets() error = %v", err)
+			}
+			if got := assets.SkillText(); got != "skill bytes" {
+				t.Fatalf("SkillText() = %q, want the verified skill bytes", got)
+			}
+			if admissionHash([]byte(assets.SkillText())) != assets.SkillSHA256() {
+				t.Fatal("SkillText() does not hash to the attested skill digest")
+			}
+		})
+	}
+}

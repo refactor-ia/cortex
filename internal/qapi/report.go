@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/refactor-ia/cortex/internal/catalog"
@@ -136,7 +137,7 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	if err != nil {
 		return "", qaadmission.CodeActorUnavailable, err
 	}
-	frame, err := backend.EncodeInput(route, assets.ActorSHA256(), assets.SkillSHA256(), request.Task)
+	frame, err := backend.EncodeInput(route, assets.ActorSHA256(), assets.SkillSHA256(), []byte(assets.SkillText()), request.Task)
 	if err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
@@ -321,48 +322,114 @@ func (lookPathPi) Resolve(ctx context.Context) (string, error) {
 	return exec.LookPath("pi")
 }
 
+// skillDeliveryInline names, inside the frame's own identity block, a frame
+// that carried the skill's text rather than a reference to the installed one.
+// It exists so the two frames are not indistinguishable to a reader that has
+// only the frame: a receipt that cannot say which one it was would describe
+// both runs the same way while the role read different bytes.
+const skillDeliveryInline = "inline"
+
+// validSkillText holds an inlined skill to the same closed rules the task is
+// held to, for the same reason: it is untrusted-shaped content entering a
+// bounded frame. It adds no size bound of its own — the whole frame is already
+// bounded by MaxRequestBytes, and one bound that refuses is better than two
+// that disagree.
+func validSkillText(skill []byte) bool {
+	if len(skill) == 0 || !utf8.Valid(skill) {
+		return false
+	}
+	for _, character := range string(skill) {
+		if character == '\r' || character != '\n' && character != '\t' && unicode.IsControl(character) {
+			return false
+		}
+	}
+	// A line that opens with "/" is the very thing this delivery exists to
+	// avoid: on the runtimes that inline, it is a slash command.
+	for _, line := range strings.Split(string(skill), "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "/") {
+			return false
+		}
+	}
+	return true
+}
+
 // EncodeReportInput frames one bounded report input. Unlike EncodeInput it does
 // not demand an identity echo and carries no revision or candidate claim.
 func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
-	return encodeReportInput(route, piBackendID, actorSHA256, skillSHA256, task)
+	return encodeReportInput(route, piBackendID, actorSHA256, skillSHA256, nil, task)
 }
 
-// encodeReportInput frames one bounded report input for one backend. The frame
-// itself is backend-independent — same role instruction, same identity block,
-// same size bound — so a role reads the same request whichever runtime executes
-// it; only the backend token the route was pinned to differs.
-func encodeReportInput(route qaroute.ResolvedRoute, backendID, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
+// encodeReportInput frames one bounded report input for one backend. The role
+// instruction, the identity block, and the size bound are the same whichever
+// runtime executes it; two things differ, and both are properties of the
+// runtime rather than choices.
+//
+// The backend token the route was pinned to differs, and so does how the skill
+// reaches the role. Pi is told to load its installed skill by name, which is
+// the opening line. On a runtime that reads that same line as a slash command
+// the request is a tool call — forbidden here, and fatal to a single-turn run
+// — so the frame carries the skill's text instead and says which of the two it
+// did. The inlined bytes are the digest-verified installed ones the caller
+// passes in; this function neither reads nor locates a file.
+//
+// Size is accounted for before anything is built and the whole frame, inlined
+// skill included, is held to the one existing request bound. An oversized
+// frame is refused, never truncated: a silently shortened role definition
+// would produce a run whose receipt no longer describes what the role read.
+func encodeReportInput(route qaroute.ResolvedRoute, backendID, actorSHA256, skillSHA256 string, skill, task []byte) ([]byte, error) {
 	if !validRouteFor(route, backendID) || !validProfile(route) || !lowerSHA256(actorSHA256) || !lowerSHA256(skillSHA256) || !validTask(task) {
+		return nil, fmt.Errorf("invalid report input")
+	}
+	inlineSkill := qaroute.InlinesSkillText(backendID)
+	if inlineSkill && !validSkillText(skill) {
 		return nil, fmt.Errorf("invalid report input")
 	}
 	instruction, ok := reportInstruction(route.Role)
 	if !ok {
 		return nil, fmt.Errorf("invalid report input")
 	}
-	identity := []byte(strings.Join([]string{
+	fields := []string{
 		"input_contract " + InputContractFor(backendID),
 		"role " + string(route.Role),
 		"actor_contract " + qaactor.ActorContractVersion,
 		"actor_sha256 " + actorSHA256,
 		"skill_contract " + skillContractFor(backendID),
 		"skill_sha256 " + skillSHA256,
-		"route_policy " + route.PolicyVersion,
-		"route_backend " + route.Backend,
-		"route_provider " + route.Provider,
-		"route_model " + route.Model,
-		"route_effort " + route.Effort,
-		"route_profile " + route.ProfileID,
-		"route_profile_sha256 " + route.ProfileSHA256,
-		"route_override_fields " + strings.Join(route.OverrideFields, ","),
-	}, "\n"))
-	size := len("/skill:cortex-") + len(route.Role) + 1 + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction))
+	}
+	// The identity block records how the skill reached the role, and it
+	// records it only where there is something to record. Pi's frame is
+	// unchanged down to the byte: it has one delivery, it always had it, and
+	// a field asserting the absence of the other would be a new claim in an
+	// old receipt rather than a new fact.
+	if inlineSkill {
+		fields = append(fields, "skill_delivery "+skillDeliveryInline)
+	}
+	identity := []byte(strings.Join(append(fields,
+		"route_policy "+route.PolicyVersion,
+		"route_backend "+route.Backend,
+		"route_provider "+route.Provider,
+		"route_model "+route.Model,
+		"route_effort "+route.Effort,
+		"route_profile "+route.ProfileID,
+		"route_profile_sha256 "+route.ProfileSHA256,
+		"route_override_fields "+strings.Join(route.OverrideFields, ","),
+	), "\n"))
+	opening := len("/skill:cortex-") + len(route.Role) + 1
+	if inlineSkill {
+		opening = sectionSize("skill", skill)
+	}
+	size := opening + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction))
 	if size > qaadmission.MaxRequestBytes {
 		return nil, fmt.Errorf("report input exceeds bound")
 	}
 	frame := make([]byte, 0, size)
-	frame = append(frame, "/skill:cortex-"...)
-	frame = append(frame, string(route.Role)...)
-	frame = append(frame, '\n')
+	if inlineSkill {
+		frame = appendSection(frame, "skill", skill)
+	} else {
+		frame = append(frame, "/skill:cortex-"...)
+		frame = append(frame, string(route.Role)...)
+		frame = append(frame, '\n')
+	}
 	frame = appendSection(frame, "identity", identity)
 	frame = appendSection(frame, "task", task)
 	return appendSection(frame, "result", []byte(instruction)), nil

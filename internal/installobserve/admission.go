@@ -45,7 +45,7 @@ type AdmissionBinding struct {
 type AdmissionAssets struct {
 	installationID, catalogFingerprint, actorSHA256, actorSourceSHA256, actorBindingSHA256, skillSHA256 string
 	role                                                                                                qarole.RoleID
-	backend, actorProvenance, actorPath, skillPath                                                      string
+	backend, actorProvenance, actorPath, skillPath, skillText                                           string
 }
 
 func (assets AdmissionAssets) InstallationID() installstate.InstallationID {
@@ -65,6 +65,17 @@ func (assets AdmissionAssets) ActorPath() string          { return assets.actorP
 func (assets AdmissionAssets) ActorProvenance() string { return assets.actorProvenance }
 
 func (assets AdmissionAssets) SkillPath() string { return assets.skillPath }
+
+// SkillText is the content of the skill this observation attests, and it is
+// exactly the bytes that were read from the declared path and checked against
+// the declared digest — never a second, unverified read of the same file.
+//
+// A caller needs them because not every runtime can be told to load a skill:
+// one that has no such mechanism receives the skill as text, and the text it
+// receives has to be the text the receipt attests, or the two describe
+// different runs. It is returned as a string so a caller cannot alias and
+// mutate the observed bytes.
+func (assets AdmissionAssets) SkillText() string { return assets.skillText }
 
 // ObserveAdmissionAssets reads only the canonical v2 state and the selected
 // state-declared assets. It does not create an installation candidate,
@@ -96,7 +107,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 	if !ok {
 		return AdmissionAssets{}, admissionInvalid()
 	}
-	_, skillPath, ok := admissionFile(root, skill.RelativePath(), skill.SHA256())
+	skillBytes, skillPath, ok := admissionFile(root, skill.RelativePath(), skill.SHA256())
 	if !ok {
 		return AdmissionAssets{}, admissionInvalid()
 	}
@@ -104,7 +115,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 		installationID: string(manifest.InstallationID()), catalogFingerprint: manifest.SnapshotFingerprint(),
 		role: expected.Role, backend: expected.Backend, actorProvenance: ActorProvenanceCatalog,
 		actorSHA256: expected.ActorSHA256, actorSourceSHA256: expected.ActorSourceSHA256, actorBindingSHA256: expected.ActorBindingSHA256,
-		skillSHA256: skill.SHA256(), skillPath: skillPath,
+		skillSHA256: skill.SHA256(), skillPath: skillPath, skillText: string(skillBytes),
 	}
 	if !qaroute.BindsInstalledActor(expected.Backend) {
 		return assets, nil

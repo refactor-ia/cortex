@@ -136,11 +136,11 @@ func openCodeArgv(route qaroute.ResolvedRoute) []string {
 }
 
 // EncodeInput frames one bounded report input for OpenCode. The frame is the
-// shared one: the backend token inside it differs, nothing else does, so a role
-// receives the same instruction and the same identity block whichever runtime
-// executes it.
-func (opencodeBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
-	return encodeReportInput(route, opencodeBackendID, actorSHA256, skillSHA256, task)
+// shared one — same instruction, same identity block — with one runtime
+// difference it cannot avoid: OpenCode answers `/skill:cortex-<role>` with a
+// tool call, so this frame carries the skill's text and records that it did.
+func (opencodeBackend) EncodeInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, skill, task []byte) ([]byte, error) {
+	return encodeReportInput(route, opencodeBackendID, actorSHA256, skillSHA256, skill, task)
 }
 
 func (opencodeBackend) ParseReport(stdout []byte) (string, *ReportNormalizationError) {

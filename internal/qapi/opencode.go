@@ -127,10 +127,18 @@ func (opencodeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding Boun
 // loads the project context files of its working directory and there is no
 // flag that disables them. Observed on the same build, --pure in this
 // repository reported 22575 input tokens against 21599 in an empty directory,
-// the difference being the repository's own AGENTS.md. The working directory
-// is the directory under review, so its instructions reach the role. This is
-// the OpenCode equivalent of an unresolved question and belongs to the
-// end-to-end observation task, not to a flag invented here.
+// the difference being the repository's own AGENTS.md.
+//
+// Which AGENTS.md that is, is decided elsewhere and is narrower than it looks.
+// The working directory is not the directory under review: there is no such
+// concept in this pipeline. A single cwd serves as git identity root, shadow
+// scan root, receipt target identity and process directory at once, and
+// qagit.VerifyCleanBinding rejects any cwd that is not exactly
+// `git rev-parse --show-toplevel`. So the instructions that reach the role are
+// always the repository root's, never those of a subdirectory being reviewed.
+// Separating the two is receipt-visible work — TargetIdentity attests the cwd
+// hash — and belongs to the end-to-end observation task, not to a flag
+// invented here.
 func openCodeArgv(route qaroute.ResolvedRoute) []string {
 	return []string{"run", "--format", "json", "--pure", "-m", route.Provider + "/" + route.Model}
 }

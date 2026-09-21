@@ -7,6 +7,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
@@ -20,14 +21,6 @@ var qaRuntimeBackends = map[runtimematrix.RuntimeID]string{
 	runtimematrix.RuntimePi:         "pi",
 	runtimematrix.RuntimeOpenCode:   "opencode",
 	runtimematrix.RuntimeClaudeCode: "claude",
-}
-
-// qaBackendRuntimes is the inverse mapping, used to resolve the installed
-// asset root of a chosen backend.
-var qaBackendRuntimes = map[string]runtimematrix.RuntimeID{
-	"pi":       runtimematrix.RuntimePi,
-	"opencode": runtimematrix.RuntimeOpenCode,
-	"claude":   runtimematrix.RuntimeClaudeCode,
 }
 
 // qaProbeRole is the role whose resolved route doctor probes with.
@@ -127,7 +120,7 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 // could execute: the caller now chooses a backend, so the root it needs is the
 // root of that backend's runtime and not of a fixed one.
 func qaInstallRoot(backend string) (string, error) {
-	runtimeID, known := qaBackendRuntimes[backend]
+	runtimeID, known := qaroute.RuntimeFor(backend)
 	if !known {
 		return "", errUnknownQABackend
 	}

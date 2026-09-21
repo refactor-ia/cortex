@@ -7,6 +7,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skillprojection"
 	"github.com/refactor-ia/cortex/internal/skillrender"
@@ -148,4 +149,63 @@ func selectedRenderedSkill(t *testing.T, set skillrender.Set, role qarole.RoleID
 		t.Fatalf("neutral skills for %q = %d, want 1", role, len(selected))
 	}
 	return selected[0]
+}
+
+// TestCatalogAdmissionBindingProjectsTheSelectedBackendRuntime pins that the
+// skill hash a binding attests is the projection for the runtime that will
+// actually load it, not Pi's projection handed to another runtime.
+func TestCatalogAdmissionBindingProjectsTheSelectedBackendRuntime(t *testing.T) {
+	snapshot := productionCatalogSnapshot(t)
+	actors := productionActorBinding(t, snapshot)
+	neutral, err := skillrender.Render(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		backend string
+		runtime runtimematrix.RuntimeID
+	}{
+		{"pi", runtimematrix.RuntimePi},
+		{"claude", runtimematrix.RuntimeClaudeCode},
+		{"opencode", runtimematrix.RuntimeOpenCode},
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			plan, err := skillprojection.Build(tc.runtime, neutral)
+			if err != nil {
+				t.Fatal(err)
+			}
+			role := qarole.RequirementsAnalyst
+			got, err := CatalogAdmissionBinding(snapshot, role, tc.backend)
+			if err != nil {
+				t.Fatalf("CatalogAdmissionBinding() error = %v", err)
+			}
+			actor := selectedActor(t, actors, role)
+			want := installobserve.AdmissionBinding{
+				Role:               role,
+				Backend:            tc.backend,
+				CatalogFingerprint: snapshot.Fingerprint(),
+				ActorSHA256:        actor.GeneratedSHA256(),
+				ActorSourceSHA256:  actor.SourceSHA256(),
+				ActorBindingSHA256: actors.BindingSHA256(),
+				SkillSHA256:        selectedSkill(t, plan, role).SHA256(),
+			}
+			if got != want {
+				t.Fatalf("CatalogAdmissionBinding() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+// TestRuntimeForCoversEveryAdmittedBackend keeps the mapping and the route
+// policy from drifting apart: a backend the policy admits but no runtime backs
+// would reach the admission path with no skill projection to ask for.
+func TestRuntimeForCoversEveryAdmittedBackend(t *testing.T) {
+	for _, backend := range []string{"pi", "claude", "opencode"} {
+		if _, known := qaroute.RuntimeFor(backend); !known {
+			t.Fatalf("qaroute.RuntimeFor(%q) is unknown", backend)
+		}
+	}
+	if _, known := qaroute.RuntimeFor("other"); known {
+		t.Fatal("qaroute.RuntimeFor() resolved an unadmitted backend")
+	}
 }

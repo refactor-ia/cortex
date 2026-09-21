@@ -7,17 +7,27 @@ import (
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/qaactor"
 	"github.com/refactor-ia/cortex/internal/qarole"
-	"github.com/refactor-ia/cortex/internal/runtimematrix"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 	"github.com/refactor-ia/cortex/internal/skillprojection"
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
 var errCatalogAdmissionBinding = errors.New("qapi: catalog admission binding is unavailable")
 
-// CatalogAdmissionBinding derives the exact Pi actor and skill hashes for one role
-// from an already admitted catalog snapshot. It does not inspect ambient state.
+// CatalogAdmissionBinding derives the exact actor and skill hashes for one role
+// on one backend from an already admitted catalog snapshot. It does not inspect
+// ambient state.
+//
+// The skill hash is the projection for the backend's own runtime, because that
+// is the file that runtime loads from its own root. The actor hashes are the
+// catalog-rendered ones and are runtime-independent: qaactor renders one set of
+// actor bytes from the catalog, and the projection only names and places them.
+// Whether those bytes are also installed as a file is not this function's
+// question; installobserve answers it per backend and records which provenance
+// it observed.
 func CatalogAdmissionBinding(snapshot catalog.CatalogSnapshot, role qarole.RoleID, backend string) (installobserve.AdmissionBinding, error) {
-	if backend != "pi" || snapshot.Fingerprint() == "" {
+	runtimeID, known := qaroute.RuntimeFor(backend)
+	if !known || snapshot.Fingerprint() == "" {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
 	if _, err := qarole.ValidateSquad([]qarole.RoleID{role}); err != nil {
@@ -45,8 +55,8 @@ func CatalogAdmissionBinding(snapshot catalog.CatalogSnapshot, role qarole.RoleI
 	if err != nil || skillSources.SnapshotFingerprint() != snapshot.Fingerprint() {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
-	piSkills, err := skillprojection.Build(runtimematrix.RuntimePi, skillSources)
-	if err != nil || piSkills.Assessment().SnapshotFingerprint() != snapshot.Fingerprint() {
+	skills, err := skillprojection.Build(runtimeID, skillSources)
+	if err != nil || skills.Assessment().SnapshotFingerprint() != snapshot.Fingerprint() {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
 
@@ -54,7 +64,7 @@ func CatalogAdmissionBinding(snapshot catalog.CatalogSnapshot, role qarole.RoleI
 	if !ok || actor.SourceSHA256() == "" || actor.GeneratedSHA256() == "" || actorBinding.BindingSHA256() == "" {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
-	skillSHA256, ok := selectedPiSkillSHA256(piSkills, role)
+	skillSHA256, ok := selectedSkillSHA256(skills, role)
 	if !ok {
 		return installobserve.AdmissionBinding{}, errCatalogAdmissionBinding
 	}
@@ -83,7 +93,7 @@ func selectedProjectedActor(binding qaactor.Binding, role qarole.RoleID) (qaacto
 	return selected, selected.RoleID() != ""
 }
 
-func selectedPiSkillSHA256(plan skillprojection.Plan, role qarole.RoleID) (string, bool) {
+func selectedSkillSHA256(plan skillprojection.Plan, role qarole.RoleID) (string, bool) {
 	selected := ""
 	logicalID := "skills/" + string(role)
 	for _, skill := range plan.Skills() {

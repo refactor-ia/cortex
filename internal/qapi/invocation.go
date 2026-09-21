@@ -17,8 +17,16 @@ type BoundInvocationPaths struct {
 
 // BindInvocationPaths retains only clean absolute paths for one closed role.
 // Preflight owns filesystem canonicalization and identity verification.
+//
+// The actor path is optional, and empty is a meaning rather than an omission:
+// two of the three runtimes receive no actor file at all, because neither
+// takes one in argv — the actor reaches them inside the bounded stdin frame.
+// The backends that do put the actor in argv revalidate it themselves, so
+// accepting an empty actor here never lets one reach a runtime that needs it.
+// The skill path stays mandatory: every runtime loads it from its own root.
 func BindInvocationPaths(role qarole.RoleID, binary, actor, skill, cwd string) (BoundInvocationPaths, error) {
-	if _, err := qarole.ValidateSquad([]qarole.RoleID{role}); err != nil || !absolutePaths(binary, actor, skill, cwd) {
+	if _, err := qarole.ValidateSquad([]qarole.RoleID{role}); err != nil || !absolutePaths(binary, skill, cwd) ||
+		(actor != "" && !absolutePaths(actor)) {
 		return BoundInvocationPaths{}, errors.New("invalid bound invocation paths")
 	}
 	return BoundInvocationPaths{role: role, binary: binary, actor: actor, skill: skill, cwd: cwd}, nil

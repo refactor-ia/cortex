@@ -3,6 +3,8 @@ package qaroute
 import (
 	"crypto/sha256"
 	"fmt"
+
+	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
 
 // allowedBackends is the closed set of execution backends the route policy
@@ -18,6 +20,39 @@ var allowedBackends = map[string]bool{"pi": true, "claude": true, "opencode": tr
 // of the set, so the policy stays one decision in one place.
 func Admits(backend string) bool {
 	return allowedBackends[backend]
+}
+
+// backendRuntimes maps one admitted execution backend to the runtime it runs
+// on. The two vocabularies are kept apart on purpose: this package names the
+// execution policy token ("claude") and runtimematrix names the installation
+// target ("claude-code"), and nothing guarantees they stay spelled alike. It
+// lives beside the admitted set so a backend can never be admitted for
+// execution while no runtime is known to install its assets.
+var backendRuntimes = map[string]runtimematrix.RuntimeID{
+	"pi":       runtimematrix.RuntimePi,
+	"claude":   runtimematrix.RuntimeClaudeCode,
+	"opencode": runtimematrix.RuntimeOpenCode,
+}
+
+// RuntimeFor reports the runtime one admitted execution backend runs on, and
+// whose installed assets and skill projection therefore belong to it.
+func RuntimeFor(backend string) (runtimematrix.RuntimeID, bool) {
+	runtimeID, known := backendRuntimes[backend]
+	return runtimeID, known && allowedBackends[backend]
+}
+
+// BindsInstalledActor reports whether one backend's runtime reads the actor
+// from a file it is handed, which is the only reason an installed actor
+// artifact is required for it.
+//
+// Pi takes the actor as a path in argv, so its admission must observe that
+// exact file. Claude Code has no flag that takes an actor file and OpenCode's
+// --agent selects from the operator's own configuration, which is the ambient
+// state the adapters neutralize; on both the actor reaches the run inside the
+// bounded input frame, and install ships none. This is a property of the
+// runtime's own interface, not a policy knob.
+func BindsInstalledActor(backend string) bool {
+	return backend == "pi"
 }
 
 func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {

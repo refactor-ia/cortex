@@ -68,11 +68,15 @@ func (backend opencodeBackend) Bind(ctx context.Context, cwd string) (BoundRunti
 // OpenCode's `--agent` selects an agent from the operator's own configuration,
 // which is precisely the ambient state this adapter is neutralizing, and there
 // is no flag that takes an actor file. The role, the actor digest, and the
-// skill digest reach the process through the bounded stdin frame instead, and
-// the assets are still observed and digest-verified before anything is
-// launched.
+// skill digest reach the process through the bounded stdin frame instead.
+//
+// The binding therefore carries no actor path at all: install ships this
+// runtime no actor file, because nothing here would read one. The installed
+// skill is still observed and digest-verified before anything is launched,
+// and the actor is attested from catalog provenance — the same bytes the
+// frame carries.
 func (opencodeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) (Invocation, error) {
-	if !validRouteFor(route, opencodeBackendID) || route.Role != binding.role || !absolutePaths(binding.binary, binding.actor, binding.skill, binding.cwd) {
+	if !validRouteFor(route, opencodeBackendID) || route.Role != binding.role || !absolutePaths(binding.binary, binding.skill, binding.cwd) {
 		return Invocation{}, errors.New("invalid OpenCode invocation binding")
 	}
 	return Invocation{binary: binding.binary, cwd: binding.cwd, argv: openCodeArgv(route)}, nil

@@ -90,10 +90,15 @@ func (backend claudeBackend) Bind(ctx context.Context, cwd string) (BoundRuntime
 // Unlike Pi, the actor and skill paths do not appear in argv: Claude Code has
 // no --skill flag and its --append-system-prompt takes prompt text rather than
 // a file path. The role, the actor digest, and the skill digest reach the
-// process through the bounded stdin frame instead, and the assets are still
-// observed and digest-verified before anything is launched.
+// process through the bounded stdin frame instead.
+//
+// The binding therefore carries no actor path at all: install ships this
+// runtime no actor file, because nothing here would read one. The installed
+// skill is still observed and digest-verified before anything is launched,
+// and the actor is attested from catalog provenance — the same bytes the
+// frame carries.
 func (claudeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding BoundInvocationPaths) (Invocation, error) {
-	if !validRouteFor(route, claudeBackendID) || route.Role != binding.role || !absolutePaths(binding.binary, binding.actor, binding.skill, binding.cwd) {
+	if !validRouteFor(route, claudeBackendID) || route.Role != binding.role || !absolutePaths(binding.binary, binding.skill, binding.cwd) {
 		return Invocation{}, errors.New("invalid Claude Code invocation binding")
 	}
 	return Invocation{binary: binding.binary, cwd: binding.cwd, argv: claudeArgv()}, nil

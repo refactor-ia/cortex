@@ -119,3 +119,35 @@ func readInvocationGolden(t *testing.T, name string) goldenInvocation {
 	}
 	return goldenInvocation{binary: strings.TrimPrefix(lines[1], "binary="), cwd: strings.TrimPrefix(lines[2], "cwd="), argv: append([]string(nil), lines[4:]...)}
 }
+
+// TestBindInvocationPathsAcceptsNoInstalledActor covers the runtimes that
+// never receive an actor file: their binding carries no actor path, and the
+// skill path stays mandatory because they do load that from disk.
+func TestBindInvocationPathsAcceptsNoInstalledActor(t *testing.T) {
+	binding, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/bin/claude", "", "/root/skills/cortex-requirements-analyst/SKILL.md", "/work")
+	if err != nil {
+		t.Fatalf("BindInvocationPaths() error = %v", err)
+	}
+	if binding.actor != "" {
+		t.Fatalf("actor = %q, want empty", binding.actor)
+	}
+	if _, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/bin/claude", "", "", "/work"); err == nil {
+		t.Fatal("BindInvocationPaths() accepted an empty skill path")
+	}
+}
+
+// TestPiInvocationStillRequiresTheActorPath pins that Pi, whose argv carries
+// the actor file, cannot be built from a binding that has none.
+func TestPiInvocationStillRequiresTheActorPath(t *testing.T) {
+	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "pi"}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("route failure = %q", failure.Code)
+	}
+	binding, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/bin/pi", "", "/root/skills/cortex-requirements-analyst/SKILL.md", "/work")
+	if err != nil {
+		t.Fatalf("BindInvocationPaths() error = %v", err)
+	}
+	if _, err := BuildInvocation(route, binding); err == nil {
+		t.Fatal("BuildInvocation() accepted a Pi binding with no actor path")
+	}
+}

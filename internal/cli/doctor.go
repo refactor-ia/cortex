@@ -16,6 +16,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
@@ -146,7 +147,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage
 	}
-	if _, known := qaBackendRuntimes[backend]; !known {
+	if _, known := qaroute.RuntimeFor(backend); !known {
 		writeError(stderr, "invalid_arguments")
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage

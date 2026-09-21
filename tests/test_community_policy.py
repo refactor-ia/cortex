@@ -352,8 +352,11 @@ IGNORED_LOCAL_DIRECTORIES = {
         ".codegraph",
         ".git",
         ".pytest_cache",
+        ".qa-test-cache",
+        ".qa-test-tmp",
         ".ruff_cache",
         "__pycache__",
+        "odd",
 }
 CHOOSER_URL = "https://github.com/refactor-ia/cortex/issues/new/choose"
 

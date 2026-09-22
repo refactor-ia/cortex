@@ -17,9 +17,11 @@ type SessionFailureCode string
 const (
 	SessionRevisionNotImmutable SessionFailureCode = "session_revision_not_immutable"
 	SessionTargetNotOwnable     SessionFailureCode = "session_target_not_ownable"
+	SessionPlanInvalid          SessionFailureCode = "session_plan_invalid"
 )
 
-// SessionFailure is the only error PlanSession returns.
+// SessionFailure is the typed refusal returned by session planning and command
+// generation.
 type SessionFailure struct {
 	Code SessionFailureCode
 }
@@ -37,9 +39,32 @@ type SessionRequest struct {
 }
 
 // SessionPlan describes exactly one detached immutable worktree. It is data:
-// nothing here creates, removes, or touches anything on disk.
+// nothing here creates, removes, or touches anything on disk. Its zero value is
+// invalid; only PlanSession returns a command-capable plan.
 type SessionPlan struct {
-	Repository, Revision, Path, Marker string
+	repository, revision, path, marker string
+	validated                          bool
+}
+
+// Repository returns the canonical repository root in the plan.
+func (plan SessionPlan) Repository() string {
+	return plan.repository
+}
+
+// Revision returns the immutable object ID in the plan.
+func (plan SessionPlan) Revision() string {
+	return plan.revision
+}
+
+// Path returns the planned worktree path.
+func (plan SessionPlan) Path() string {
+	return plan.path
+}
+
+// Marker returns the deterministic identity for the planned revision and path.
+// It is not proof of ownership.
+func (plan SessionPlan) Marker() string {
+	return plan.marker
 }
 
 // PlanSession resolves a request into a plan, or refuses it. The revision must
@@ -59,32 +84,63 @@ func PlanSession(request SessionRequest) (SessionPlan, error) {
 		return SessionPlan{}, SessionFailure{Code: SessionTargetNotOwnable}
 	}
 	return SessionPlan{
-		Repository: request.Repository,
-		Revision:   request.Revision,
-		Path:       path,
-		Marker:     sessionMarker(request.Revision, path),
+		repository: request.Repository,
+		revision:   request.Revision,
+		path:       path,
+		marker:     sessionMarker(request.Revision, path),
+		validated:  true,
 	}, nil
 }
 
+func (plan SessionPlan) validate() error {
+	if !plan.validated ||
+		(!validOID(plan.revision, 40) && !validOID(plan.revision, 64)) ||
+		!filepath.IsAbs(plan.repository) || filepath.Clean(plan.repository) != plan.repository ||
+		!filepath.IsAbs(plan.path) || filepath.Clean(plan.path) != plan.path ||
+		plan.marker != sessionMarker(plan.revision, plan.path) {
+		return SessionFailure{Code: SessionPlanInvalid}
+	}
+	return nil
+}
+
 // CreateCommand returns the exact Git invocation that would realize the plan.
-// It returns the command; it does not run it.
+// It returns the command; it does not run it. The target's absence is not
+// checked here: this command is generated before creation, while the same plan
+// must remain usable to generate its later removal command.
 //
 // --detach keeps the worktree off every branch, so nothing here can advance a
 // ref. --no-track refuses the upstream a detached checkout would not use
 // anyway, and "--" ends the option list so a path can never be read as a flag.
-func (plan SessionPlan) CreateCommand() Command {
-	return gitCommand(plan.Repository, []string{
-		"-C", plan.Repository, "worktree", "add", "--detach", "--no-track", "--", plan.Path, plan.Revision,
+func (plan SessionPlan) CreateCommand() (Command, error) {
+	if err := plan.validate(); err != nil {
+		return Command{}, err
+	}
+	return plan.createCommand(), nil
+}
+
+func (plan SessionPlan) createCommand() Command {
+	return gitCommand(plan.repository, []string{
+		"-C", plan.repository, "worktree", "add", "--detach", "--no-track", "--", plan.path, plan.revision,
 	})
 }
 
 // RemoveCommand returns the exact Git invocation that would discard the
-// worktree. It names the one path it owns: removal is exact, never a prune,
-// a clean, or a glob. --force is what lets a disposable worktree be discarded
-// while a QA run has left files in it, which is the ordinary case.
-func (plan SessionPlan) RemoveCommand() Command {
-	return gitCommand(plan.Repository, []string{
-		"-C", plan.Repository, "worktree", "remove", "--force", "--", plan.Path,
+// worktree. It names the one planned path: removal is exact, never a prune, a
+// clean, or a glob. The deterministic marker is an identity, not proof of
+// ownership. --force is what lets a disposable worktree be discarded while a
+// QA run has left files in it, which is the ordinary case. It does not require
+// the target to be absent because the intended lifecycle calls it after
+// creation.
+func (plan SessionPlan) RemoveCommand() (Command, error) {
+	if err := plan.validate(); err != nil {
+		return Command{}, err
+	}
+	return plan.removeCommand(), nil
+}
+
+func (plan SessionPlan) removeCommand() Command {
+	return gitCommand(plan.repository, []string{
+		"-C", plan.repository, "worktree", "remove", "--force", "--", plan.path,
 	})
 }
 
@@ -92,8 +148,11 @@ func (plan SessionPlan) RemoveCommand() Command {
 // order. The set is closed by construction: a plan has no entry point that
 // takes an operation, so no caller can name a Git subcommand this package did
 // not write.
-func (plan SessionPlan) Commands() []Command {
-	return []Command{plan.CreateCommand(), plan.RemoveCommand()}
+func (plan SessionPlan) Commands() ([]Command, error) {
+	if err := plan.validate(); err != nil {
+		return nil, err
+	}
+	return []Command{plan.createCommand(), plan.removeCommand()}, nil
 }
 
 // validSessionID accepts only a single lowercase alphanumeric-and-dash segment,
@@ -111,6 +170,9 @@ func validSessionID(value string) bool {
 	return true
 }
 
+// sessionMarker returns a deterministic identity for a revision and path. It
+// is not proof of ownership; PlanSession's canonical-directory and target-
+// absence checks establish the preconditions for the planned lifecycle.
 func sessionMarker(revision, path string) string {
 	return "session." + framedDigest(sessionContract, revision, path)
 }

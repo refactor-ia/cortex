@@ -30,14 +30,34 @@ func TestPlanSessionAcceptsAFullRevisionAndACanonicalTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanSession() error = %v, want nil", err)
 	}
-	if plan.Revision != fullSHA1 {
-		t.Errorf("Revision = %q, want %q", plan.Revision, fullSHA1)
+	if plan.Revision() != fullSHA1 {
+		t.Errorf("Revision = %q, want %q", plan.Revision(), fullSHA1)
 	}
-	if filepath.Dir(plan.Path) != parent {
-		t.Errorf("Path = %q, want a child of %q", plan.Path, parent)
+	if filepath.Dir(plan.Path()) != parent {
+		t.Errorf("Path = %q, want a child of %q", plan.Path(), parent)
 	}
-	if !strings.HasPrefix(plan.Marker, "session.") {
-		t.Errorf("Marker = %q, want a session. prefix", plan.Marker)
+	if !strings.HasPrefix(plan.Marker(), "session.") {
+		t.Errorf("Marker = %q, want a session. prefix", plan.Marker())
+	}
+}
+
+func TestPlanSessionExposesReadOnlyPlanData(t *testing.T) {
+	parent, repository := ownedParent(t), ownedParent(t)
+	plan, err := PlanSession(SessionRequest{Repository: repository, Revision: fullSHA1, Parent: parent, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("PlanSession() error = %v, want nil", err)
+	}
+	if plan.Repository() != repository {
+		t.Errorf("Repository() = %q, want %q", plan.Repository(), repository)
+	}
+	if plan.Revision() != fullSHA1 {
+		t.Errorf("Revision() = %q, want %q", plan.Revision(), fullSHA1)
+	}
+	if plan.Path() != filepath.Join(parent, "s1") {
+		t.Errorf("Path() = %q, want %q", plan.Path(), filepath.Join(parent, "s1"))
+	}
+	if plan.Marker() != sessionMarker(fullSHA1, plan.Path()) {
+		t.Errorf("Marker() = %q, want the plan marker", plan.Marker())
 	}
 }
 
@@ -126,6 +146,24 @@ func readGolden(t *testing.T, name string) string {
 	return strings.TrimSuffix(string(content), "\n")
 }
 
+func goldenSessionPlan(t *testing.T) SessionPlan {
+	t.Helper()
+	parent, repository := ownedParent(t), ownedParent(t)
+	plan, err := PlanSession(SessionRequest{Repository: repository, Revision: fullSHA1, Parent: parent, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("PlanSession() error = %v, want nil", err)
+	}
+	return plan
+}
+
+func goldenArgv(t *testing.T, name string, plan SessionPlan) string {
+	t.Helper()
+	return strings.NewReplacer(
+		"/cortex/repo", plan.Repository(),
+		"/cortex/sessions/s1", plan.Path(),
+	).Replace(readGolden(t, name))
+}
+
 func TestSessionMarkerMatchesItsIndependentGolden(t *testing.T) {
 	marker := sessionMarker(fullSHA1, "/cortex/sessions/s1")
 	if want := readGolden(t, "marker.txt"); marker != want {
@@ -148,16 +186,19 @@ func TestSessionMarkerSeparatesItsFields(t *testing.T) {
 }
 
 func TestCreateCommandMatchesItsGoldenArgv(t *testing.T) {
-	plan := SessionPlan{Repository: "/cortex/repo", Revision: fullSHA1, Path: "/cortex/sessions/s1"}
-	command := plan.CreateCommand()
-	if got := strings.Join(command.Argv, "\n"); got != readGolden(t, "create.argv") {
-		t.Errorf("CreateCommand().Argv =\n%s\nwant\n%s", got, readGolden(t, "create.argv"))
+	plan := goldenSessionPlan(t)
+	command, err := plan.CreateCommand()
+	if err != nil {
+		t.Fatalf("CreateCommand() error = %v, want nil", err)
+	}
+	if got := strings.Join(command.Argv, "\n"); got != goldenArgv(t, "create.argv", plan) {
+		t.Errorf("CreateCommand().Argv =\n%s\nwant\n%s", got, goldenArgv(t, "create.argv", plan))
 	}
 	if command.Binary != "git" {
 		t.Errorf("Binary = %q, want git", command.Binary)
 	}
-	if command.CWD != "/cortex/repo" {
-		t.Errorf("CWD = %q, want /cortex/repo", command.CWD)
+	if command.CWD != plan.Repository() {
+		t.Errorf("CWD = %q, want %q", command.CWD, plan.Repository())
 	}
 }
 
@@ -167,8 +208,8 @@ func TestPlanSessionCarriesTheRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanSession() error = %v, want nil", err)
 	}
-	if plan.Repository != repository {
-		t.Errorf("Repository = %q, want %q", plan.Repository, repository)
+	if plan.Repository() != repository {
+		t.Errorf("Repository() = %q, want %q", plan.Repository(), repository)
 	}
 }
 
@@ -190,15 +231,22 @@ func TestPlanSessionRefusesAnUnusableRepository(t *testing.T) {
 }
 
 func TestRemoveCommandMatchesItsGoldenArgv(t *testing.T) {
-	plan := SessionPlan{Repository: "/cortex/repo", Revision: fullSHA1, Path: "/cortex/sessions/s1"}
-	if got := strings.Join(plan.RemoveCommand().Argv, "\n"); got != readGolden(t, "remove.argv") {
-		t.Errorf("RemoveCommand().Argv =\n%s\nwant\n%s", got, readGolden(t, "remove.argv"))
+	plan := goldenSessionPlan(t)
+	command, err := plan.RemoveCommand()
+	if err != nil {
+		t.Fatalf("RemoveCommand() error = %v, want nil", err)
+	}
+	if got := strings.Join(command.Argv, "\n"); got != goldenArgv(t, "remove.argv", plan) {
+		t.Errorf("RemoveCommand().Argv =\n%s\nwant\n%s", got, goldenArgv(t, "remove.argv", plan))
 	}
 }
 
 func TestCommandsAreTheClosedWorktreeSet(t *testing.T) {
-	plan := SessionPlan{Repository: "/cortex/repo", Revision: fullSHA1, Path: "/cortex/sessions/s1"}
-	commands := plan.Commands()
+	plan := goldenSessionPlan(t)
+	commands, err := plan.Commands()
+	if err != nil {
+		t.Fatalf("Commands() error = %v, want nil", err)
+	}
 	if len(commands) != 2 {
 		t.Fatalf("Commands() returned %d commands, want 2", len(commands))
 	}
@@ -208,7 +256,7 @@ func TestCommandsAreTheClosedWorktreeSet(t *testing.T) {
 		}
 		// Every command must address exactly this repository and speak only
 		// worktree. No other Git subcommand can be expressed at all.
-		if len(command.Argv) < 4 || command.Argv[0] != "-C" || command.Argv[1] != plan.Repository || command.Argv[2] != "worktree" {
+		if len(command.Argv) < 4 || command.Argv[0] != "-C" || command.Argv[1] != plan.Repository() || command.Argv[2] != "worktree" {
 			t.Fatalf("Commands()[%d].Argv = %v, want -C <repository> worktree ...", index, command.Argv)
 		}
 		switch verb := command.Argv[3]; verb {
@@ -233,14 +281,77 @@ func TestPlanningWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanSession() error = %v, want nil", err)
 	}
-	_, _ = plan.CreateCommand(), plan.RemoveCommand()
-	_ = plan.Commands()
+	if _, err := plan.CreateCommand(); err != nil {
+		t.Fatalf("CreateCommand() error = %v, want nil", err)
+	}
+	if _, err := plan.RemoveCommand(); err != nil {
+		t.Fatalf("RemoveCommand() error = %v, want nil", err)
+	}
+	if _, err := plan.Commands(); err != nil {
+		t.Fatalf("Commands() error = %v, want nil", err)
+	}
 
 	if after := treeSnapshot(t, parent, repository); after != before {
 		t.Errorf("planning changed the filesystem:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
-	if _, err := os.Lstat(plan.Path); !os.IsNotExist(err) {
-		t.Errorf("planning created %q", plan.Path)
+	if _, err := os.Lstat(plan.Path()); !os.IsNotExist(err) {
+		t.Errorf("planning created %q", plan.Path())
+	}
+}
+
+func TestRemoveCommandAllowsAnExistingTarget(t *testing.T) {
+	parent, repository := ownedParent(t), ownedParent(t)
+	plan, err := PlanSession(SessionRequest{Repository: repository, Revision: fullSHA1, Parent: parent, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("PlanSession() error = %v, want nil", err)
+	}
+	if err := os.Mkdir(plan.Path(), 0o755); err != nil {
+		t.Fatalf("create planned target: %v", err)
+	}
+	if _, err := plan.RemoveCommand(); err != nil {
+		t.Fatalf("RemoveCommand() error = %v after target creation, want nil", err)
+	}
+}
+
+func TestSessionPlanCommandMethodsRejectInvalidPlans(t *testing.T) {
+	valid := goldenSessionPlan(t)
+	modifiedRevision := valid
+	modifiedRevision.revision = "main"
+	modifiedPath := valid
+	modifiedPath.path = "/cortex/sessions/other"
+	plans := map[string]SessionPlan{
+		"zero value":        {},
+		"fabricated":        {repository: valid.repository, revision: valid.revision, path: valid.path, marker: valid.marker},
+		"modified revision": modifiedRevision,
+		"modified path":     modifiedPath,
+	}
+
+	for name, plan := range plans {
+		t.Run(name, func(t *testing.T) {
+			command, err := plan.CreateCommand()
+			if !isSessionFailure(err, SessionPlanInvalid) {
+				t.Errorf("CreateCommand() error = %v, want %v", err, SessionPlanInvalid)
+			}
+			if command.Binary != "" || len(command.Argv) != 0 {
+				t.Errorf("CreateCommand() = %#v, want an unusable command", command)
+			}
+
+			command, err = plan.RemoveCommand()
+			if !isSessionFailure(err, SessionPlanInvalid) {
+				t.Errorf("RemoveCommand() error = %v, want %v", err, SessionPlanInvalid)
+			}
+			if command.Binary != "" || len(command.Argv) != 0 {
+				t.Errorf("RemoveCommand() = %#v, want an unusable command", command)
+			}
+
+			commands, err := plan.Commands()
+			if !isSessionFailure(err, SessionPlanInvalid) {
+				t.Errorf("Commands() error = %v, want %v", err, SessionPlanInvalid)
+			}
+			if len(commands) != 0 {
+				t.Errorf("Commands() = %#v, want no usable commands", commands)
+			}
+		})
 	}
 }
 

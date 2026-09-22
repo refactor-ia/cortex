@@ -2,10 +2,7 @@ package qagit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,28 +98,12 @@ func validFingerprint(value string) bool {
 	return strings.HasPrefix(value, "candidate.") && validOID(strings.TrimPrefix(value, "candidate."), 64)
 }
 
-// cwdPathIdentity returns "cwd." plus the lowercase SHA-256 of two frames:
-// an 8-byte big-endian domain byte length followed by "cortex.qa.cwd.v1",
-// then an 8-byte big-endian canonical Git worktree-root path byte length
-// followed by the exact path bytes.
+// cwdPathIdentity identifies a canonical Git worktree root under its own
+// domain, so the same path cannot collide with a digest from another domain.
 func cwdPathIdentity(root string) string {
-	hash := sha256.New()
-	for _, value := range []string{"cortex.qa.cwd.v1", root} {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
-		_, _ = hash.Write(length[:])
-		_, _ = hash.Write([]byte(value))
-	}
-	return "cwd." + fmt.Sprintf("%x", hash.Sum(nil))
+	return "cwd." + framedDigest("cortex.qa.cwd.v1", root)
 }
 
 func candidateFingerprint(format, revision, tree string) string {
-	hash := sha256.New()
-	for _, value := range []string{candidateContract, format, revision, tree} {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
-		_, _ = hash.Write(length[:])
-		_, _ = hash.Write([]byte(value))
-	}
-	return "candidate." + fmt.Sprintf("%x", hash.Sum(nil))
+	return "candidate." + framedDigest(candidateContract, format, revision, tree)
 }

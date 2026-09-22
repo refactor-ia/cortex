@@ -1,0 +1,7 @@
+-C
+/cortex/repo
+worktree
+remove
+--force
+--
+/cortex/sessions/s1

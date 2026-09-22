@@ -1,8 +1,11 @@
 package qagit
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -184,4 +187,84 @@ func TestPlanSessionRefusesAnUnusableRepository(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRemoveCommandMatchesItsGoldenArgv(t *testing.T) {
+	plan := SessionPlan{Repository: "/cortex/repo", Revision: fullSHA1, Path: "/cortex/sessions/s1"}
+	if got := strings.Join(plan.RemoveCommand().Argv, "\n"); got != readGolden(t, "remove.argv") {
+		t.Errorf("RemoveCommand().Argv =\n%s\nwant\n%s", got, readGolden(t, "remove.argv"))
+	}
+}
+
+func TestCommandsAreTheClosedWorktreeSet(t *testing.T) {
+	plan := SessionPlan{Repository: "/cortex/repo", Revision: fullSHA1, Path: "/cortex/sessions/s1"}
+	commands := plan.Commands()
+	if len(commands) != 2 {
+		t.Fatalf("Commands() returned %d commands, want 2", len(commands))
+	}
+	for index, command := range commands {
+		if command.Binary != "git" {
+			t.Errorf("Commands()[%d].Binary = %q, want git", index, command.Binary)
+		}
+		// Every command must address exactly this repository and speak only
+		// worktree. No other Git subcommand can be expressed at all.
+		if len(command.Argv) < 4 || command.Argv[0] != "-C" || command.Argv[1] != plan.Repository || command.Argv[2] != "worktree" {
+			t.Fatalf("Commands()[%d].Argv = %v, want -C <repository> worktree ...", index, command.Argv)
+		}
+		switch verb := command.Argv[3]; verb {
+		case "add", "remove":
+		default:
+			t.Errorf("Commands()[%d] uses worktree %q, which is outside the closed set", index, verb)
+		}
+		if !slices.Contains(command.Argv, "--") {
+			t.Errorf("Commands()[%d].Argv = %v, want an end-of-options marker", index, command.Argv)
+		}
+	}
+}
+
+func TestPlanningWritesNothing(t *testing.T) {
+	parent, repository := ownedParent(t), ownedParent(t)
+	if err := os.WriteFile(filepath.Join(repository, "existing"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	before := treeSnapshot(t, parent, repository)
+
+	plan, err := PlanSession(SessionRequest{Repository: repository, Revision: fullSHA1, Parent: parent, SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("PlanSession() error = %v, want nil", err)
+	}
+	_, _ = plan.CreateCommand(), plan.RemoveCommand()
+	_ = plan.Commands()
+
+	if after := treeSnapshot(t, parent, repository); after != before {
+		t.Errorf("planning changed the filesystem:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if _, err := os.Lstat(plan.Path); !os.IsNotExist(err) {
+		t.Errorf("planning created %q", plan.Path)
+	}
+}
+
+// treeSnapshot records every entry under the given roots with its mode and
+// size, so any creation, removal, or rewrite changes the result.
+func treeSnapshot(t *testing.T, roots ...string) string {
+	t.Helper()
+	var entries []string
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			entries = append(entries, fmt.Sprintf("%s %s %d", path, info.Mode(), info.Size()))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, "\n")
 }

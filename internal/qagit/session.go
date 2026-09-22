@@ -78,6 +78,24 @@ func (plan SessionPlan) CreateCommand() Command {
 	})
 }
 
+// RemoveCommand returns the exact Git invocation that would discard the
+// worktree. It names the one path it owns: removal is exact, never a prune,
+// a clean, or a glob. --force is what lets a disposable worktree be discarded
+// while a QA run has left files in it, which is the ordinary case.
+func (plan SessionPlan) RemoveCommand() Command {
+	return gitCommand(plan.Repository, []string{
+		"-C", plan.Repository, "worktree", "remove", "--force", "--", plan.Path,
+	})
+}
+
+// Commands returns every operation a session plan can express, in lifecycle
+// order. The set is closed by construction: a plan has no entry point that
+// takes an operation, so no caller can name a Git subcommand this package did
+// not write.
+func (plan SessionPlan) Commands() []Command {
+	return []Command{plan.CreateCommand(), plan.RemoveCommand()}
+}
+
 // validSessionID accepts only a single lowercase alphanumeric-and-dash segment,
 // so the identifier cannot introduce a separator, a traversal, or a dotfile.
 func validSessionID(value string) bool {

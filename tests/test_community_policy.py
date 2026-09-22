@@ -183,6 +183,7 @@ EXPECTED_FILES = {
         "internal/qagit/session_test.go",
         "internal/qagit/testdata/session-plan/marker.txt",
         "internal/qagit/testdata/session-plan/create.argv",
+        "internal/qagit/testdata/session-plan/remove.argv",
         "internal/qagit/testdata/clean-binding/sha1-head.oid",
         "internal/qagit/testdata/clean-binding/sha1-tree.oid",
         "internal/qagit/testdata/clean-binding/sha256-head.oid",
@@ -396,8 +397,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 342)
-                self.assertEqual(len(actual_files), 342)
+                self.assertEqual(len(EXPECTED_FILES), 343)
+                self.assertEqual(len(actual_files), 343)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

@@ -1,0 +1,9 @@
+-C
+/cortex/repo
+worktree
+add
+--detach
+--no-track
+--
+/cortex/sessions/s1
+0123456789abcdef0123456789abcdef01234567

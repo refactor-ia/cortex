@@ -28,17 +28,18 @@ func (failure SessionFailure) Error() string {
 	return string(failure.Code)
 }
 
-// SessionRequest asks for one disposable worktree. Parent is the canonical
-// directory the worktree is created under; SessionID names it within that
-// parent and becomes the last path segment.
+// SessionRequest asks for one disposable worktree. Repository is the canonical
+// root the worktree is derived from, Parent is the canonical directory it is
+// created under, and SessionID names it within that parent and becomes the
+// last path segment.
 type SessionRequest struct {
-	Revision, Parent, SessionID string
+	Repository, Revision, Parent, SessionID string
 }
 
 // SessionPlan describes exactly one detached immutable worktree. It is data:
 // nothing here creates, removes, or touches anything on disk.
 type SessionPlan struct {
-	Revision, Path, Marker string
+	Repository, Revision, Path, Marker string
 }
 
 // PlanSession resolves a request into a plan, or refuses it. The revision must
@@ -48,7 +49,7 @@ func PlanSession(request SessionRequest) (SessionPlan, error) {
 	if !validOID(request.Revision, 40) && !validOID(request.Revision, 64) {
 		return SessionPlan{}, SessionFailure{Code: SessionRevisionNotImmutable}
 	}
-	if !canonicalDirectory(request.Parent) || !validSessionID(request.SessionID) {
+	if !canonicalDirectory(request.Repository) || !canonicalDirectory(request.Parent) || !validSessionID(request.SessionID) {
 		return SessionPlan{}, SessionFailure{Code: SessionTargetNotOwnable}
 	}
 	path := filepath.Join(request.Parent, request.SessionID)
@@ -57,7 +58,24 @@ func PlanSession(request SessionRequest) (SessionPlan, error) {
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		return SessionPlan{}, SessionFailure{Code: SessionTargetNotOwnable}
 	}
-	return SessionPlan{Revision: request.Revision, Path: path, Marker: sessionMarker(request.Revision, path)}, nil
+	return SessionPlan{
+		Repository: request.Repository,
+		Revision:   request.Revision,
+		Path:       path,
+		Marker:     sessionMarker(request.Revision, path),
+	}, nil
+}
+
+// CreateCommand returns the exact Git invocation that would realize the plan.
+// It returns the command; it does not run it.
+//
+// --detach keeps the worktree off every branch, so nothing here can advance a
+// ref. --no-track refuses the upstream a detached checkout would not use
+// anyway, and "--" ends the option list so a path can never be read as a flag.
+func (plan SessionPlan) CreateCommand() Command {
+	return gitCommand(plan.Repository, []string{
+		"-C", plan.Repository, "worktree", "add", "--detach", "--no-track", "--", plan.Path, plan.Revision,
+	})
 }
 
 // validSessionID accepts only a single lowercase alphanumeric-and-dash segment,

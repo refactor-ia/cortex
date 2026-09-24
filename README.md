@@ -10,23 +10,26 @@ It does not install those runtimes, replace them, or sit between you and them. W
 
 ## Install
 
-Download a prerelease archive from [Releases](https://github.com/refactor-ia/cortex/releases), verify it, and put the binary on your `PATH`:
+Download the [alpha.6 evaluation prerelease](https://github.com/refactor-ia/cortex/releases/tag/v0.1.0-alpha.6) into an empty directory. Verify the archive **before** extracting it:
 
 ```bash
-tar xzf cortex_v0.1.0-alpha.2_darwin_arm64.tar.gz   # or _linux_amd64
-shasum -a 256 -c --ignore-missing SHA256SUMS
-install -m 0755 cortex ~/.local/bin/cortex
+archive=cortex_v0.1.0-alpha.6_darwin_arm64.tar.gz
+curl -fL -O "https://github.com/refactor-ia/cortex/releases/download/v0.1.0-alpha.6/$archive"
+curl -fL -O https://github.com/refactor-ia/cortex/releases/download/v0.1.0-alpha.6/SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS && tar xzf "$archive"
 ```
 
-Each archive carries `cortex`, `LICENSE`, and a `BUILDINFO.json` recording the exact source commit, tree, Go version and build flags it was produced from.
+On Linux, set `archive=cortex_v0.1.0-alpha.6_linux_amd64.tar.gz` and use `sha256sum -c --ignore-missing SHA256SUMS && tar xzf "$archive"` instead of the macOS checksum/extraction line. A checksum failure must stop extraction.
 
-If you have Go installed, this works as well:
+Each archive carries `cortex`, `LICENSE`, `BUILDINFO.json` (source commit, tree, Go version, target and binary SHA-256), and the matching `catalog/` tree. Run `./cortex` from the extracted directory to evaluate it; optionally install the binary on your `PATH` afterward.
+
+If you have Go installed, you can install the binary alone:
 
 ```bash
 go install github.com/refactor-ia/cortex/cmd/cortex@latest
 ```
 
-Building from source works too, and is the way to run unreleased changes:
+For `qa run`, you still need a catalog matching that binary; the prerelease archive includes one. Building from source works too, and is the way to run unreleased changes:
 
 ```bash
 git clone https://github.com/refactor-ia/cortex.git
@@ -69,6 +72,26 @@ runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0
 ```
 
 Every command reports one line per runtime, in the same order, in `key=value` form meant to be read by a person and parsed by a script.
+
+### Try a QA report
+
+In a **disposable runtime profile** with your own authenticated Pi model, work from the unpacked archive directory. Cortex does not set up provider credentials or isolate execution for you.
+
+```bash
+./cortex doctor
+./cortex install
+./cortex doctor
+```
+
+After installation, require Pi's `qa_availability=ready` in the second `doctor` output; a zero exit alone only says installation can proceed. If Pi is not ready, run `./cortex uninstall` and stop. Otherwise:
+
+```bash
+printf 'R1: Every API response must complete within 100 ms.\nR2: Every API response must wait at least 500 ms before returning.\nIdentify contradictions and ask for a resolution. Do not edit files.\n' > request.txt
+./cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog --backend pi
+./cortex uninstall
+```
+
+The report should flag the incompatible timing requirements. If QA fails, check the selected backend's readiness and error instead of retrying with another model; Cortex has no provider fallback. This alpha is for evaluation, not certified 11-family × 3-runtime parity or automatic disposable execution.
 
 ## How Cortex decides what to touch
 

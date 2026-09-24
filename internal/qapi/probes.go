@@ -66,8 +66,15 @@ func parseModelTable(table string) (map[string]bool, bool) {
 		return nil, false
 	}
 	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
-	if len(lines) == 0 || lines[0] != modelTableHeader {
+	expectedHeader := [...]string{"provider", "model", "context", "max-out", "thinking", "images"}
+	headerFields := strings.Fields(lines[0])
+	if len(headerFields) != len(expectedHeader) {
 		return nil, false
+	}
+	for index, field := range headerFields {
+		if field != expectedHeader[index] {
+			return nil, false
+		}
 	}
 
 	rows := make(map[string]bool, len(lines)-1)

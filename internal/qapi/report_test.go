@@ -32,6 +32,11 @@ func reportUserMessage(text string) string {
 	return string(encoded)
 }
 
+// reportInitialSystemMessage is the source-derived Pi initial system-message
+// shape used by the synthetic fresh-prompt fixture below. It is trusted test
+// evidence, not an observed provider capture.
+const reportInitialSystemMessage = `{"role":"system","content":"","sections":{"prompt":"system fixture"},"timestamp":0}`
+
 // reportStreamFixture builds a minimal source-derived contract fixture for the
 // report-mode event stream; it is trusted test evidence, not an observed
 // provider capture. A non-empty prompt adds the runAgentLoop input echo pair
@@ -72,6 +77,17 @@ func reportStreamFixture(report, prompt string) []byte {
 		stream.WriteString(line + "\n")
 	}
 	return stream.Bytes()
+}
+
+// reportStreamFixtureWithSystem adds the Pi initial system-message pair and
+// preserves its exact object in agent_end.messages before the optional user
+// echo and terminal assistant message.
+func reportStreamFixtureWithSystem(report, prompt string) []byte {
+	stream := reportStreamFixture(report, prompt)
+	start := `{"type":"message_start","message":` + reportInitialSystemMessage + `}`
+	end := `{"type":"message_end","message":` + reportInitialSystemMessage + `}`
+	stream = bytes.Replace(stream, []byte(`{"type":"turn_start"}`+"\n"), []byte(`{"type":"turn_start"}`+"\n"+start+"\n"+end+"\n"), 1)
+	return bytes.Replace(stream, []byte(`"messages":[`), []byte(`"messages":[`+reportInitialSystemMessage+`,`), 1)
 }
 
 func TestParseReportStreamDiagnostic(t *testing.T) {
@@ -319,6 +335,50 @@ func TestParseReportStreamPromptEcho(t *testing.T) {
 		{"other role echo", bytes.Replace(valid, []byte(`"role":"user"`), []byte(`"role":"toolResult"`), 2), false, reportStageMessage, reportReasonInvalidMessage},
 		{"extra echo field", bytes.Replace(valid, []byte(`"timestamp":0`), []byte(`"timestamp":0,"injected":true`), 2), false, reportStageMessage, reportReasonInvalidMessage},
 		{"agent_end omits the echoed prompt", bytes.Replace(valid, []byte(`"messages":[`+reportUserMessage(prompt)+`,`), []byte(`"messages":[`), 1), false, reportStageMessage, reportReasonExtraMessages},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, ok, diagnostic := parseReportStream(tc.stream)
+			if ok != tc.ok || ok != (report == text) || ok != (diagnostic == nil) {
+				t.Fatalf("parseReportStream() = %q, %t, %#v", report, ok, diagnostic)
+			}
+			if !ok && (diagnostic.Stage != tc.stage || diagnostic.Reason != tc.reason) {
+				t.Fatalf("diagnostic = %s/%s, want %s/%s", diagnostic.Stage, diagnostic.Reason, tc.stage, tc.reason)
+			}
+		})
+	}
+}
+
+// TestParseReportStreamInitialSystemMessage pins the Pi fresh-prompt system
+// message contract: one strict byte-identical pair may precede the optional
+// user echo, and the same message must remain the first agent_end identity.
+func TestParseReportStreamInitialSystemMessage(t *testing.T) {
+	const text = "Requirements analysis fixture report"
+	const prompt = "identity fixture\ntask fixture"
+	valid := reportStreamFixtureWithSystem(text, prompt)
+	start := `{"type":"message_start","message":` + reportInitialSystemMessage + `}`
+	end := `{"type":"message_end","message":` + reportInitialSystemMessage + `}`
+	other := strings.Replace(reportInitialSystemMessage, `"system fixture"`, `"other fixture"`, 1)
+	nullSection := strings.Replace(reportInitialSystemMessage, `"system fixture"`, `null`, 1)
+	nullSectionStream := bytes.Replace(valid, []byte(reportInitialSystemMessage), []byte(nullSection), -1)
+	withoutPair := bytes.Replace(valid, []byte(start+"\n"+end+"\n"), nil, 1)
+	for _, tc := range []struct {
+		name          string
+		stream        []byte
+		ok            bool
+		stage, reason string
+	}{
+		{"initial system pair precedes the user echo", valid, true, "", ""},
+		{"mismatched system end", bytes.Replace(valid, []byte(end), []byte(`{"type":"message_end","message":`+other+`}`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"repeated system pair", bytes.Replace(valid, []byte(start+"\n"+end+"\n"), []byte(start+"\n"+end+"\n"+start+"\n"+end+"\n"), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"late system pair after assistant start", bytes.Replace(withoutPair, []byte(reportAssistantStartLine+"\n"), []byte(reportAssistantStartLine+"\n"+start+"\n"+end+"\n"), 1), false, reportStageEnvelope, reportReasonUnexpected},
+		{"system has an unexpected field", bytes.Replace(valid, []byte(`"timestamp":0`), []byte(`"timestamp":0,"unexpected":true`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"system declares a tool change under no-tools", bytes.Replace(valid, []byte(`"timestamp":0`), []byte(`"timestamp":0,"toolsAdded":[]`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"system content is not empty", bytes.Replace(valid, []byte(`"content":""`), []byte(`"content":"unexpected"`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"system section is not a string", bytes.Replace(valid, []byte(`"system fixture"`), []byte(`42`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"system null section is not a string", nullSectionStream, false, reportStageMessage, reportReasonInvalidMessage},
+		{"system timestamp is not numeric", bytes.Replace(valid, []byte(`"timestamp":0`), []byte(`"timestamp":"0"`), 1), false, reportStageMessage, reportReasonInvalidMessage},
+		{"agent_end omits the system message", bytes.Replace(valid, []byte(`"messages":[`+reportInitialSystemMessage+`,`), []byte(`"messages":[`), 1), false, reportStageMessage, reportReasonExtraMessages},
+		{"agent_end changes the system message", bytes.Replace(valid, []byte(`"messages":[`+reportInitialSystemMessage+`,`), []byte(`"messages":[`+other+`,`), 1), false, reportStageMessage, reportReasonExtraMessages},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			report, ok, diagnostic := parseReportStream(tc.stream)

@@ -449,6 +449,7 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 		return "", false, &ReportNormalizationError{reportStageStream, reportReasonInvalidUTF8}
 	}
 	state, session, report := 0, false, ""
+	systemSeen, systemStart := false, json.RawMessage(nil)
 	echoSeen, echoStart, terminal := false, json.RawMessage(nil), json.RawMessage(nil)
 	for _, line := range bytes.Split(data[:len(data)-1], []byte("\n")) {
 		event, ok := responseObject(line)
@@ -477,19 +478,34 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			if kind != "message_start" || !exactFields(event, "type", "message") {
 				return "", false, &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
 			}
-			// runAgentLoop re-emits each input prompt as a matched
-			// message_start/message_end pair before assistant generation;
-			// accept at most one strictly validated initial prompt echo.
-			if !echoSeen && validUserEcho(event["message"]) {
+			// A fresh Pi prompt may begin with one system-message pair before
+			// the input echo. Keep it closed to the source-derived shape and
+			// reject repeats or late system messages as ordinary invalid input.
+			if !systemSeen && !echoSeen && validInitialSystem(event["message"]) {
+				systemSeen = true
+				systemStart = event["message"]
+				state = 8
+			} else if !echoSeen && validUserEcho(event["message"]) {
+				// runAgentLoop re-emits each input prompt as a matched
+				// message_start/message_end pair before assistant generation;
+				// accept at most one strictly validated initial prompt echo.
 				echoSeen = true
 				echoStart = event["message"]
-				state = 8
+				state = 9
 			} else if !validAssistant(event["message"], false) {
 				return "", false, &ReportNormalizationError{reportStageMessage, reportReasonInvalidMessage}
 			} else {
 				state = 3
 			}
 		case 8:
+			if kind != "message_end" || !exactFields(event, "type", "message") {
+				return "", false, &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
+			}
+			if !bytes.Equal(systemStart, event["message"]) {
+				return "", false, &ReportNormalizationError{reportStageMessage, reportReasonInvalidMessage}
+			}
+			state = 2
+		case 9:
 			if kind != "message_end" || !exactFields(event, "type", "message") {
 				return "", false, &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
 			}
@@ -534,14 +550,18 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			if kind != "agent_end" || !exactFields(event, "type", "messages", "willRetry") {
 				return "", false, &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
 			}
-			// runAgentLoop reports newMessages: the input prompts it echoed
-			// followed by the terminal assistant message, each serialized from
-			// the same object as its message_end event, so the array must be
-			// exactly [echo?, terminal] byte-for-byte; anything else is extra.
+			// runAgentLoop reports newMessages: the initial system message and
+			// input prompts it echoed followed by the terminal assistant message,
+			// each serialized from the same object as its message_end event, so
+			// the array must be exactly [system?, echo?, terminal] byte-for-byte;
+			// anything else is extra.
 			var messages []json.RawMessage
 			expected := []json.RawMessage{terminal}
 			if echoSeen {
 				expected = append([]json.RawMessage{echoStart}, expected...)
+			}
+			if systemSeen {
+				expected = append([]json.RawMessage{systemStart}, expected...)
 			}
 			if json.Unmarshal(event["messages"], &messages) != nil || len(messages) != len(expected) {
 				return "", false, &ReportNormalizationError{reportStageMessage, reportReasonExtraMessages}
@@ -608,6 +628,33 @@ func thinkingContent(raw json.RawMessage) bool {
 	}
 	kind, ok := stringField(block, "type")
 	return ok && kind == "thinking" && stringFieldOK(block, "thinking")
+}
+
+// validInitialSystem validates the source-derived fresh-prompt system shape:
+// exactly {role, content, sections, timestamp}, with empty string content and
+// string-valued sections. Tool-change fields are intentionally excluded: the
+// report route runs with --no-tools and only this initial pair is admitted.
+func validInitialSystem(raw json.RawMessage) bool {
+	var message map[string]json.RawMessage
+	if json.Unmarshal(raw, &message) != nil || !exactFields(message, "role", "content", "sections", "timestamp") {
+		return false
+	}
+	role, roleOK := stringField(message, "role")
+	content, contentOK := stringField(message, "content")
+	if !roleOK || role != "system" || !contentOK || content != "" || !numberField(message, "timestamp") {
+		return false
+	}
+	var sections map[string]json.RawMessage
+	if json.Unmarshal(message["sections"], &sections) != nil || sections == nil {
+		return false
+	}
+	for _, rawSection := range sections {
+		var section *string
+		if json.Unmarshal(rawSection, &section) != nil || section == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // validUserEcho validates the source-derived prompt echo shape: pi constructs

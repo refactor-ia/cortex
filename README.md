@@ -91,7 +91,7 @@ printf 'R1: Every API response must complete within 100 ms.\nR2: Every API respo
 ./cortex uninstall
 ```
 
-The report should flag the incompatible timing requirements. If QA fails, check the selected backend's readiness and error instead of retrying with another model; Cortex has no provider fallback. This alpha is for evaluation, not certified 11-family × 3-runtime parity or automatic disposable execution.
+The report should flag the incompatible timing requirements. `cortex qa run` is report-only: it assesses the supplied bounded request and evidence; it does not execute tests. A zero exit with `no tests to run` is not passing test evidence, and test-runner conclusions stay at the individual selected-test scope rather than inferring package-wide or codebase results. Direct test execution is separate: a role may execute only when its host actually provides authorized test tools and confirms a disposable worktree; Cortex does not provide that executor. If QA fails, check the selected backend's readiness and error instead of retrying with another model; Cortex has no provider fallback. This alpha is for evaluation, not certified 11-family × 3-runtime parity or automatic disposable execution.
 
 ## How Cortex decides what to touch
 

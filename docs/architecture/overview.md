@@ -72,7 +72,7 @@ A family package contains its manifest, router, subskills, justified agents, ref
 
 | Family | Responsibility boundary |
 | --- | --- |
-| Reasoning | Optional, stateless reasoning methods and adapter-driven deliberation. |
+| Reasoning | Optional, stateless reasoning methods, adapter-driven deliberation, and advisory delivery-practice guidance. |
 | Model intelligence | User-directed model-role configuration and representation reporting. |
 | Execution | Generic queue lifecycle, budgets, state, and evidence without SDD governance. |
 | Quality assurance | Testing, execution evidence, audits, quality analysis, and explicit cleanup without TDD or review authority. |
@@ -88,7 +88,7 @@ A family package contains its manifest, router, subskills, justified agents, ref
 
 | Family | Target constraint |
 | --- | --- |
-| Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. |
+| Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. Delivery-practice guidance is advisory only: it performs no Git or GitHub actions, grants no approvals, gates, or receipts, and never overrides harness consent. |
 | Execution | Preserve generic queue lifecycle, budgets, state, and evidence; remove SDD governance. |
 | Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. It installs to all three supported runtimes — Pi, OpenCode, and Claude Code — under the parity stated above, and Pi additionally receives the actor projection. |
 | Services and personal | Postmark v1 is guidance only. Do not promise Coolify until it is implemented. Credentialed or personal capabilities are dormant until configured, with no preconfigured profiles or personal data. `voice` and `learn` remain neutral and dormant until configured. |
@@ -133,7 +133,7 @@ Catalog admission has hard gates for explicit license, provenance, and redistrib
 
 ## Permanent removals and naming
 
-The target catalog permanently excludes `git-specialist` and equivalent Git authority; the delivery family; SDD and `.ai` governance; review/adversarial gates and receipts; `tdd-writer`; `sdd-verify`; the generic `reviewer`; `careful`; `find-skills`; `upstream-review`; `revise-claude-md`; `setup`; and `skill-creator`. `sdd-verify` and the generic `reviewer` are removed, not renamed.
+The target catalog permanently excludes `git-specialist` and equivalent Git authority; delivery skills that execute or gate Git, GitHub, review, or release actions; SDD and `.ai` governance; review/adversarial gates and receipts; `tdd-writer`; `sdd-verify`; the generic `reviewer`; `careful`; `find-skills`; `upstream-review`; `revise-claude-md`; `setup`; and `skill-creator`. `sdd-verify` and the generic `reviewer` are removed, not renamed.
 
 Naming changes make the retained boundaries visible:
 

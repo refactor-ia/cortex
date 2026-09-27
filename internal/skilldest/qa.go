@@ -3,6 +3,7 @@ package skilldest
 import (
 	"bytes"
 	"errors"
+	"strings"
 
 	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -10,6 +11,14 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillartifact"
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
+
+const (
+	qaNoCICapability  = "qa-no-ci"
+	qaNoCIDescription = "Perform bounded no-CI QA with report-mode Cortex checks and authorized execution boundaries."
+	qaNoCIMarkerText  = "no-ci-report-only cortex-qa-run-report-only claude-pi-background-argv stdin-never-accepted no-inference no-paid-call-without-authorization no-retries authorized-tools-disposable-worktree no-overbroad-results guidance-not-launcher"
+)
+
+var qaNoCIMarkers = strings.Fields(qaNoCIMarkerText)
 
 // QAProjectionOwnership binds one generated QA destination to its neutral source.
 type QAProjectionOwnership struct {
@@ -21,10 +30,8 @@ type QAProjectionOwnership struct {
 	GeneratedSHA256     string
 }
 
-// ValidateQAProjection proves that the closed QA fleet is projected from its
-// neutral sources. It accepts a destination plan for any supported runtime —
-// Pi, OpenCode, and Claude Code — because the family carries the same
-// three-runtime parity as the rest of the catalog.
+// ValidateQAProjection proves all seven QA skills (six actors plus qa-no-ci)
+// are owned by their neutral sources on each supported runtime.
 func ValidateQAProjection(snapshot catalog.CatalogSnapshot, sources skillrender.Set, binding skillartifact.Binding, destinations Plan) ([]QAProjectionOwnership, error) {
 	manifest, manifestOK := binding.Manifest()
 	bundle, bundleOK := binding.Bundle()
@@ -33,46 +40,116 @@ func ValidateQAProjection(snapshot catalog.CatalogSnapshot, sources skillrender.
 	}
 
 	family, found := qaFamily(snapshot)
-	contracts := qarole.Catalog()
-	if !found || len(family.Manifest().Capabilities) != len(contracts) || len(family.Manifest().Agents) != len(contracts) {
+	capabilityIDs := qaCapabilityIDs()
+	if !found || !validQAFamilyLayout(family, capabilityIDs) {
 		return nil, invalidQAProjection()
 	}
 
 	rendered := make(map[string]skillrender.RenderedSkill, len(sources.Skills()))
 	for _, source := range sources.Skills() {
+		if _, exists := rendered[source.LogicalID()]; exists {
+			return nil, invalidQAProjection()
+		}
 		rendered[source.LogicalID()] = source
 	}
 	artifacts := make(map[string]string, len(manifest.Artifacts()))
 	for _, artifact := range manifest.Artifacts() {
+		if _, exists := artifacts[artifact.LogicalID()]; exists {
+			return nil, invalidQAProjection()
+		}
 		artifacts[artifact.LogicalID()] = artifact.SHA256()
 	}
 	payloads := make(map[string][]byte, len(bundle.Artifacts()))
 	for _, payload := range bundle.Artifacts() {
+		if _, exists := payloads[payload.LogicalID()]; exists {
+			return nil, invalidQAProjection()
+		}
 		payloads[payload.LogicalID()] = payload.Content()
 	}
 	planned := make(map[string]Destination, len(destinations.Destinations()))
 	for _, destination := range destinations.Destinations() {
+		if _, exists := planned[destination.LogicalID()]; exists {
+			return nil, invalidQAProjection()
+		}
 		planned[destination.LogicalID()] = destination
 	}
 
-	ownership := make([]QAProjectionOwnership, 0, len(contracts))
-	for index, contract := range contracts {
-		roleID, logicalID := string(contract.ID), "skills/"+string(contract.ID)
-		if family.Manifest().Agents[index] != roleID {
+	contracts := qarole.Catalog()
+	ownership := make([]QAProjectionOwnership, 0, len(capabilityIDs))
+	for index, capabilityID := range capabilityIDs {
+		logicalID := "skills/" + capabilityID
+		capability, source, found := qaCapability(family, capabilityID)
+		capabilityManifest, sourceContent := capability.Manifest(), source.Content()
+		expectedSource := "families/quality-assurance/sources/" + capabilityID + ".md"
+		if !found || capabilityManifest.ID != capabilityID || capabilityManifest.Family != "quality-assurance" || capabilityManifest.Source != expectedSource || capabilityManifest.Description == "" || capabilityManifest.Provenance != catalog.ProvenanceCortexOwned || capabilityManifest.License != "CC-BY-SA-4.0" || !capabilityManifest.RedistributionAllowed || source.Path() != expectedSource || source.SHA256() == "" || len(sourceContent) == 0 {
 			return nil, invalidQAProjection()
 		}
-		capability, source, found := qaCapability(family, roleID)
-		if !found || capability.Manifest().Family != "quality-assurance" || qarole.ValidateSourceContract(contract, string(source.Content())) != nil {
+		if capabilityID == qaNoCICapability && (capabilityManifest.Description != qaNoCIDescription || capabilityManifest.Activation != catalog.ActivationAutomatic) {
+			return nil, invalidQAProjection()
+		}
+		if capabilityID == qaNoCICapability {
+			if !validQANoCISource(string(sourceContent)) {
+				return nil, invalidQAProjection()
+			}
+		} else if index >= len(contracts) || qarole.ValidateSourceContract(contracts[index], string(sourceContent)) != nil {
 			return nil, invalidQAProjection()
 		}
 		renderedSkill, renderedOK := rendered[logicalID]
 		destination, destinationOK := planned[logicalID]
-		if !renderedOK || !destinationOK || renderedSkill.CapabilityID() != roleID || !bytes.Contains(renderedSkill.Content(), source.Content()) || !bytes.Contains(destination.Content(), renderedSkill.Content()) || destination.RelativePath() != "skills/cortex-"+roleID+"/SKILL.md" || destination.SHA256() != renderedSkill.SHA256() || artifacts[logicalID] != destination.SHA256() || !bytes.Equal(payloads[logicalID], destination.Content()) {
+		artifactSHA, artifactOK := artifacts[logicalID]
+		payload, payloadOK := payloads[logicalID]
+		if !renderedOK || !destinationOK || !artifactOK || !payloadOK || renderedSkill.CapabilityID() != capabilityID || renderedSkill.LogicalID() != logicalID || !bytes.Contains(renderedSkill.Content(), sourceContent) || !bytes.Contains(destination.Content(), renderedSkill.Content()) || destination.RelativePath() != "skills/cortex-"+capabilityID+"/SKILL.md" || destination.SHA256() != renderedSkill.SHA256() || artifactSHA != destination.SHA256() || !bytes.Equal(payload, destination.Content()) {
 			return nil, invalidQAProjection()
 		}
-		ownership = append(ownership, QAProjectionOwnership{roleID, destinations.RuntimeID(), snapshot.Fingerprint(), source.SHA256(), destination.RelativePath(), destination.SHA256()})
+		ownership = append(ownership, QAProjectionOwnership{capabilityID, destinations.RuntimeID(), snapshot.Fingerprint(), source.SHA256(), destination.RelativePath(), destination.SHA256()})
 	}
 	return ownership, nil
+}
+
+func qaCapabilityIDs() []string {
+	contracts := qarole.Catalog()
+	ids := make([]string, 0, len(contracts)+1)
+	for _, contract := range contracts {
+		ids = append(ids, string(contract.ID))
+	}
+	return append(ids, qaNoCICapability)
+}
+
+func validQAFamilyLayout(family catalog.CatalogFamilySnapshot, capabilityIDs []string) bool {
+	manifest := family.Manifest()
+	contracts := qarole.Catalog()
+	if manifest.ID != "quality-assurance" || len(manifest.Agents) != len(contracts) || len(manifest.Capabilities) != len(capabilityIDs) {
+		return false
+	}
+	for index, contract := range contracts {
+		if manifest.Agents[index] != string(contract.ID) {
+			return false
+		}
+	}
+	for index, capabilityID := range capabilityIDs {
+		want := "families/quality-assurance/capabilities/" + capabilityID + ".json"
+		if manifest.Capabilities[index] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func validQANoCISource(source string) bool {
+	lower := strings.ToLower(source)
+	for _, marker := range qaNoCIMarkers {
+		if !strings.Contains(source, "<!-- cortex-qa:"+marker+" -->") {
+			return false
+		}
+	}
+	for _, phrase := range []string{
+		"cortex qa run", "report-only", "pi -p", "</dev/null", "timeout", "standard input", "untested", "paid", "retry", "disposable worktree", "automatic launcher",
+	} {
+		if !strings.Contains(lower, phrase) {
+			return false
+		}
+	}
+	return true
 }
 
 func qaFamily(snapshot catalog.CatalogSnapshot) (catalog.CatalogFamilySnapshot, bool) {

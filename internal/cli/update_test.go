@@ -171,10 +171,10 @@ func TestUpdatePreviewAndApplyPerRuntime(t *testing.T) {
 				t.Fatalf("apply = (%d, %q, %q)", code, stdout, stderr)
 			}
 			manifest := updateStateIdentity(t, root)
-			if target == runtimematrix.RuntimePi && (manifest.SchemaVersion() != 2 || len(manifest.Artifacts()) != 12) {
-				t.Fatalf("Pi state = v%d with %d artifacts, want canonical v2 actors and skills", manifest.SchemaVersion(), len(manifest.Artifacts()))
+			if target == runtimematrix.RuntimePi && (manifest.SchemaVersion() != 2 || len(manifest.Artifacts()) != 13) {
+				t.Fatalf("Pi state = v%d with %d artifacts, want canonical v2 actors and seven skills", manifest.SchemaVersion(), len(manifest.Artifacts()))
 			}
-			if target != runtimematrix.RuntimePi && (manifest.SchemaVersion() != 1 || len(manifest.Artifacts()) != 6) {
+			if target != runtimematrix.RuntimePi && (manifest.SchemaVersion() != 1 || len(manifest.Artifacts()) != 7) {
 				t.Fatalf("native state = v%d with %d artifacts, want canonical v1 skills", manifest.SchemaVersion(), len(manifest.Artifacts()))
 			}
 			updateUnchanged(t, fixture, target, string(config), configMode)
@@ -204,8 +204,8 @@ func TestUpdatePriorV1PiUpgradesToCanonicalV2(t *testing.T) {
 		t.Fatalf("pi apply = (%d, %q, %q)", code, stdout, stderr)
 	}
 	manifest := updateStateIdentity(t, root)
-	if manifest.SchemaVersion() != 2 || len(manifest.Artifacts()) != 12 {
-		t.Fatalf("pi state = v%d with %d artifacts, want canonical v2 with six actors and six skills", manifest.SchemaVersion(), len(manifest.Artifacts()))
+	if manifest.SchemaVersion() != 2 || len(manifest.Artifacts()) != 13 {
+		t.Fatalf("pi state = v%d with %d artifacts, want canonical v2 with six actors and seven skills", manifest.SchemaVersion(), len(manifest.Artifacts()))
 	}
 	binding := must(qapi.CatalogAdmissionBinding(must(catalog.BuildCatalogSnapshot(fixture.catalog, "catalog.json", catalog.AdmissionPolicy{})), qarole.RequirementsAnalyst, "pi"))
 	assets := must(installobserve.ObserveAdmissionAssets(root, updateCWD(), binding))

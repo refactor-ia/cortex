@@ -8,7 +8,8 @@
     "families/quality-assurance/capabilities/exploratory-tester.json",
     "families/quality-assurance/capabilities/adversarial-tester.json",
     "families/quality-assurance/capabilities/test-runner.json",
-    "families/quality-assurance/capabilities/evidence-auditor.json"
+    "families/quality-assurance/capabilities/evidence-auditor.json",
+    "families/quality-assurance/capabilities/qa-no-ci.json"
   ],
   "agents": ["requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester", "test-runner", "evidence-auditor"]
 }

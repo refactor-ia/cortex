@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"qa-no-ci","description":"Perform bounded no-CI QA with report-mode Cortex checks and authorized execution boundaries.","family":"quality-assurance","source":"families/quality-assurance/sources/qa-no-ci.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

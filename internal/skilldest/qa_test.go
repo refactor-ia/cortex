@@ -18,13 +18,13 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
-func TestValidateQAProjectionBindsSixNeutralSourcesToSupportedDestinations(t *testing.T) {
-	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode} {
+func TestValidateQAProjectionBindsSevenNeutralSkillsToSupportedDestinations(t *testing.T) {
+	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
 		t.Run(string(runtime), func(t *testing.T) {
 			snapshot := qaSnapshot(t, false, false)
 			sources, binding, destinations := qaPipeline(t, snapshot, runtime)
 			ownership, err := ValidateQAProjection(snapshot, sources, binding, destinations)
-			if err != nil || len(ownership) != len(qarole.Catalog()) {
+			if err != nil || len(ownership) != len(qarole.Catalog())+1 {
 				t.Fatalf("ValidateQAProjection() = (%#v, %v)", ownership, err)
 			}
 			sourceHashes := qaSourceHashes(snapshot)
@@ -40,6 +40,16 @@ func TestValidateQAProjectionBindsSixNeutralSourcesToSupportedDestinations(t *te
 func TestValidateQAProjectionRejectsDivergentDestinationOwnership(t *testing.T) {
 	snapshot := qaSnapshot(t, false, false)
 	sources, binding, destinations := qaPipeline(t, snapshot, runtimematrix.RuntimePi)
+	operator := -1
+	for index, destination := range destinations.destinations {
+		if destination.LogicalID() == "skills/qa-no-ci" {
+			operator = index
+			break
+		}
+	}
+	if operator < 0 {
+		t.Fatal("qa-no-ci destination is missing")
+	}
 	cases := []struct {
 		name string
 		edit func(*Plan)
@@ -52,6 +62,9 @@ func TestValidateQAProjectionRejectsDivergentDestinationOwnership(t *testing.T) 
 		}},
 		{"generated hash mismatch", func(plan *Plan) { plan.destinations[0].sha256 = strings.Repeat("0", 64) }},
 		{"payload artifact divergence", func(plan *Plan) { plan.destinations[0].content = append(plan.destinations[0].content, '!') }},
+		{"tampered seventh destination", func(plan *Plan) {
+			plan.destinations[operator].content = append(plan.destinations[operator].content, '!')
+		}},
 		{"wrong destination", func(plan *Plan) { plan.destinations[0].relativePath = "skills/cortex-wrong/SKILL.md" }},
 	}
 	for _, tc := range cases {
@@ -61,6 +74,32 @@ func TestValidateQAProjectionRejectsDivergentDestinationOwnership(t *testing.T) 
 			tc.edit(&candidate)
 			if ownership, err := ValidateQAProjection(snapshot, sources, binding, candidate); err == nil || ownership != nil {
 				t.Fatalf("ValidateQAProjection() = (%#v, %v)", ownership, err)
+			}
+		})
+	}
+}
+
+func TestValidateQAProjectionRejectsQAOperatorDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(string, string) (string, string)
+	}{
+		{"missing seventh marker", func(manifest, source string) (string, string) {
+			marker := "<!-- cortex-qa:" + qaNoCIMarkers[len(qaNoCIMarkers)-1] + " -->"
+			return manifest, strings.Replace(source, marker+"\n", "", 1)
+		}},
+		{"description drift", func(manifest, source string) (string, string) {
+			return strings.Replace(manifest, qaNoCIDescription, "drifted description", 1), source
+		}},
+		{"activation drift", func(manifest, source string) (string, string) {
+			return strings.Replace(manifest, `"activation":"automatic"`, `"activation":"dormant"`, 1), source
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := qaSnapshotWithNoCIEdit(t, false, false, nil, tc.edit)
+			sources, binding, destinations := qaPipeline(t, snapshot, runtimematrix.RuntimePi)
+			if ownership, err := ValidateQAProjection(snapshot, sources, binding, destinations); err == nil || ownership != nil {
+				t.Fatalf("operator drift result = (%#v, %v)", ownership, err)
 			}
 		})
 	}
@@ -92,7 +131,7 @@ func TestValidateQAProjectionRejectsDeferredSpecialistsAndPreservesNonQAPlanning
 	for _, destination := range nonQADestinations.Destinations() {
 		containsAlpha = containsAlpha || destination.LogicalID() == "skills/alpha"
 	}
-	if err != nil || len(ownership) != 6 || len(nonQADestinations.Destinations()) != 7 || !containsAlpha {
+	if err != nil || len(ownership) != len(qarole.Catalog())+1 || len(nonQADestinations.Destinations()) != 8 || !containsAlpha {
 		t.Fatalf("non-QA planning result = (%#v, %#v, %v)", ownership, nonQADestinations, err)
 	}
 }
@@ -122,7 +161,7 @@ func TestValidateQAProjectionAcceptsClaudeCodeDestinations(t *testing.T) {
 	snapshot := qaSnapshot(t, false, false)
 	sources, binding, destinations := qaPipeline(t, snapshot, runtimematrix.RuntimeClaudeCode)
 	ownership, err := ValidateQAProjection(snapshot, sources, binding, destinations)
-	if err != nil || len(ownership) != 6 {
+	if err != nil || len(ownership) != len(qarole.Catalog())+1 {
 		t.Fatalf("Claude Code result = (%#v, %v)", ownership, err)
 	}
 }
@@ -176,6 +215,10 @@ func qaPipeline(t *testing.T, snapshot catalog.CatalogSnapshot, runtime runtimem
 }
 
 func qaSnapshot(t *testing.T, deferred, nonQA bool, roleMismatch ...bool) catalog.CatalogSnapshot {
+	return qaSnapshotWithNoCIEdit(t, deferred, nonQA, roleMismatch, nil)
+}
+
+func qaSnapshotWithNoCIEdit(t *testing.T, deferred, nonQA bool, roleMismatch []bool, noCIEdit func(string, string) (string, string)) catalog.CatalogSnapshot {
 	t.Helper()
 	root, families := t.TempDir(), map[string]string{}
 	for _, id := range catalog.ApprovedFamilyIDs() {
@@ -194,6 +237,13 @@ func qaSnapshot(t *testing.T, deferred, nonQA bool, roleMismatch ...bool) catalo
 				}
 				qaWrite(t, root, "families/quality-assurance/sources/"+string(contract.ID)+".md", source)
 			}
+			capabilities = append(capabilities, "families/quality-assurance/capabilities/qa-no-ci.json")
+			manifest, source := qaNoCIManifestJSON(t), qaNoCISource()
+			if noCIEdit != nil {
+				manifest, source = noCIEdit(manifest, source)
+			}
+			qaWrite(t, root, "families/quality-assurance/capabilities/qa-no-ci.json", manifest)
+			qaWrite(t, root, "families/quality-assurance/sources/qa-no-ci.md", source)
 			if deferred {
 				capabilities, agents = append(capabilities, "families/quality-assurance/capabilities/security-audit.json"), append(agents, "security-audit")
 				qaWrite(t, root, "families/quality-assurance/capabilities/security-audit.json", manifestJSON(t, "security-audit", id))
@@ -240,12 +290,31 @@ func qaSource(contract qarole.RoleContract) string {
 	return strings.Join(markers, "\n") + "\n"
 }
 
+func qaNoCISource() string {
+	markers := make([]string, len(qaNoCIMarkers))
+	for index, marker := range qaNoCIMarkers {
+		markers[index] = "<!-- cortex-qa:" + marker + " -->"
+	}
+	return "# QA Without CI\n\n" + strings.Join(markers, "\n") + `
+
+Use cortex qa run as a report-only path for bounded evidence. It does not run tests or make an integrated fix.
+When explicitly authorized from Claude Code, run pi -p with the prompt in argv in the background with a finite timeout and </dev/null. Never provide that prompt through standard input.
+Do not make a paid call without authorization, do not retry, and execute only authorized tools in a confirmed disposable worktree.
+Do not infer behavior for an untested CLI, model, or skill; report no overbroad results. This is guidance, not an automatic launcher.
+`
+}
+
 func criteria(values []qarole.Criterion) string {
 	result := make([]string, len(values))
 	for index, value := range values {
 		result[index] = string(value)
 	}
 	return strings.Join(result, ",")
+}
+
+func qaNoCIManifestJSON(t *testing.T) string {
+	t.Helper()
+	return jsonValue(t, catalog.CapabilityManifest{SchemaVersion: 1, ID: qaNoCICapability, Description: qaNoCIDescription, Family: "quality-assurance", Source: "families/quality-assurance/sources/qa-no-ci.md", Activation: catalog.ActivationAutomatic, Provenance: catalog.ProvenanceCortexOwned, License: "CC-BY-SA-4.0", RedistributionAllowed: true})
 }
 
 func manifestJSON(t *testing.T, id, family string) string {

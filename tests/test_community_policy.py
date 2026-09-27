@@ -56,12 +56,14 @@ EXPECTED_FILES = {
         "catalog/families/quality-assurance/capabilities/adversarial-tester.json",
         "catalog/families/quality-assurance/capabilities/test-runner.json",
         "catalog/families/quality-assurance/capabilities/evidence-auditor.json",
+        "catalog/families/quality-assurance/capabilities/qa-no-ci.json",
         "catalog/families/quality-assurance/sources/requirements-analyst.md",
         "catalog/families/quality-assurance/sources/test-designer.md",
         "catalog/families/quality-assurance/sources/exploratory-tester.md",
         "catalog/families/quality-assurance/sources/adversarial-tester.md",
         "catalog/families/quality-assurance/sources/test-runner.md",
         "catalog/families/quality-assurance/sources/evidence-auditor.md",
+        "catalog/families/quality-assurance/sources/qa-no-ci.md",
         "internal/artifact/bundle.go",
         "internal/artifact/bundle_test.go",
         "internal/artifact/manifest.go",
@@ -142,6 +144,7 @@ EXPECTED_FILES = {
         "internal/qaactor/actor_test.go",
         "internal/qaactor/render.go",
         "internal/qaactor/source.go",
+        "internal/qaactor/source_test.go",
         "internal/qaactor/validate.go",
         "internal/qaactor/project.go",
         "internal/qaactor/project_test.go",
@@ -274,6 +277,7 @@ EXPECTED_FILES = {
         "internal/builtinassets/catalog/families/quality-assurance/capabilities/requirements-analyst.json",
         "internal/builtinassets/catalog/families/quality-assurance/capabilities/test-designer.json",
         "internal/builtinassets/catalog/families/quality-assurance/capabilities/test-runner.json",
+        "internal/builtinassets/catalog/families/quality-assurance/capabilities/qa-no-ci.json",
         "internal/builtinassets/catalog/families/quality-assurance/family.json",
         "internal/builtinassets/catalog/families/quality-assurance/router.md",
         "internal/builtinassets/catalog/families/quality-assurance/sources/adversarial-tester.md",
@@ -282,6 +286,7 @@ EXPECTED_FILES = {
         "internal/builtinassets/catalog/families/quality-assurance/sources/requirements-analyst.md",
         "internal/builtinassets/catalog/families/quality-assurance/sources/test-designer.md",
         "internal/builtinassets/catalog/families/quality-assurance/sources/test-runner.md",
+        "internal/builtinassets/catalog/families/quality-assurance/sources/qa-no-ci.md",
         "internal/builtinassets/catalog/families/reasoning/family.json",
         "internal/builtinassets/catalog/families/reasoning/router.md",
         "internal/builtinassets/catalog/families/services/family.json",
@@ -397,8 +402,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 343)
-                self.assertEqual(len(actual_files), 343)
+                self.assertEqual(len(EXPECTED_FILES), 348)
+                self.assertEqual(len(actual_files), 348)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

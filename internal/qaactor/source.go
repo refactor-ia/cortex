@@ -44,7 +44,7 @@ func (source Source) Body() []byte {
 	return append([]byte(nil), source.body...)
 }
 
-// SourceSet is the immutable six-role QA catalog source set.
+// SourceSet is the immutable six-agent QA role source set.
 type SourceSet struct {
 	catalogFingerprint string
 	sources            []Source
@@ -55,7 +55,7 @@ func (set SourceSet) CatalogFingerprint() string {
 	return set.catalogFingerprint
 }
 
-// Sources returns deep copies in the canonical QA role order.
+// Sources returns deep copies in the canonical six-agent QA role order.
 func (set SourceSet) Sources() []Source {
 	copies := make([]Source, len(set.sources))
 	for index, source := range set.sources {
@@ -64,7 +64,7 @@ func (set SourceSet) Sources() []Source {
 	return copies
 }
 
-// Sources extracts and validates the exact admitted six-role QA catalog source set.
+// Sources extracts and validates the exact admitted six-agent QA role source set. Non-agent QA skills remain in the catalog but never become actors.
 func Sources(snapshot catalog.CatalogSnapshot) (SourceSet, error) {
 	if snapshot.Fingerprint() == "" {
 		return SourceSet{}, errors.New("QA actor source set has an empty catalog fingerprint")
@@ -76,8 +76,17 @@ func Sources(snapshot catalog.CatalogSnapshot) (SourceSet, error) {
 	}
 
 	capabilities := family.Capabilities()
-	if len(capabilities) != len(contracts) {
+	if len(capabilities) < len(contracts) {
 		return SourceSet{}, errors.New("QA actor source set has an invalid capability catalog")
+	}
+	actorIDs := make(map[string]struct{}, len(contracts))
+	for _, contract := range contracts {
+		actorIDs[string(contract.ID)] = struct{}{}
+	}
+	for _, capability := range capabilities[len(contracts):] {
+		if _, isActor := actorIDs[capability.Manifest().ID]; isActor {
+			return SourceSet{}, errors.New("QA actor source set has an invalid capability catalog")
+		}
 	}
 
 	sources := make([]Source, len(contracts))

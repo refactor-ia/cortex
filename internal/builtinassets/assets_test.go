@@ -15,7 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
-const builtInFingerprint = "f57ad2f58616902ac3d5b53b375dc8f1bc79e9ee79d56b29ce1da198dcf70ac0"
+const builtInFingerprint = "ba1ce6f9844a6021d1872146231d4e665d1c3abfec89d614b954d9211ad43674"
 
 func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	snapshot, err := Snapshot()
@@ -26,11 +26,11 @@ func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 		t.Fatalf("Snapshot() = schema %d, families %d, fingerprint %q", snapshot.Manifest().SchemaVersion, len(snapshot.Families()), snapshot.Fingerprint())
 	}
 	qualityAssurance := familyByID(t, snapshot, "quality-assurance")
-	if len(qualityAssurance.Capabilities()) != 6 {
-		t.Fatalf("quality-assurance capabilities = %d, want 6", len(qualityAssurance.Capabilities()))
+	if len(qualityAssurance.Capabilities()) != 7 {
+		t.Fatalf("quality-assurance capabilities = %d, want 7", len(qualityAssurance.Capabilities()))
 	}
-	if total := totalCapabilities(snapshot); total != 6 {
-		t.Fatalf("embedded capabilities = %d, want 6", total)
+	if total := totalCapabilities(snapshot); total != 7 {
+		t.Fatalf("embedded capabilities = %d, want 7", total)
 	}
 }
 
@@ -99,12 +99,13 @@ func TestSnapshotProjectsEmbeddedCapabilitiesToRuntimeDestinations(t *testing.T)
 	}
 }
 
-// expectedDestinations is one skill per embedded capability: the six
-// quality-assurance capabilities, the only capabilities the catalog carries.
+// expectedDestinations is one skill per embedded capability: the seven
+// quality-assurance skills, the only capabilities the catalog carries.
 var expectedDestinations = []string{
 	"skills/cortex-adversarial-tester/SKILL.md",
 	"skills/cortex-evidence-auditor/SKILL.md",
 	"skills/cortex-exploratory-tester/SKILL.md",
+	"skills/cortex-qa-no-ci/SKILL.md",
 	"skills/cortex-requirements-analyst/SKILL.md",
 	"skills/cortex-test-designer/SKILL.md",
 	"skills/cortex-test-runner/SKILL.md",

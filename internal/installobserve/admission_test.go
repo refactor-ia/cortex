@@ -286,8 +286,8 @@ func TestPiAdmissionStillRequiresTheInstalledActor(t *testing.T) {
 	}
 }
 
-// newSkillOnlyAdmissionFixture builds the ledger shape install really writes
-// for Claude Code and OpenCode: six skills and no agent.
+// newSkillOnlyAdmissionFixture builds a skill-only ledger shape for Claude
+// Code and OpenCode; native runtimes carry skills and no Pi actor agent.
 func newSkillOnlyAdmissionFixture(t *testing.T, backend string, runtimeID runtimematrix.RuntimeID, rootKind skilldest.RootKind) admissionFixture {
 	t.Helper()
 	root, cwd := admissionTempDir(t), admissionTempDir(t)

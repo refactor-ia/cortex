@@ -34,8 +34,13 @@ func TestProductionQARoleSourcesDecodeAndMeetContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantIDs := roleIDs(Catalog())
-	if family.ID != "quality-assurance" || !reflect.DeepEqual(family.Agents, wantIDs) || len(family.Capabilities) != len(wantIDs) {
-		t.Fatalf("QA family = %+v, want six general-core roles only", family)
+	wantCapabilities := make([]string, 0, len(wantIDs)+1)
+	for _, id := range wantIDs {
+		wantCapabilities = append(wantCapabilities, "families/quality-assurance/capabilities/"+id+".json")
+	}
+	wantCapabilities = append(wantCapabilities, "families/quality-assurance/capabilities/qa-no-ci.json")
+	if family.ID != "quality-assurance" || !reflect.DeepEqual(family.Agents, wantIDs) || !reflect.DeepEqual(family.Capabilities, wantCapabilities) {
+		t.Fatalf("QA family = %+v, want six general-core agents plus qa-no-ci skill", family)
 	}
 
 	for _, contract := range Catalog() {

@@ -32,6 +32,8 @@ EXPECTED_FILES = {
         "catalog/families/quality-assurance/router.md",
         "catalog/families/reasoning/family.json",
         "catalog/families/reasoning/router.md",
+        "catalog/families/reasoning/capabilities/maintainer-delivery.json",
+        "catalog/families/reasoning/sources/maintainer-delivery.md",
         "catalog/families/model-intelligence/family.json",
         "catalog/families/model-intelligence/router.md",
         "catalog/families/execution/family.json",
@@ -289,6 +291,8 @@ EXPECTED_FILES = {
         "internal/builtinassets/catalog/families/quality-assurance/sources/qa-no-ci.md",
         "internal/builtinassets/catalog/families/reasoning/family.json",
         "internal/builtinassets/catalog/families/reasoning/router.md",
+        "internal/builtinassets/catalog/families/reasoning/capabilities/maintainer-delivery.json",
+        "internal/builtinassets/catalog/families/reasoning/sources/maintainer-delivery.md",
         "internal/builtinassets/catalog/families/services/family.json",
         "internal/builtinassets/catalog/families/services/router.md",
         "internal/builtinassets/catalog/families/web/family.json",
@@ -402,8 +406,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 348)
-                self.assertEqual(len(actual_files), 348)
+                self.assertEqual(len(EXPECTED_FILES), 352)
+                self.assertEqual(len(actual_files), 352)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

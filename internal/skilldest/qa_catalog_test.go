@@ -29,13 +29,19 @@ func TestProductionCatalogProjectsExactlyTheQAFleet(t *testing.T) {
 			}
 			continue
 		}
+		if manifest.ID == "reasoning" {
+			if len(manifest.Capabilities) != 1 || len(manifest.Agents) != 0 {
+				t.Fatalf("reasoning capabilities = %#v, agents %#v, want one non-agent skill", manifest.Capabilities, manifest.Agents)
+			}
+			continue
+		}
 		stubCount++
 		if len(manifest.Capabilities) != 0 || len(manifest.Agents) != 0 {
 			t.Fatalf("stub family %q = capabilities %#v, agents %#v", manifest.ID, manifest.Capabilities, manifest.Agents)
 		}
 	}
-	if stubCount != 10 {
-		t.Fatalf("empty stub families = %d, want 10", stubCount)
+	if stubCount != 9 {
+		t.Fatalf("empty stub families = %d, want 9", stubCount)
 	}
 
 	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {

@@ -100,13 +100,15 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 			}
 		}
 	}
-	// The embedded catalog projects seven quality-assurance skills on every
-	// runtime. Asserting the whole set in sorted order keeps the check honest: a
-	// count alone would also pass for the wrong skills.
+	// The embedded catalog projects seven quality-assurance skills plus the
+	// reasoning-family maintainer-delivery skill on every runtime. Asserting
+	// the whole set in sorted order keeps the check honest: a count alone
+	// would also pass for the wrong skills.
 	expectedSkillIDs := []string{
 		"skills/adversarial-tester",
 		"skills/evidence-auditor",
 		"skills/exploratory-tester",
+		"skills/maintainer-delivery",
 		"skills/qa-no-ci",
 		"skills/requirements-analyst",
 		"skills/test-designer",
@@ -189,23 +191,23 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	assertSentinels()
 	assertOwnedAbsent()
 
-	expect("install", exitOK, "operation=install status=completed touch=applied create=30 replace=0 remove=0 unchanged=0 preserve=0\n"+
+	expect("install", exitOK, "operation=install status=completed touch=applied create=33 replace=0 remove=0 unchanged=0 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertInstalled()
 
-	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=30 preserve=0\n"+
+	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=33 preserve=0\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
 	assertSentinels()
 	assertUnchangedArtifacts()
 
-	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=14 absent=0 conflict=0\n"+
-		"runtime=opencode uninstall=completed remove=8 absent=0 conflict=0\n"+
-		"runtime=claude-code uninstall=completed remove=8 absent=0 conflict=0\n")
+	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=15 absent=0 conflict=0\n"+
+		"runtime=opencode uninstall=completed remove=9 absent=0 conflict=0\n"+
+		"runtime=claude-code uninstall=completed remove=9 absent=0 conflict=0\n")
 	assertSentinels()
 	assertOwnedAbsent()
 

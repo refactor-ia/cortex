@@ -56,19 +56,19 @@ Then install:
 
 ```
 $ cortex install
-operation=install status=completed touch=applied create=27 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
+operation=install status=completed touch=applied create=30 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified
 runtime=pi presence=present compatibility=compatible action=configure touch=applied
 runtime=opencode presence=present compatibility=compatible action=configure touch=applied
 runtime=claude-code presence=present compatibility=uncertified action=configure touch=applied
 ```
 
-That is the six quality-assurance roles on each of the three runtimes, plus one state manifest each, and six Pi actor definitions — Pi represents a role as both a skill and an agent, so Cortex writes both rather than approximating one with the other. Running it again is a no-op, and reports that honestly as `create=0 unchanged=27`. `uninstall` removes only what Cortex owns:
+That is seven quality-assurance skills on each runtime — six agent-backed roles plus the non-agent `qa-no-ci` report-only guidance skill — plus one state manifest each and six Pi actor definitions. The resulting owned artifact counts are Pi 14, OpenCode 8, and Claude Code 8; Pi represents each general-core role as both a skill and an agent, while `qa-no-ci` remains a skill only. Installing again is a no-op, and reports that honestly as `create=0 unchanged=30`. `uninstall` removes only what Cortex owns:
 
 ```
 $ cortex uninstall
-runtime=pi uninstall=completed remove=13 absent=0 conflict=0
-runtime=opencode uninstall=completed remove=7 absent=0 conflict=0
-runtime=claude-code uninstall=completed remove=7 absent=0 conflict=0
+runtime=pi uninstall=completed remove=14 absent=0 conflict=0
+runtime=opencode uninstall=completed remove=8 absent=0 conflict=0
+runtime=claude-code uninstall=completed remove=8 absent=0 conflict=0
 ```
 
 Every command reports one line per runtime, in the same order, in `key=value` form meant to be read by a person and parsed by a script.

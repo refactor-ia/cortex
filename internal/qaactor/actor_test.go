@@ -105,7 +105,11 @@ func changedSnapshot(t *testing.T, path, old, new string) catalog.CatalogSnapsho
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(file, []byte(strings.Replace(string(data), old, new, 1)), 0o600); err != nil {
+	content := string(data)
+	if !strings.Contains(content, old) {
+		t.Fatalf("replacement text %q not found in %s", old, path)
+	}
+	if err := os.WriteFile(file, []byte(strings.Replace(content, old, new, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return buildSnapshot(t, root)

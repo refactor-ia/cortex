@@ -54,8 +54,10 @@ Scope growth is the main cause of slow merges. Keep about 150 changed lines or
 - Native review as the harness offers it; consent is the operator's.
 - Commit only the change (no task or scratch files), conventional message.
 - Push the branch (no `--force`, never `main`), repeat the race check, open
-  the PR with the repo template: `Closes #N`, verification (command, result,
-  SHA), advisories, out-of-scope.
+  the PR with the repo template: `Closes #N` when this PR completes the
+  issue, verification (command, result, SHA), advisories, out-of-scope. Use
+  `Refs #N` instead only for a deliberately partial or WIP PR that does not
+  close the issue on its own (e.g. one link in a stacked chain).
 
 ## 5. While waiting: next issue
 
@@ -69,7 +71,8 @@ worktree. Keep one line per PR in flight so switching costs nothing:
 ## 6. Feedback
 
 Collect all review comments (humans and bots) and answer in one batch: one
-correction commit, one re-check, one reply. Same day when possible.
+correction commit, one re-check, one reply. Target: same day for review and
+feedback turnaround.
 
 ## 7. Merge
 
@@ -78,6 +81,23 @@ reviews without blocking findings, within budget, and no sensitive area
 (security, installers, review or release machinery, migrations, data).
 Otherwise ask another maintainer to review. Right before merging: race check
 again, issue still open, `main` not moved in a conflicting way.
+
+## Stacked PR chains
+
+Stacked chains are a supported, recommended way to land a large change as
+several reviewable PRs instead of one oversized one: split scope into
+ordered slices, each PR based on the previous slice's branch. Do not
+discourage stacking to fit a budget; it is the preferred alternative to a
+single oversized PR.
+
+Landing a chain:
+- Merge parents before children, in order.
+- After a parent squash-merges, retarget the child PR to `main`, merge
+  `main` into the child (no force push), resolve conflicts, and re-run
+  checks before continuing.
+- After `main` moves, recompute derived values (catalog fingerprints,
+  generated counts and inventories) from the tests rather than blindly
+  taking either side of a git conflict on a generated or derived file.
 
 ## Measure
 

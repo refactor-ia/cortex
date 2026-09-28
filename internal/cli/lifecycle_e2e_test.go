@@ -115,7 +115,7 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 		"skills/test-runner",
 	}
 	// Pi additionally binds one actor per general-core role, so its manifest
-	// carries six actor artifacts alongside the seven skills.
+	// carries six actor artifacts alongside the eight skills.
 	expectedPiLogicalIDs := []string{
 		"actors/adversarial-tester",
 		"actors/evidence-auditor",

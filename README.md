@@ -152,3 +152,8 @@ Its canonical repository is [github.com/refactor-ia/cortex](https://github.com/r
 - [Documentation map](docs/README.md) — every authority in this repository
 - [Contributing guide](CONTRIBUTING.md) — how to work here
 - [Content license policy](LICENSE-CONTENT.md) — code is MIT, Cortex-owned content is CC BY-SA
+---
+
+<a href="https://github.com/Gentleman-Programming/gentle-ai">
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+</a>

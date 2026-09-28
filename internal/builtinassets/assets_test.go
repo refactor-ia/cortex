@@ -15,7 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
-const builtInFingerprint = "6e182caced3a6d0432b00cd89365fef4aa287b74c4ef83a9e1dfb2983342b722"
+const builtInFingerprint = "f57ad2f58616902ac3d5b53b375dc8f1bc79e9ee79d56b29ce1da198dcf70ac0"
 
 func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	snapshot, err := Snapshot()

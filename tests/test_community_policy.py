@@ -211,6 +211,8 @@ EXPECTED_FILES = {
         "internal/qapi/invocation_test.go",
         "internal/qapi/input.go",
         "internal/qapi/input_test.go",
+        "internal/qapi/evidence.go",
+        "internal/qapi/evidence_test.go",
         "internal/qapi/runner.go",
         "internal/qapi/run_test.go",
         "internal/qapi/runtime.go",
@@ -408,8 +410,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 354)
-                self.assertEqual(len(actual_files), 354)
+                self.assertEqual(len(EXPECTED_FILES), 356)
+                self.assertEqual(len(actual_files), 356)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

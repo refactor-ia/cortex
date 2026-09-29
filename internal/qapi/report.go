@@ -34,7 +34,8 @@ const (
 	reportTestDesignerInstruction      = "Return one plain-text test design report. Propose test conditions and coverage rationale within the supplied scope without inventing requirements. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
 	reportExploratoryTesterInstruction = "Return one plain-text exploratory assessment report. Assess the supplied behavior evidence, keep recorded observations separate from proposed checks, and never invent observations or claim live investigation. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
 	reportAdversarialTesterInstruction = "Return one plain-text adversarial review report. Examine assumptions, boundaries, and failure behavior, keeping every hypothesis explicitly distinguished from observed findings without inventing findings. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
-	reportTestRunnerInstruction        = "Return one plain-text test assessment report for supplied evidence only. `cortex qa run` is report-only: do not run tests or claim to have run them. Treat a zero exit accompanied by `no tests to run` as no passing test evidence. Keep every conclusion at the individual selected-test scope; do not infer package-wide or codebase results. Attribute evidence explicitly, state uncertainty, and when evidence is missing report that the outcome cannot be determined rather than inventing pass or fail. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
+	reportEvidenceLimits               = "Treat a zero exit accompanied by `no tests to run` as no passing test evidence. Keep every conclusion at the individual selected-test scope; do not infer package-wide or codebase results."
+	reportTestRunnerInstruction        = "Return one plain-text test assessment report for supplied evidence only. `cortex qa run` is report-only: do not run tests or claim to have run them. " + reportEvidenceLimits + " Attribute evidence explicitly, state uncertainty, and when evidence is missing report that the outcome cannot be determined rather than inventing pass or fail. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
 	reportEvidenceAuditorInstruction   = "Return one plain-text evidence audit report. Assess the sufficiency, attribution, and uncertainty of the supplied evidence without fabricating evidence or conclusions. Do not echo identity facts, do not call tools, and do not claim execution you did not perform."
 )
 
@@ -70,6 +71,7 @@ type ReportRequest struct {
 	InstallRoot      string
 	CurrentDirectory string
 	Task             []byte
+	Evidence         []byte // Optional JSON sidecar; nil preserves the legacy frame.
 	TimeoutSeconds   int
 }
 
@@ -113,6 +115,9 @@ func RunLocalReportOn(ctx context.Context, request ReportRequest, id string, res
 // condition maps to a fixed admission code. A backend contributes only its
 // identity, its binding, its argv, its input frame, and its stream parser.
 func runLocalReport(ctx context.Context, request ReportRequest, backend Backend) (string, qaadmission.Code, error) {
+	if err := validateEvidence(request.Evidence); err != nil {
+		return "", qaadmission.CodeInvalidRequest, err
+	}
 	route, failure := qaroute.Resolve(qaroute.Request{Role: request.Role, Backend: backend.ID()}, qaroute.Snapshot{})
 	if failure.Code != "" {
 		return "", qaadmission.Code(failure.Code), fmt.Errorf("report route: %s", failure.Code)
@@ -145,6 +150,9 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 		return "", qaadmission.CodeActorUnavailable, err
 	}
 	frame, err := backend.EncodeInput(route, assets.ActorSHA256(), assets.SkillSHA256(), []byte(assets.SkillText()), request.Task)
+	if err == nil {
+		frame, err = attachReportEvidence(frame, request.Evidence, request.Role)
+	}
 	if err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
@@ -423,9 +431,10 @@ func encodeReportInput(route qaroute.ResolvedRoute, backendID, actorSHA256, skil
 	), "\n"))
 	opening := len("/skill:cortex-") + len(route.Role) + 1
 	if inlineSkill {
-		opening = sectionSize("skill", skill)
+		opening = sectionSize("skill", skill) + 1
 	}
-	size := opening + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction))
+	// Include the closing newline that appendSection adds to each section.
+	size := opening + sectionSize("identity", identity) + sectionSize("task", task) + sectionSize("result", []byte(instruction)) + 3
 	if size > qaadmission.MaxRequestBytes {
 		return nil, fmt.Errorf("report input exceeds bound")
 	}

@@ -37,6 +37,15 @@ cd cortex
 go build -o cortex ./cmd/cortex
 ```
 
+For a release-style source build, inject both fields into the binary (substitute the intended version and build commit):
+
+```bash
+go build -ldflags="-X github.com/refactor-ia/cortex/internal/cli.buildVersion=v0.1.0-alpha.6 -X github.com/refactor-ia/cortex/internal/cli.buildRevision=0123456789abcdef" -o cortex ./cmd/cortex
+./cortex --version
+```
+
+`--version` reports `version`, `revision`, `build_dirty`, and `embedded_catalog` from the **running binary**. Each injected field overrides only its corresponding Go build-info field; without injection, Go module version and `vcs.revision` are used when embedded. Missing fields and the Go `(devel)` version report `unavailable`. `build_dirty` reflects Go's embedded `vcs.modified` setting (`true`, `false`, or `unavailable`), even with explicit release fields; it does not certify the injected revision. The catalog ID is resolved from the admitted embedded snapshot. A catalog in a source cache, checkout, or adjacent directory is not evidence about the active binary, and `--version` never reads one.
+
 macOS arm64 and Linux amd64 are the published targets. Windows is not supported and does not currently build.
 
 ## First run

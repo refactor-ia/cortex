@@ -128,6 +128,7 @@ func qaRecordRoleEvidence() {
 		}
 	}
 	_ = os.WriteFile(qaReportRoleEvidencePath, []byte(string(firstLine)+"\n"+actorPath+"\n"), 0o600)
+	_ = os.WriteFile("qa-report-frame", frame, 0o600)
 }
 
 const fixtureTask = "Requirements to analyze:\n" +
@@ -217,6 +218,56 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	t.Cleanup(func() { qaPiResolver = nil })
 	t.Chdir(cwd)
 	return []string{"qa", "run", "--role", roleName, "--request", "requirements.txt", "--catalog", catalogRoot}
+}
+
+func TestQARunEvidenceSidecar(t *testing.T) {
+	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":true}]`
+	for _, role := range qarole.Catalog() {
+		t.Run(string(role.ID), func(t *testing.T) {
+			args := roleReportFixture(t, role.ID)
+			mustOK(os.WriteFile("evidence.json", []byte(evidence), 0o600))
+			for _, options := range [][]string{
+				{"--evidence", "evidence.json"},
+				{"--backend", "pi", "--evidence", "evidence.json"},
+				{"--evidence", "evidence.json", "--backend", "pi"},
+			} {
+				stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+				if code := Run(context.Background(), append(args, options...), stdout, stderr, nil); code != exitOK || stderr.Len() != 0 || stdout.String() != fixtureReport+"\n" {
+					t.Fatalf("sidecar = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+				}
+				frame := must(os.ReadFile("qa-report-frame"))
+				if !bytes.Contains(frame, []byte(evidence)) || !bytes.Contains(frame, []byte(fixtureTask)) || !bytes.Contains(frame, []byte("Cite record IDs")) {
+					t.Fatal("CLI lost evidence, plain-text task, or attribution instructions")
+				}
+			}
+		})
+	}
+}
+
+func TestQARunRejectsEvidenceInputs(t *testing.T) {
+	args := reportFixture(t)
+	for _, data := range []string{"", "malformed", `[] []`, strings.Repeat(" ", qapi.MaxEvidenceBytes+1)} {
+		mustOK(os.WriteFile("evidence.json", []byte(data), 0o600))
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(args, "--evidence", "evidence.json"), stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "error=invalid_request\n") {
+			t.Fatalf("invalid evidence = %d stderr %q", code, stderr.String())
+		}
+	}
+	for _, path := range []string{"missing.json", "."} {
+		stderr := &bytes.Buffer{}
+		if code := Run(context.Background(), append(args, "--evidence", path), io.Discard, stderr, nil); code != exitFailure || !strings.HasPrefix(stderr.String(), "error=invalid_request\n") {
+			t.Fatalf("non-file evidence = %d stderr %q", code, stderr.String())
+		}
+	}
+	for _, options := range [][]string{
+		{"--evidence"}, {"--evidence", ""},
+		{"--evidence", "a", "--evidence", "b"},
+		{"--backend", "pi", "--backend", "pi"},
+	} {
+		if code := Run(context.Background(), append(args, options...), io.Discard, io.Discard, nil); code != exitUsage {
+			t.Fatalf("invalid options %q = %d", options, code)
+		}
+	}
 }
 
 func TestQAHelp(t *testing.T) {

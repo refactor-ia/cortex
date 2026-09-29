@@ -113,7 +113,7 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 }
 
 const (
-	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode]\n"
+	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode] [--evidence <file.json>]\n"
 	qaHelp = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
 		"Write a short, bounded plain-text request (request.txt):\n" +
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
@@ -154,20 +154,26 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "run" && args[1] == "--help" {
 		return writeHelp(stdout, stderr, qaHelp)
 	}
-	backend := "pi"
-	if len(args) == 9 {
-		if args[7] != "--backend" || args[8] == "" {
+	if len(args) < 7 || len(args) > 11 || (len(args)-7)%2 != 0 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+		writeError(stderr, "invalid_arguments")
+		_, _ = io.WriteString(stderr, qaUsage)
+		return exitUsage
+	}
+	backend, evidencePath := "pi", ""
+	seen := map[string]bool{}
+	for index := 7; index < len(args); index += 2 {
+		flag, value := args[index], args[index+1]
+		if value == "" || seen[flag] || flag != "--backend" && flag != "--evidence" {
 			writeError(stderr, "invalid_arguments")
 			_, _ = io.WriteString(stderr, qaUsage)
 			return exitUsage
 		}
-		backend = args[8]
-		args = args[:7]
-	}
-	if len(args) != 7 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
-		writeError(stderr, "invalid_arguments")
-		_, _ = io.WriteString(stderr, qaUsage)
-		return exitUsage
+		seen[flag] = true
+		if flag == "--backend" {
+			backend = value
+		} else {
+			evidencePath = value
+		}
 	}
 	if _, known := qaroute.RuntimeFor(backend); !known {
 		writeError(stderr, "invalid_arguments")
@@ -184,6 +190,13 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return qaFailure(stderr, "invalid_request")
 	}
+	var evidence []byte
+	if evidencePath != "" {
+		evidence, err = readQAFile(evidencePath, qapi.MaxEvidenceBytes)
+		if err != nil {
+			return qaFailure(stderr, "invalid_request")
+		}
+	}
 	cwd, err := os.Getwd()
 	catalogRoot, absErr := filepath.Abs(args[6])
 	if err != nil || absErr != nil {
@@ -195,7 +208,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	report, code, err := qapi.RunLocalReportOn(ctx, qapi.ReportRequest{
 		Role: role, CatalogRoot: catalogRoot, InstallRoot: installRoot,
-		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
+		CurrentDirectory: cwd, Task: task, Evidence: evidence, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
 	}, backend, qaPiResolver)
 	if err != nil || code != "" {
 		var catalogError *qapi.CatalogLoadError
@@ -227,11 +240,28 @@ func qaFailure(stderr io.Writer, code string) int {
 }
 
 func readRequestTask(path string) ([]byte, error) {
+	return readQAFile(path, qaadmission.MaxTaskBytes)
+}
+
+func readQAFile(path string, maximum int) ([]byte, error) {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > qaadmission.MaxTaskBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(maximum) {
 		return nil, fmt.Errorf("request is not a bounded regular file")
 	}
-	return os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("request file unavailable")
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(maximum) {
+		return nil, fmt.Errorf("request is not a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
+	if err != nil || len(data) > maximum {
+		return nil, fmt.Errorf("request exceeds bound")
+	}
+	return data, nil
 }
 
 func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {

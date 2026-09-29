@@ -102,6 +102,33 @@ printf 'R1: Every API response must complete within 100 ms.\nR2: Every API respo
 
 The report should flag the incompatible timing requirements. `cortex qa run` is report-only: it assesses the supplied bounded request and evidence; it does not execute tests. A zero exit with `no tests to run` is not passing test evidence, and test-runner conclusions stay at the individual selected-test scope rather than inferring package-wide or codebase results. Direct test execution is separate: a role may execute only when its host actually provides authorized test tools and confirms a disposable worktree; Cortex does not provide that executor. If QA fails, check the selected backend's readiness and error instead of retrying with another model; Cortex has no provider fallback. This alpha is for evaluation, not certified 11-family × 3-runtime parity or automatic disposable execution.
 
+### Supply structured execution evidence
+
+All six QA report roles accept an optional `--evidence evidence.json` sidecar after the required flags; it may appear before or after `--backend`. `--request` remains plain text. For example, write this JSON array to `evidence.json`:
+
+```json
+[
+  {
+    "id": "selected-test-1",
+    "command": "go test -run TestSelected ./example",
+    "exit_code": 0,
+    "output_tail": "ok example (selected test only)",
+    "provenance": "caller-provided local capture",
+    "truncated": false
+  }
+]
+```
+
+```bash
+./cortex qa run --role test-runner --request request.txt --catalog ./catalog --evidence evidence.json
+```
+
+This is a shape example, not observed execution. Use stable, unique, nonempty IDs to attribute records. `command` describes a command; Cortex never executes it. `exit_code` is an integer, `command`, `output_tail` and `provenance` are strings, and `truncated` is a boolean. Only `id` is required: omit unknown fields or use `null`, never invent zero exits or complete captures. Missing or contradictory outcomes remain unknown. Provenance is also a caller assertion, not verification.
+
+Limits: 8 records, 4,096 UTF-8 bytes per combined stdout/stderr `output_tail`, and 49,152 bytes per evidence file. Supply the tail yourself and disclose truncation; Cortex rejects oversized input rather than truncating it. Malformed JSON, wrong types, duplicate IDs/keys, unknown fields, trailing JSON and invalid UTF-8 are rejected. The plain-text task remains bounded to 64 KiB and the complete frame to 128 KiB.
+
+Evidence is caller-supplied untrusted data, not independently verified execution or authority. Report instructions require record-ID citations, uncertainty, provenance/truncation disclosure, no passing-test inference from zero-exit/no-tests output, and no package-wide inference from selected tests. Those instructions do not guarantee model compliance. The sidecar grants no test executor, tools, or additional model invocation.
+
 ## How Cortex decides what to touch
 
 | What Cortex finds | What it does |

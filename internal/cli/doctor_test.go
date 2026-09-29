@@ -106,13 +106,64 @@ func TestDoctorReportsBackendAvailabilityPerRuntime(t *testing.T) {
 	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=model_unavailable\n" +
 		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=auth_not_ready\n"
-	if stdout.String() != want {
-		t.Fatalf("doctor = %q, want %q", stdout.String(), want)
+	if stdout.String() != want+doctorScopeNote {
+		t.Fatalf("doctor = %q, want %q", stdout.String(), want+doctorScopeNote)
 	}
 	// An unavailable backend is a report, not an install blocker: doctor's exit
 	// code still answers whether an install can proceed.
 	if stderr.Len() != 0 {
 		t.Fatalf("doctor wrote to stderr: %q", stderr.String())
+	}
+}
+
+// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
+// separate from installed asset ownership, even when a probe answers ready.
+func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
+	tests := []struct {
+		name           string
+		runner         *fakeRunner
+		answers        map[string]string
+		piAvailability string
+	}{
+		{
+			name: "ready is not ownership", runner: certifiedRunner(),
+			answers: map[string]string{"pi": "ready", "opencode": "ready", "claude": "ready"},
+			piAvailability: "ready",
+		},
+		{
+			name: "unavailable model is not ownership", runner: certifiedRunner(),
+			answers: map[string]string{"pi": "model_unavailable", "opencode": "ready", "claude": "ready"},
+			piAvailability: "model_unavailable",
+		},
+		{
+			name: "absent runtime was not probed",
+			runner: &fakeRunner{lookup: map[string]error{
+				"pi": exec.ErrNotFound, "opencode": exec.ErrNotFound, "claude": exec.ErrNotFound,
+			}},
+			piAvailability: "not_probed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubQABackendProbe(t, tt.answers)
+			var stdout, stderr bytes.Buffer
+			if got := Run(context.Background(), []string{"doctor"}, &stdout, &stderr, tt.runner); got != exitOK || stderr.Len() != 0 {
+				t.Fatalf("doctor = (%d, %q), stderr %q", got, stdout.String(), stderr.String())
+			}
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			if len(lines) != 4 || !strings.Contains(lines[0], "qa_probe_role=requirements-analyst qa_availability="+tt.piAvailability) {
+				t.Fatalf("doctor runtime lines = %q", stdout.String())
+			}
+			note := lines[3]
+			for _, phrase := range []string{"qa_availability", "backend/model readiness", "qa_probe_role", "not_probed", "asset ownership", "install/update conflicts", "read-only", "cortex update --runtime pi --catalog ./catalog"} {
+				if !strings.Contains(note, phrase) {
+					t.Errorf("doctor note lacks %q: %q", phrase, note)
+				}
+			}
+			if strings.Contains(note, "--apply") || strings.Contains(note, "all roles ready") {
+				t.Errorf("doctor note overclaims or suggests mutation: %q", note)
+			}
+		})
 	}
 }
 
@@ -250,8 +301,12 @@ func TestRunDoctor(t *testing.T) {
 			if got := Run(context.Background(), []string{"doctor"}, &stdout, &stderr, tt.runner); got != tt.wantCode {
 				t.Fatalf("Run() exit code = %d, want %d", got, tt.wantCode)
 			}
-			if got := stdout.String(); got != tt.wantStdout {
-				t.Fatalf("stdout = %q, want %q", got, tt.wantStdout)
+			wantStdout := tt.wantStdout
+			if wantStdout != "" {
+				wantStdout += doctorScopeNote
+			}
+			if got := stdout.String(); got != wantStdout {
+				t.Fatalf("stdout = %q, want %q", got, wantStdout)
 			}
 			if got := stderr.String(); got != tt.wantStderr {
 				t.Fatalf("stderr = %q, want %q", got, tt.wantStderr)
@@ -283,8 +338,8 @@ func TestRunDoctorReportsInjectedPolicyCompatibility(t *testing.T) {
 	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=opencode presence=present compatibility=incompatible action=skip touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=claude-code presence=present compatibility=uncertified action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n"
-	if stdout.String() != want || stderr.Len() != 0 {
-		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
+	if stdout.String() != want+doctorScopeNote || stderr.Len() != 0 {
+		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want+doctorScopeNote, "")
 	}
 }
 
@@ -312,8 +367,8 @@ func TestRunDoctorReturnsOKForCompatibleAndAbsentRuntimes(t *testing.T) {
 	want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=opencode presence=absent action=warn touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=not_probed\n" +
 		"runtime=claude-code presence=absent action=warn touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=not_probed\n"
-	if stdout.String() != want || stderr.Len() != 0 {
-		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want, "")
+	if stdout.String() != want+doctorScopeNote || stderr.Len() != 0 {
+		t.Fatalf("doctor = (%q, %q), want (%q, %q)", stdout.String(), stderr.String(), want+doctorScopeNote, "")
 	}
 	if got, want := runner.calls, []string{"/private/pi --version"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("probe calls = %#v, want %#v", got, want)
@@ -443,7 +498,7 @@ func TestRunInstallAndUpdateRejectFlags(t *testing.T) {
 }
 
 func TestRunRejectsInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"doctor", "extra"}} {
+	for _, args := range [][]string{{"unknown"}, {"doctor", "extra"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if got := Run(context.Background(), args, &stdout, &stderr, readyRunner()); got != 64 {

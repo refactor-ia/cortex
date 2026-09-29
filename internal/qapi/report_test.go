@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -88,6 +91,36 @@ func reportStreamFixtureWithSystem(report, prompt string) []byte {
 	end := `{"type":"message_end","message":` + reportInitialSystemMessage + `}`
 	stream = bytes.Replace(stream, []byte(`{"type":"turn_start"}`+"\n"), []byte(`{"type":"turn_start"}`+"\n"+start+"\n"+end+"\n"), 1)
 	return bytes.Replace(stream, []byte(`"messages":[`), []byte(`"messages":[`+reportInitialSystemMessage+`,`), 1)
+}
+
+func TestReportCatalogFailureIsTypedBeforeAssetsOrRuntime(t *testing.T) {
+	root := t.TempDir()
+	request := ReportRequest{Role: qarole.RequirementsAnalyst, CatalogRoot: root}
+	for _, tt := range []struct {
+		name, manifest string
+	}{
+		{"missing catalog manifest", ""},
+		{"invalid catalog manifest", "not json"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.manifest != "" {
+				if err := os.WriteFile(filepath.Join(root, "catalog.json"), []byte(tt.manifest), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, code, err := RunLocalReportOn(context.Background(), request, "pi", nil)
+			var catalogError *CatalogLoadError
+			if code != qaadmission.CodeAdapterUnavailable || !errors.As(err, &catalogError) || catalogError.Cause == nil ||
+				strings.Contains(catalogError.Error(), root) {
+				t.Fatalf("catalog error = %q, %v; want typed sanitized catalog failure", code, err)
+			}
+		})
+	}
+	_, code, err := RunLocalReportOn(context.Background(), request, "unknown", nil)
+	var catalogError *CatalogLoadError
+	if code != qaadmission.CodeUnsupportedRuntime || errors.As(err, &catalogError) {
+		t.Fatalf("unknown backend = %q, %v; want unsupported runtime before catalog", code, err)
+	}
 }
 
 func TestParseReportStreamDiagnostic(t *testing.T) {

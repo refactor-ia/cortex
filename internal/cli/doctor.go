@@ -58,7 +58,10 @@ func runWithUninstallDependencies(ctx context.Context, args []string, stdout, st
 }
 
 func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, install installDependencies, uninstall uninstallDependencies) int {
-	if len(args) == 0 || len(args) != 1 && args[0] != "qa" && args[0] != "update" {
+	if len(args) == 0 || len(args) == 1 && (args[0] == "help" || args[0] == "--help") {
+		return writeHelp(stdout, stderr, rootHelp)
+	}
+	if len(args) != 1 && args[0] != "qa" && args[0] != "update" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
@@ -109,7 +112,13 @@ func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprob
 
 const (
 	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode]\n"
-	// qaReportNote surfaces the honest runtime prerequisites on every failure.
+	qaHelp = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
+		"Write a short, bounded plain-text request (request.txt):\n" +
+		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
+		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +
+		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n"
+	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\n\n" + qaHelp
+	// qaReportNote surfaces runtime prerequisites on non-catalog failures.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
 	// no model fallback and owns no automatic configuration.
 	//
@@ -122,6 +131,14 @@ const (
 	qaReportNote = "note=prerequisites: one of the pi, claude or opencode runtimes with a usable backend and installed cortex assets; run cortex doctor for per-runtime backend availability; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
 )
 
+func writeHelp(stdout, stderr io.Writer, help string) int {
+	if _, err := io.WriteString(stdout, help); err != nil {
+		writeError(stderr, "output_failed")
+		return exitFailure
+	}
+	return exitOK
+}
+
 // errUnknownQABackend refuses a backend token the route policy does not admit.
 var errUnknownQABackend = errors.New("unknown qa backend")
 
@@ -132,6 +149,9 @@ var qaPiResolver qapi.PathResolver
 // runQA executes one local QA report command. It never mutates user
 // configuration and never claims admission.
 func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "run" && args[1] == "--help" {
+		return writeHelp(stdout, stderr, qaHelp)
+	}
 	backend := "pi"
 	if len(args) == 9 {
 		if args[7] != "--backend" || args[8] == "" {
@@ -176,6 +196,12 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		CurrentDirectory: cwd, Task: task, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
 	}, backend, qaPiResolver)
 	if err != nil || code != "" {
+		var catalogError *qapi.CatalogLoadError
+		if errors.As(err, &catalogError) {
+			writeError(stderr, string(code))
+			_, _ = io.WriteString(stderr, "stage=catalog expected=catalog root containing catalog.json next_check=cortex qa --help\n")
+			return exitFailure
+		}
 		failure := qaFailure(stderr, string(code))
 		if code == qaadmission.CodeNormalizationFailed {
 			var diagnostic *qapi.ReportNormalizationError
@@ -252,6 +278,11 @@ func runtimeReport(matrix runtimematrix.Matrix) string {
 	return output.String()
 }
 
+// The note is separate from the per-runtime records: their machine-readable
+// fields and order stay intact, while the scope and safe next check remain
+// visible even if every probed backend reports ready.
+const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_probe_role only (not_probed means no probe); it does not check asset ownership or install/update conflicts; for a separate read-only ownership plan run cortex update --runtime pi --catalog ./catalog\n"
+
 // doctorReport extends the shared per-runtime line with what doctor alone is
 // asked for: whether that runtime's QA backend could actually run a report.
 //
@@ -273,6 +304,7 @@ func doctorReport(ctx context.Context, matrix runtimematrix.Matrix) string {
 		present := decision.Outcome != runtimematrix.OutcomeAbsent
 		output.WriteString(strings.TrimSuffix(line, "\n") + qaBackendLine(ctx, decision.ID, present) + "\n")
 	}
+	output.WriteString(doctorScopeNote)
 	return output.String()
 }
 

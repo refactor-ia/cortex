@@ -73,6 +73,13 @@ type ReportRequest struct {
 	TimeoutSeconds   int
 }
 
+// CatalogLoadError identifies the catalog preflight stage without exposing a
+// filesystem error to CLI callers. The admission code remains unchanged.
+type CatalogLoadError struct{ Cause error }
+
+func (e *CatalogLoadError) Error() string { return "report catalog unavailable" }
+func (e *CatalogLoadError) Unwrap() error { return e.Cause }
+
 // RunLocalReport runs one bounded local QA report for an installed role on Pi.
 // It reuses the admission asset identity chain, route resolution, invocation
 // runner, and runtime bounds, but returns the substantive report text and never
@@ -112,7 +119,7 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	}
 	snapshot, err := catalog.BuildCatalogSnapshot(request.CatalogRoot, "catalog.json", catalog.AdmissionPolicy{})
 	if err != nil {
-		return "", qaadmission.CodeAdapterUnavailable, err
+		return "", qaadmission.CodeAdapterUnavailable, &CatalogLoadError{Cause: err}
 	}
 	expected, err := CatalogAdmissionBinding(snapshot, request.Role, backend.ID())
 	if err != nil {

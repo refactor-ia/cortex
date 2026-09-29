@@ -75,7 +75,7 @@ Every command reports one line per runtime, in the same order, in `key=value` fo
 
 ### Try a QA report
 
-In a **disposable runtime profile** with your own authenticated Pi model, work from the unpacked archive directory. Cortex does not set up provider credentials or isolate execution for you.
+In a **disposable runtime profile** with your own authenticated Pi model, work from the unpacked archive directory. Cortex does not set up provider credentials or isolate execution for you. Run `./cortex --help` or `./cortex qa run --help` for the supported syntax and a short plain-text request example. Pass the catalog root directory (`./catalog` in the archive), which contains `catalog.json`, not a backup directory without that file.
 
 ```bash
 ./cortex doctor
@@ -83,7 +83,7 @@ In a **disposable runtime profile** with your own authenticated Pi model, work f
 ./cortex doctor
 ```
 
-After installation, require Pi's `qa_availability=ready` in the second `doctor` output; a zero exit alone only says installation can proceed. If Pi is not ready, run `./cortex uninstall` and stop. Otherwise:
+After installation, require Pi's `qa_availability=ready` in the second `doctor` output; a zero exit alone only says installation can proceed. That field probes backend/model readiness for `qa_probe_role` only, not asset ownership or install/update conflicts. To check ownership separately without changing assets, inspect the read-only plan from `./cortex update --runtime pi --catalog ./catalog` (omit `--apply`). If Pi is not ready, run `./cortex uninstall` and stop. Otherwise:
 
 ```bash
 printf 'R1: Every API response must complete within 100 ms.\nR2: Every API response must wait at least 500 ms before returning.\nIdentify contradictions and ask for a resolution. Do not edit files.\n' > request.txt

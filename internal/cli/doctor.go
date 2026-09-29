@@ -66,6 +66,8 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 		return exitUsage
 	}
 	switch args[0] {
+	case "--version":
+		return runVersion(stdout, stderr)
 	case "doctor":
 		return runDoctor(ctx, stdout, stderr, runner, install.policy)
 	case "qa":
@@ -117,7 +119,7 @@ const (
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
 		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +
 		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n"
-	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\n\n" + qaHelp
+	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n\n" + qaHelp
 	// qaReportNote surfaces runtime prerequisites on non-catalog failures.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
 	// no model fallback and owns no automatic configuration.

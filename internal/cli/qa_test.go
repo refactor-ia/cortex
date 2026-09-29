@@ -42,6 +42,11 @@ func fakePi() int {
 	// answer them too, or every scenario below stops at "unavailable" instead
 	// of reaching the stream it exists to produce.
 	if os.Args[1] == "--list-models" {
+		scenario, _ := os.ReadFile("qa-report-scenario")
+		if string(bytes.TrimSpace(scenario)) == "model-unavailable" {
+			fmt.Print("provider model context max-out thinking images\n")
+			return 0
+		}
 		fmt.Print("provider      model                context  max-out  thinking  images\n" +
 			"nan           qwen3.6              262.1K   16.4K    yes       no\n" +
 			"nan           glm5.3               262.1K   16.4K    yes       no\n" +
@@ -49,6 +54,11 @@ func fakePi() int {
 		return 0
 	}
 	if os.Args[1] == "auth" {
+		scenario, _ := os.ReadFile("qa-report-scenario")
+		if string(bytes.TrimSpace(scenario)) == "auth-not-ready" {
+			fmt.Print(`{"status":"not_ready","reason":"credential unavailable"}` + "\n")
+			return 1
+		}
 		fmt.Print(`{"status":"ready","provider":"nan","authType":"api_key"}` + "\n")
 		return 0
 	}
@@ -207,6 +217,130 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	t.Cleanup(func() { qaPiResolver = nil })
 	t.Chdir(cwd)
 	return []string{"qa", "run", "--role", roleName, "--request", "requirements.txt", "--catalog", catalogRoot}
+}
+
+func TestQAHelp(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "bare root"},
+		{name: "root help", args: []string{"help"}},
+		{name: "root flag", args: []string{"--help"}},
+		{name: "bare qa", args: []string{"qa"}},
+		{name: "qa flag", args: []string{"qa", "--help"}},
+		{name: "qa run flag", args: []string{"qa", "run", "--help"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), tt.args, stdout, stderr, nil); code != exitOK || stderr.Len() != 0 {
+				t.Fatalf("Run(%q) = %d, stdout %q stderr %q", tt.args, code, stdout.String(), stderr.String())
+			}
+			for _, expected := range []string{
+				qaUsage,
+				"--role requirements-analyst --request request.txt --catalog ./catalog",
+				"catalog.json",
+				"plain-text",
+				"evaluates evidence",
+				"does not run tests",
+			} {
+				if !strings.Contains(stdout.String(), expected) {
+					t.Fatalf("Run(%q) help missing %q: %q", tt.args, expected, stdout.String())
+				}
+			}
+			if !strings.Contains(stdout.String(), "printf '") || len(stdout.String()) > 2048 {
+				t.Fatalf("Run(%q) lacks a short request example: %q", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestQAHelpRejectsMalformedInvocations(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "extra"}, {"--help", "extra"},
+		{"qa", "--help", "extra"}, {"qa", "run", "--help", "extra"},
+		{"qa", "run", "--role", "requirements-analyst", "--request", "request.txt", "--catalog", "./catalog", "--help"},
+	} {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), args, stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 || !strings.Contains(stderr.String(), "error=") {
+				t.Fatalf("Run(%q) = %d, stdout %q stderr %q", args, code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestQARunMissingCatalogRoot(t *testing.T) {
+	args := reportFixture(t)
+	backup := filepath.Join(t.TempDir(), "private-install-backup")
+	mustOK(os.Mkdir(backup, 0o700))
+	args[len(args)-1] = backup
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 {
+		t.Fatalf("missing catalog = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	for _, expected := range []string{"error=adapter_unavailable", "stage=catalog", "catalog.json", "cortex qa --help"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Errorf("missing catalog guidance %q: %q", expected, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), backup) || strings.Contains(stderr.String(), "private-install-backup") || strings.Contains(stderr.String(), "cortex doctor") || strings.Contains(stderr.String(), "stage=backend") {
+		t.Errorf("catalog refusal leaked a path or misidentified the stage: %q", stderr.String())
+	}
+}
+
+func TestQARunInvalidCatalogManifest(t *testing.T) {
+	args := reportFixture(t)
+	root := filepath.Join(t.TempDir(), "private-invalid-catalog")
+	mustOK(os.Mkdir(root, 0o700))
+	mustOK(os.WriteFile(filepath.Join(root, "catalog.json"), []byte("not json"), 0o600))
+	args[len(args)-1] = root
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 ||
+		!strings.HasPrefix(stderr.String(), "error=adapter_unavailable\nstage=catalog ") ||
+		!strings.Contains(stderr.String(), "next_check=cortex qa --help") || strings.Contains(stderr.String(), root) ||
+		strings.Contains(stderr.String(), "cortex doctor") {
+		t.Fatalf("invalid catalog = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestQARunFailureStagesRemainDistinct(t *testing.T) {
+	args := reportFixture(t)
+	for _, tt := range []struct {
+		name, scenario, code string
+	}{
+		{"model unavailable", "model-unavailable", "model_unavailable"},
+		{"auth not ready", "auth-not-ready", "auth_not_ready"},
+		{"execution failed", "nonzero", "execution_failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mustOK(os.WriteFile("qa-report-scenario", []byte(tt.scenario), 0o600))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 ||
+				!strings.HasPrefix(stderr.String(), "error="+tt.code+"\n") || strings.Contains(stderr.String(), "stage=catalog") ||
+				!strings.Contains(stderr.String(), "cortex doctor") {
+				t.Fatalf("%s = %d stdout %q stderr %q", tt.name, code, stdout.String(), stderr.String())
+			}
+		})
+	}
+	t.Run("unavailable backend binding stays a runtime failure", func(t *testing.T) {
+		qaPiResolver = fixturePi{filepath.Join(t.TempDir(), "missing-runtime")}
+		defer func() { qaPiResolver = fixturePi{must(os.Executable())} }()
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 ||
+			!strings.HasPrefix(stderr.String(), "error=unsupported_runtime\n") || strings.Contains(stderr.String(), "stage=catalog") ||
+			!strings.Contains(stderr.String(), "cortex doctor") {
+			t.Fatalf("unavailable backend = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+	})
+	t.Run("unknown backend stays usage failure before catalog loading", func(t *testing.T) {
+		args[len(args)-1] = filepath.Join(t.TempDir(), "private-missing-catalog")
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(args, "--backend", "unknown"), stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 ||
+			!strings.Contains(stderr.String(), "error=invalid_arguments") || strings.Contains(stderr.String(), "stage=catalog") {
+			t.Fatalf("unknown backend = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+	})
 }
 
 func TestQARunReport(t *testing.T) {

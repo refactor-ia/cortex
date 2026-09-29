@@ -186,7 +186,7 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	readyQABackends(t)
 	const compatibleReport = "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
-		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n"
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" + doctorScopeNote
 	expect("doctor", exitOK, compatibleReport)
 	assertSentinels()
 	assertOwnedAbsent()

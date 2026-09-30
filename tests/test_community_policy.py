@@ -443,6 +443,64 @@ class CommunityPolicyTests(unittest.TestCase):
                 self.assertIn("auth=subscription_oauth_token", claude)
                 self.assertNotIn("CORTEX_REAL_SMOKE_SUBSCRIPTION_AUTH_FILE", claude)
 
+        def test_maintainer_delivery_is_portable_and_preserves_delivery_lessons(self) -> None:
+                path = "catalog/families/reasoning/sources/maintainer-delivery.md"
+                source = read_text(path)
+                self.assertEqual(
+                        (REPO_ROOT / path).read_bytes(),
+                        (REPO_ROOT / "internal/builtinassets" / path).read_bytes(),
+                )
+                text = " ".join(source.split())
+                for forbidden in (
+                        "model profiles", "profile file", "native review", "TUI",
+                        "sentinel", "origin/main", "`main`", "fetch -q origin",
+                        "status:approved", "type:*", "fix/<issue>-<slug>",
+                        "fix(<scope>)", "3 files", "150 changed lines or",
+                        "beyond that, stop", "Race gate", "Self-merge is reasonable",
+                ):
+                        with self.subTest(forbidden=forbidden):
+                                self.assertNotIn(forbidden, text)
+                for expected in (
+                        "executes and gates nothing",
+                        "operator's decision",
+                        "never-overrides-harness-consent",
+                        "destination repository",
+                        "issue policy, size budget, pre-push checks, review and merge requirements",
+                        "actual default branch",
+                        "actual PR base",
+                        "<remote>/<base>",
+                        "If the repository has no size budget",
+                        "about 150 changed lines as an advisory fallback",
+                        "not a gate or a fixed file-count limit",
+                        "repository's required pre-push checks",
+                        "repository's review requirements",
+                        "repository's merge requirements",
+                        "closing keyword when this PR completes the issue",
+                        "Refs #N",
+                        "deliberately partial or WIP PR",
+                        "Stacked chains are a supported, recommended way",
+                        "Merge parents before children, in order",
+                        "repository's merge strategy",
+                        "no force push",
+                        "After the base changes, recompute derived values",
+                        "catalog fingerprints, identities, generated counts and inventories",
+                        "from the tests",
+                        "same day for review and feedback turnaround",
+                        "intake (before claiming an issue)",
+                        "immediately before opening a PR",
+                        "Right before merging: repeat the race check",
+                        "competing PR",
+                        "identical command against that pristine base",
+                        "Same test, same failure mode on base",
+                        "Passes on base, fails on candidate",
+                        "Different failure mode on base than on candidate",
+                        "Test name", "Command", "Exit code", "Base SHA",
+                        "Output excerpt showing the same failure",
+                        "Never call red green",
+                ):
+                        with self.subTest(expected=expected):
+                                self.assertIn(expected, text)
+
         def test_foundation_documents_state_clean_target_status(self) -> None:
                 readme = read_text("README.md")
                 for expected in (

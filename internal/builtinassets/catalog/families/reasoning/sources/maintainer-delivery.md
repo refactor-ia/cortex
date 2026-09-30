@@ -13,49 +13,59 @@ the harness workflow or its consent prompts.
 
 ## 0. Preflight (seconds)
 
-- Local clone current with `origin/main`; one fresh worktree per issue.
-- Harness ready: model profiles present, so native review can resolve its
-  models. A missing profile file surfaces mid-review as "no model configured".
+- Read the destination repository's contributor guidance, project instructions,
+  PR template, CI and branch protection: derive its issue policy, size budget,
+  pre-push checks, review and merge requirements, not this skill's defaults.
+- Identify the actual default branch, actual PR base (which may be a stack
+  parent), and corresponding remote. Use `<remote>/<base>` below for that
+  resolved base, not an assumed branch name. Record its current SHA; consider
+  a fresh worktree per issue. Ask the operator about unresolved policy.
 
 ## 1. Take the issue (about 2 minutes)
 
-- Race check: issue open and unassigned, no open or merged PR references it,
-  note the `origin/main` SHA. Competing PR found: stop. See "Race gate" below.
-- Follow the repo's issue-first policy (CONTRIBUTING): e.g. `status:approved`
-  plus `type:*`, and a short claim comment with scope and out-of-scope.
-- Read the conventions from the repo, not from memory: PR template
-  (`.github/PULL_REQUEST_TEMPLATE.md` or similar), and branch and title
-  patterns of the last merged PRs (e.g. `fix/<issue>-<slug>`,
-  `fix(<scope>): <summary>`).
+- Race check: inspect issue state, assignees and open or merged PR references;
+  note the resolved base SHA. Competing PR found: reconsider scope with the
+  operator. See "Race checks" below; intended stack parents are not competitors.
+- Follow the repository's issue policy, including any required approval or
+  labels, and consider a short claim comment with scope and out-of-scope.
+- Read branch, commit and title conventions from current repository guidance
+  and recent merged PRs; use its PR template rather than a fixed syntax.
 
 ## 2. Kickoff prompt
 
-Fill and send:
+Adapt and send if the operator chooses:
 
 ```
-Fix <repo>#<N>. Expected behavior: <exact>. Test-first.
-Out of scope: <list>. Branch: <convention>. Run the focused test and the
-affected suite; stop before commit and show the diff.
+Fix <repo>#<N>. Expected behavior: <exact>. Testing: <applicable policy>.
+Out of scope: <list>. Branch: <repository convention>. Checks: <required commands>.
+Stop before commit and show the diff.
 ```
 
-Scope growth is the main cause of slow merges. Keep about 150 changed lines or
-3 files; beyond that, stop and re-scope or split.
+Scope growth is the main cause of slow merges. Use the repository's size budget.
+If the repository has no size budget, consider about 150 changed lines as an
+advisory fallback, not a gate or a fixed file-count limit. Discuss splitting or
+re-scoping with the operator when review load grows.
 
 ## 3. Checks
 
-- Focused test red then green; affected suite run.
-- Run locally what CI runs before pushing, so the first CI run is green.
-- Red suite: compare against pristine `origin/main` before calling anything
+- Focused test red then green when applicable under the testing policy;
+  run the affected suite chosen for the change.
+- Use the repository's required pre-push checks from its guidance and CI;
+  report unavailable checks and failures rather than assume a green first CI run.
+- Red suite: compare against the pristine recorded base before calling anything
   pre-existing. See "Baseline differential diagnosis" below. Never call red
   green.
 
 ## 4. Review and PR
 
-- Native review as the harness offers it; consent is the operator's.
-- Commit only the change (no task or scratch files), conventional message.
-- Push the branch (no `--force`, never `main`), repeat the race check, open
-  the PR with the repo template: `Closes #N` when this PR completes the
-  issue, verification (command, result, SHA), advisories, out-of-scope. Use
+- Follow the repository's review requirements; tooling and consent remain the
+  operator's, with no model or harness-specific prerequisite from this skill.
+- Consider committing only the change (no task or scratch files), following
+  the repository's commit conventions and publication rules.
+- Before pushing or opening a PR, consult the repository's branch protection
+  and push policy. Repeat the race check, use the repo template and accepted
+  closing keyword when this PR completes the issue (e.g. `Fixes #N`), with
+  verification (command, result, SHA), advisories and out-of-scope. Use
   `Refs #N` instead only for a deliberately partial or WIP PR that does not
   close the issue on its own (e.g. one link in a stacked chain).
 
@@ -76,11 +86,11 @@ feedback turnaround.
 
 ## 7. Merge
 
-Self-merge is reasonable when all hold: CI green, native review approved, bot
-reviews without blocking findings, within budget, and no sensitive area
-(security, installers, review or release machinery, migrations, data).
-Otherwise ask another maintainer to review. Right before merging: race check
-again, issue still open, `main` not moved in a conflicting way.
+Use the repository's merge requirements, permissions, required checks, reviews
+and sensitive-area ownership to determine readiness; this skill grants no
+approval or self-merge permission. Right before merging: repeat the race check,
+confirm issue state and intended scope, and check for conflicting base movement.
+The operator decides whether to proceed or seek another maintainer's review.
 
 ## Stacked PR chains
 
@@ -88,16 +98,18 @@ Stacked chains are a supported, recommended way to land a large change as
 several reviewable PRs instead of one oversized one: split scope into
 ordered slices, each PR based on the previous slice's branch. Do not
 discourage stacking to fit a budget; it is the preferred alternative to a
-single oversized PR.
+single oversized PR where the repository supports it.
 
 Landing a chain:
 - Merge parents before children, in order.
-- After a parent squash-merges, retarget the child PR to `main`, merge
-  `main` into the child (no force push), resolve conflicts, and re-run
-  checks before continuing.
-- After `main` moves, recompute derived values (catalog fingerprints,
-  generated counts and inventories) from the tests rather than blindly
-  taking either side of a git conflict on a generated or derived file.
+- After a parent lands, confirm the child's intended base and adapt to the
+  repository's merge strategy. A squash or rebase merge may leave parent commits
+  in the child: reconcile ancestry and inspect the child-only diff, not merely
+  its target branch. Choose a repository-supported update with the operator
+  (no force push assumed), resolve conflicts and re-run checks before continuing.
+- After the base changes, recompute derived values (catalog fingerprints,
+  identities, generated counts and inventories) from the tests rather than
+  blindly taking either side of a git conflict on a generated or derived file.
 
 ## Measure
 
@@ -107,12 +119,13 @@ step 5, not by skipping checks.
 
 ---
 
-## Race gate (operator-run, advisory)
+## Race checks (operator-run, advisory)
 
 Example commands the operator can run at intake (before claiming an issue)
-and again immediately before opening a PR. These are suggestions, not
-actions this skill takes — the operator decides whether and when to run
-them, and what to do with the results.
+and again immediately before opening a PR. Repeat before merging, with the
+actual PR base and current issue/PR state. These are suggestions, not actions
+this skill takes — the operator decides whether and when to run them, and
+what to do with the results. Fill placeholders from the destination repository.
 
 ### Intake check
 
@@ -120,7 +133,7 @@ them, and what to do with the results.
 gh issue view <N> --repo <owner>/<repo> --json state,assignees,labels
 gh pr list --repo <owner>/<repo> --search "<N> in:body,title" \
   --state all --json number,title,state,url
-git -C <worktree> rev-parse origin/main   # useful as a baseline SHA
+git -C <worktree> rev-parse <remote>/<base>   # useful as a baseline SHA
 ```
 
 Worth reconsidering claiming the issue if:
@@ -128,30 +141,33 @@ Worth reconsidering claiming the issue if:
 - `assignees` is non-empty and not the operator, or
 - the PR search returns an open or merged PR referencing the issue.
 
+Inspect references for competition versus intended intermediate slices; a
+search match alone does not establish that the issue is already completed.
+
 ### Pre-PR check (consider repeating this immediately before `gh pr create`)
 
 ```
 gh issue view <N> --repo <owner>/<repo> --json state,assignees
 gh pr list --repo <owner>/<repo> --search "<N> in:body,title" \
   --state all --json number,title,state,url
-git -C <worktree> fetch -q origin
-git -C <worktree> rev-parse origin/main   # compare to intake baseline SHA
+git -C <worktree> fetch -q <remote>
+git -C <worktree> rev-parse <remote>/<base>   # compare to intake baseline SHA
 ```
 
 Worth pausing before opening the PR if:
 - the issue closed or was reassigned since intake, or
 - a competing PR now references the issue, or
-- `origin/main` moved in a way that conflicts with the change (rebasing and
-  re-running checks against the new base is one option).
+- the resolved base moved in a way that conflicts with the change (updating
+  and re-running checks against the new base is one option).
 
-A moved `origin/main` that does not conflict is not necessarily a reason to
-stop; re-running the affected suite against the new base first is worth
-considering before opening the PR.
+A moved base that does not conflict is not necessarily a reason to stop;
+re-running the affected suite against the new base first is worth considering
+before opening the PR. Record the new base SHA when refreshing evidence.
 
 ## Baseline differential diagnosis (operator-run, advisory)
 
 A suggested approach for deciding whether a red test in the affected suite
-is caused by the candidate change or was already failing on `origin/main`.
+is caused by the candidate change or was already failing on the recorded base.
 The operator runs and interprets this; it is not a check this skill
 performs or enforces.
 
@@ -159,8 +175,8 @@ performs or enforces.
 
 1. Note the exact failing test name(s) and the command that produced them
    on the candidate branch, with output and exit code.
-2. Get a pristine base checkout: check out a fresh worktree of `origin/main`
-   at the same SHA recorded at intake, with no candidate changes applied.
+2. Get a pristine base checkout: check out a fresh worktree of the resolved base
+   at the same SHA recorded for the comparison, with no candidate changes applied.
 3. Run the identical command against that pristine base.
 4. Compare:
    - Same test, same failure mode on base — worth treating as pre-existing,
@@ -182,50 +198,6 @@ For any "pre-existing" claim, useful evidence includes:
 
 A "pre-existing" claim without this evidence is weak; treating the failure
 as still open until the comparison is actually run is the safer default.
-
-## TUI smoke contract (operator-run, advisory)
-
-A reversible, operator-run manual check for TUI-visible model-selection
-state. This is a suggested smoke test, not an automated suite and not
-something this skill runs — the operator performs it and restores state
-afterward.
-
-### What this tests
-
-Whether the TUI's visible "current model" indicator updates correctly when
-the human switches models through the TUI's own controls.
-
-### What this does NOT test (do not conflate)
-
-- **Pinned model**: a persisted user preference that survives restarts.
-  This contract does not exercise pinning or unpinning.
-- **Applied model**: the model actually bound to the running session after
-  a switch takes effect (may lag one render cycle behind "current").
-- **Current model**: the value the TUI displays as active right now. This
-  contract only checks that this displayed value changes when expected —
-  not that it matches "applied" or "pinned" at every intermediate frame.
-
-Naming these separately matters: a failure to distinguish them has
-previously produced false "it's broken" reports when the real behavior was
-correct but appeared on a different render frame than expected.
-
-### Procedure
-
-1. Record the current displayed model value (the "current" indicator).
-2. Switch to a sentinel model not otherwise used in this session (a model
-   ID that is clearly distinguishable from your normal models).
-3. Observe the "current" indicator updates to the sentinel value.
-4. Restore the original model exactly as recorded in step 1.
-5. Confirm the "current" indicator shows the original value again.
-
-### Sentinel and restore
-
-- Choose a sentinel value that cannot be mistaken for a real working
-  choice (e.g., a rarely-used model ID), so any leftover state is obvious.
-- Step 4 (restore) is mandatory even if steps 1-3 pass; leaving the
-  sentinel active corrupts the next session's baseline.
-- If restore fails, report it explicitly — do not silently continue with
-  the sentinel active.
 
 ## Output Contract
 

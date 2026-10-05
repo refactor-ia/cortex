@@ -375,6 +375,10 @@ func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 		}
 		observation, err := deps.observe(trusted, installobserve.DefaultOptions())
 		if err != nil {
+			if len(observation.UnsupportedActorPaths()) > 0 && observation.MatchesRoot(root.RootPath()) && observation.MatchesRuntime(root.RuntimeID()) {
+				preflight = append(preflight, uninstallPreflight{root: root, observation: observation, status: "blocked"})
+				continue
+			}
 			writeError(stderr, "uninstall_observation_failed")
 			return exitFailure
 		}
@@ -387,7 +391,7 @@ func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 		preflight = append(preflight, uninstallPreflight{root: root, observation: observation, status: status})
 	}
 	for _, item := range preflight {
-		if item.status == "conflict" {
+		if item.status == "conflict" || len(item.observation.UnsupportedActorPaths()) > 0 {
 			for index := range preflight {
 				if preflight[index].status == "ready" {
 					preflight[index].status = "blocked"
@@ -453,9 +457,18 @@ func uninstallFailureReason(err error) string {
 
 func writeUninstallResult(stdout, stderr io.Writer, results []uninstallPreflight, code int) int {
 	var output strings.Builder
+	unsupported := false
 	for _, result := range results {
 		remove, absent, conflict := uninstallCounts(result.observation)
-		_, _ = fmt.Fprintf(&output, "runtime=%s uninstall=%s remove=%d absent=%d conflict=%d\n", result.root.RuntimeID(), result.status, remove, absent, conflict)
+		_, _ = fmt.Fprintf(&output, "runtime=%s uninstall=%s remove=%d absent=%d conflict=%d", result.root.RuntimeID(), result.status, remove, absent, conflict)
+		if paths := result.observation.UnsupportedActorPaths(); len(paths) > 0 {
+			unsupported = true
+			_, _ = fmt.Fprintf(&output, " reason=unsupported_installation state=validated_canonical_v3 recorded_actor_paths=%s", strings.Join(paths, ","))
+		}
+		output.WriteByte('\n')
+	}
+	if unsupported {
+		output.WriteString("note=uninstall unsupported for v3 actor state under shared ownership policy; recorded paths do not confirm external guidance; no files changed; manual resolution required\n")
 	}
 	if _, err := io.WriteString(stdout, output.String()); err != nil {
 		writeError(stderr, "output_failed")

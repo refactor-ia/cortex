@@ -70,12 +70,20 @@ func (evidence RemovalEvidence) clone() RemovalEvidence {
 
 // UninstallObservation is detached, bounded evidence from canonical prior state.
 type UninstallObservation struct {
-	runtimeID runtimematrix.RuntimeID
-	rootPath  string
-	records   []UninstallRecord
-	exact     map[string]ExactFile
-	removals  map[string]RemovalEvidence
-	ready     bool
+	runtimeID             runtimematrix.RuntimeID
+	rootPath              string
+	records               []UninstallRecord
+	exact                 map[string]ExactFile
+	removals              map[string]RemovalEvidence
+	ready                 bool
+	unsupportedActorPaths []string
+}
+
+// UnsupportedActorPaths returns detached, bounded recorded relative actor paths
+// only for validated canonical v3 state. It does not establish current file
+// contents, external guidance presence, or removal authority.
+func (observation UninstallObservation) UnsupportedActorPaths() []string {
+	return append([]string(nil), observation.unsupportedActorPaths...)
 }
 
 // Records returns detached logical records in canonical prior-state order, with the
@@ -152,6 +160,16 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	}
 	manifest, err := decodeCanonicalUninstallState(state, root, options.MaxEntries)
 	if err != nil {
+		// A validated v3 ledger supports diagnostics only, never full-file removal.
+		if manifest.SchemaVersion() == 3 {
+			paths := make([]string, 0)
+			for _, artifact := range manifest.Artifacts() {
+				if artifact.Kind() == installstate.KindPiActor {
+					paths = append(paths, artifact.RelativePath())
+				}
+			}
+			return UninstallObservation{runtimeID: root.runtimeID, rootPath: root.rootPath, unsupportedActorPaths: paths}, uninstallInvalid()
+		}
 		return UninstallObservation{}, uninstallInvalid()
 	}
 
@@ -222,6 +240,14 @@ func decodeCanonicalUninstallState(state []byte, root UninstallRoot, maxEntries 
 			return installstate.Manifest{}, uninstallInvalid()
 		}
 		paths[artifact.RelativePath()] = true
+	}
+	// New decoder support must not grant full-hash removal authority to newer schemas.
+	// Only canonical, validated v3 state may accompany a refusal for diagnostics.
+	if manifest.SchemaVersion() != 1 && manifest.SchemaVersion() != 2 {
+		if manifest.SchemaVersion() == 3 {
+			return manifest, uninstallInvalid()
+		}
+		return installstate.Manifest{}, uninstallInvalid()
 	}
 	return manifest, nil
 }

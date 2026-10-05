@@ -102,6 +102,15 @@ func NewV2(runtimeID runtimematrix.RuntimeID, rootKind skilldest.RootKind, snaps
 }
 
 func validV2(manifest Manifest) bool {
+	for _, artifact := range manifest.artifacts {
+		if artifact.canonicalSHA256 != "" {
+			return false
+		}
+	}
+	return validActorState(manifest)
+}
+
+func validActorState(manifest Manifest) bool {
 	if manifest.owner != "cortex" || manifest.scope != "user" || manifest.runtimeID != runtimematrix.RuntimePi || manifest.rootKind != skilldest.RootKindPiUserAgent || !validHash(manifest.snapshotFingerprint) || !validInstallationID(manifest.installationID) || len(manifest.artifacts) == 0 {
 		return false
 	}

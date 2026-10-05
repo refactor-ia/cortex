@@ -131,13 +131,18 @@ func TestSchemaContract(t *testing.T) {
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
 		t.Fatalf("$schema = %q", schema["$schema"])
 	}
-	if schema["$comment"] != "Decode remains authoritative for raw duplicate artifact keys; NewV2 remains authoritative for installation-ID equality, unique paths, skill key-to-field/path correlation, and the desired skill set." {
-		t.Fatalf("schema limitation comment = %q", schema["$comment"])
-	}
-
+	// Structural regression checks only; this test does not evaluate JSON Schema.
 	variants := schema["oneOf"].([]any)
-	if len(variants) != 2 {
-		t.Fatalf("root oneOf variants = %d, want 2", len(variants))
+	if len(variants) != 3 {
+		t.Fatalf("root oneOf variants = %d, want 3", len(variants))
+	}
+	for index, name := range []string{"v1Manifest", "v2Manifest", "v3Manifest"} {
+		if schemaObject(t, variants[index])["$ref"] != "#/$defs/"+name {
+			t.Fatalf("root variant %d must reference %s", index, name)
+		}
+	}
+	if schema["$comment"] != "Go decoding and validation remain authoritative for duplicate JSON keys, installation identity equality, unique paths, key-to-field/path correlations, and the full desired skill set." {
+		t.Fatalf("schema limitation comment = %q", schema["$comment"])
 	}
 	definitions := schemaObject(t, schema["$defs"])
 	v1 := schemaObject(t, definitions["v1Manifest"])
@@ -152,37 +157,90 @@ func TestSchemaContract(t *testing.T) {
 		t.Fatal("v1 must preserve runtime/root pairing")
 	}
 
-	v2Properties := schemaObject(t, v2["properties"])
-	if schemaObject(t, v2Properties["artifacts"])["$ref"] != "#/$defs/v2Artifacts" {
-		t.Fatal("v2 must use the exact artifact definition")
+	if schemaObject(t, definitions["hash"])["pattern"] != "^[a-f0-9]{64}$" {
+		t.Fatal("hash must require exactly 64 lowercase hexadecimal characters")
 	}
-	artifacts := schemaObject(t, definitions["v2Artifacts"])
-	if artifacts["minProperties"] != float64(7) || artifacts["additionalProperties"] != false {
-		t.Fatalf("v2 artifacts boundary = %#v", artifacts)
+	for _, name := range []string{"v1SkillArtifact", "skillArtifact", "actorArtifact", "v3ActorArtifact"} {
+		t.Run(name, func(t *testing.T) {
+			artifact := schemaObject(t, definitions[name])
+			properties := schemaObject(t, artifact["properties"])
+			required := []string{"relativePath", "sha256"}
+			switch name {
+			case "skillArtifact":
+				required = []string{"kind", "capabilityId", "relativePath", "sha256", "installationId"}
+			case "actorArtifact", "v3ActorArtifact":
+				required = []string{"kind", "roleId", "actorContractVersion", "relativePath", "sha256", "installationId"}
+			}
+			if name == "v3ActorArtifact" {
+				required = append(required, "canonicalSha256")
+				if schemaObject(t, properties["canonicalSha256"])["$ref"] != "#/$defs/hash" {
+					t.Fatal("canonical actor hash must use the strict hash definition")
+				}
+			} else if _, ok := properties["canonicalSha256"]; ok {
+				t.Fatal("legacy artifacts and skills must forbid canonical metadata, including null")
+			}
+			assertSchemaRequired(t, artifact, required...)
+			if artifact["type"] != "object" || artifact["additionalProperties"] != false || len(properties) != len(required) {
+				t.Fatal("artifact must be closed with only required properties")
+			}
+		})
 	}
-	assertSchemaRequired(t, artifacts, "actors/requirements-analyst", "actors/test-designer", "actors/exploratory-tester", "actors/adversarial-tester", "actors/test-runner", "actors/evidence-auditor")
-	if _, ok := schemaObject(t, artifacts["patternProperties"])[`^skills/[a-z0-9]+(?:-[a-z0-9]+)*$`]; !ok {
-		t.Fatal("v2 artifacts lacks canonical skill-key pattern")
-	}
-	for _, role := range []string{"requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester", "test-runner", "evidence-auditor"} {
-		actorRef := schemaObject(t, schemaObject(t, artifacts["properties"])["actors/"+role])["$ref"].(string)
-		actor := schemaObject(t, definitions[strings.TrimPrefix(actorRef, "#/$defs/")])
-		allOf := actor["allOf"].([]any)
-		if len(allOf) != 2 {
-			t.Fatalf("actor %q is not an exact actor schema", role)
-		}
-		properties := schemaObject(t, schemaObject(t, allOf[1])["properties"])
-		if got := schemaObject(t, properties["roleId"])["const"]; got != role {
-			t.Errorf("actor %q roleId const = %q", role, got)
-		}
-		if got := schemaObject(t, properties["relativePath"])["const"]; got != "agents/cortex-"+role+".md" {
-			t.Errorf("actor %q relativePath const = %q", role, got)
+	oldActorProperties := schemaObject(t, schemaObject(t, definitions["actorArtifact"])["properties"])
+	newActorProperties := schemaObject(t, schemaObject(t, definitions["v3ActorArtifact"])["properties"])
+	for key, value := range oldActorProperties {
+		if !reflect.DeepEqual(value, newActorProperties[key]) {
+			t.Fatalf("v3 actor changed existing property %q", key)
 		}
 	}
-	for _, name := range []string{"hash", "installationID", "v1SkillArtifact", "skillArtifact", "actorArtifact", "runtimeRootPair"} {
-		if _, ok := definitions[name]; !ok {
-			t.Errorf("schema lacks reusable definition %q", name)
-		}
+	for _, version := range []int{2, 3} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			prefix := fmt.Sprintf("v%d", version)
+			manifest := schemaObject(t, definitions[prefix+"Manifest"])
+			assertSchemaRequired(t, manifest, "schemaVersion", "owner", "scope", "runtime", "rootKind", "snapshotFingerprint", "installationId", "artifacts")
+			properties := schemaObject(t, manifest["properties"])
+			if manifest["type"] != "object" || manifest["additionalProperties"] != false || len(properties) != 8 {
+				t.Fatal("actor-aware manifest must be closed")
+			}
+			for key, want := range map[string]any{"schemaVersion": float64(version), "owner": "cortex", "scope": "user", "runtime": "pi", "rootKind": "pi-user-agent"} {
+				if schemaObject(t, properties[key])["const"] != want {
+					t.Fatalf("manifest %s constraint changed", key)
+				}
+			}
+			for key, want := range map[string]string{"artifacts": prefix + "Artifacts", "snapshotFingerprint": "hash", "installationId": "installationID"} {
+				if schemaObject(t, properties[key])["$ref"] != "#/$defs/"+want {
+					t.Fatalf("manifest %s reference changed", key)
+				}
+			}
+			artifacts := schemaObject(t, definitions[prefix+"Artifacts"])
+			if artifacts["type"] != "object" || artifacts["minProperties"] != float64(7) || artifacts["additionalProperties"] != false {
+				t.Fatalf("artifacts boundary = %#v", artifacts)
+			}
+			assertSchemaRequired(t, artifacts, "actors/requirements-analyst", "actors/test-designer", "actors/exploratory-tester", "actors/adversarial-tester", "actors/test-runner", "actors/evidence-auditor")
+			patterns := schemaObject(t, artifacts["patternProperties"])
+			if len(patterns) != 1 || schemaObject(t, patterns[`^skills/[a-z0-9]+(?:-[a-z0-9]+)*$`])["$ref"] != "#/$defs/skillArtifact" {
+				t.Fatal("artifacts must reuse the closed skill definition with the canonical key pattern")
+			}
+			actorProperties := schemaObject(t, artifacts["properties"])
+			if len(actorProperties) != 6 {
+				t.Fatal("artifacts must define exactly six actor keys")
+			}
+			for _, role := range []string{"requirements-analyst", "test-designer", "exploratory-tester", "adversarial-tester", "test-runner", "evidence-auditor"} {
+				actorRef := schemaObject(t, actorProperties["actors/"+role])["$ref"].(string)
+				actor := schemaObject(t, definitions[strings.TrimPrefix(actorRef, "#/$defs/")])
+				allOf := actor["allOf"].([]any)
+				base := "actorArtifact"
+				if version == 3 {
+					base = "v3ActorArtifact"
+				}
+				if len(allOf) != 2 || schemaObject(t, allOf[0])["$ref"] != "#/$defs/"+base {
+					t.Fatalf("actor %q must use its version-specific closed definition", role)
+				}
+				properties := schemaObject(t, schemaObject(t, allOf[1])["properties"])
+				if schemaObject(t, properties["roleId"])["const"] != role || schemaObject(t, properties["relativePath"])["const"] != "agents/cortex-"+role+".md" {
+					t.Fatalf("actor %q must preserve exact role/path constraints", role)
+				}
+			}
+		})
 	}
 }
 

@@ -91,6 +91,10 @@ func priorIndex(snapshot filetxn.Snapshot) (priorOwnershipIndex, error) {
 	if err != nil {
 		return priorOwnershipIndex{}, errPriorOwnership
 	}
+	// New decoder support must not grant full-hash replacement/removal authority.
+	if manifest.SchemaVersion() != 1 && manifest.SchemaVersion() != 2 {
+		return priorOwnershipIndex{}, errPriorOwnership
+	}
 	encoded, err := installstate.Encode(manifest)
 	if err != nil || !bytes.Equal(encoded, payload) {
 		return priorOwnershipIndex{}, errPriorOwnership

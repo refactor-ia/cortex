@@ -55,12 +55,22 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer, run
 	return runWithUpdateDependencies(ctx, args, stdout, stderr, runner, defaultUpdateDependencies())
 }
 
+const updateHelp = "usage: cortex update --runtime <pi|opencode|claude-code> --catalog <dir> [--apply] [--adopt-guidance]\n\n" +
+	"Default mode is a read-only plan; --apply is required to write.\n" +
+	"--adopt-guidance is Pi-only explicit adoption of verified legacy external guidance.\n" +
+	"Registered guidance updates need no repeated adoption; drift is always refused.\n" +
+	"Composed restart recovery is unsupported; the rollback command does not support it.\n" +
+	"Composed uninstall remains fail-closed pending external-guidance preservation.\n"
+
 func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, deps updateDependencies) int {
+	if len(args) == 2 && args[0] == "update" && args[1] == "--help" {
+		return writeHelp(stdout, stderr, updateHelp)
+	}
 	if len(args) == 0 || args[0] != "update" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
-	runtimeID, catalogDir, apply, ok := parseUpdateArgs(args[1:])
+	runtimeID, catalogDir, apply, adoptGuidance, ok := parseUpdateArgs(args[1:])
 	if !ok {
 		writeError(stderr, "invalid_command")
 		return exitUsage
@@ -102,12 +112,15 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 		writeError(stderr, "observation_failed")
 		return exitFailure
 	}
+	warning := updateCertificationWarning(observations, runtimeID, decision)
+	if updateNeedsActorGuidance(plan, observation) {
+		return updateActorGuidance(stdout, stderr, plan, observation, observations, apply, adoptGuidance, warning)
+	}
 	classified, err := installcoord.Classify(plan, observation)
 	if err != nil {
 		writeError(stderr, "classification_failed")
 		return exitFailure
 	}
-	warning := updateCertificationWarning(observations, runtimeID, decision)
 	if !apply {
 		header := fmt.Sprintf("runtime=%s outcome=%s action=%s root=%s mode=plan%s", decision.ID, decision.Outcome, decision.Action, plan.RootPath(), warning)
 		return writeUpdateOperations(stdout, header, classified, "planned")
@@ -116,42 +129,47 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 }
 
 // parseUpdateArgs accepts exactly one --runtime and one --catalog plus an
-// optional --apply; there is no default runtime and no automatic fan-out.
-func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool) {
+// optional --apply and Pi-only --adopt-guidance; there is no default runtime.
+func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool, bool) {
 	var runtimeID, catalogDir string
-	apply := false
+	apply, adoptGuidance := false, false
 	for len(args) > 0 {
 		flag := args[0]
 		args = args[1:]
 		switch flag {
 		case "--runtime":
 			if runtimeID != "" || len(args) == 0 {
-				return "", "", false, false
+				return "", "", false, false, false
 			}
 			runtimeID, args = args[0], args[1:]
 		case "--catalog":
 			if catalogDir != "" || len(args) == 0 {
-				return "", "", false, false
+				return "", "", false, false, false
 			}
 			catalogDir, args = args[0], args[1:]
 		case "--apply":
 			if apply {
-				return "", "", false, false
+				return "", "", false, false, false
 			}
 			apply = true
+		case "--adopt-guidance":
+			if adoptGuidance {
+				return "", "", false, false, false
+			}
+			adoptGuidance = true
 		default:
-			return "", "", false, false
+			return "", "", false, false, false
 		}
 	}
 	switch runtimematrix.RuntimeID(runtimeID) {
 	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
 	default:
-		return "", "", false, false
+		return "", "", false, false, false
 	}
-	if catalogDir == "" {
-		return "", "", false, false
+	if catalogDir == "" || (adoptGuidance && runtimematrix.RuntimeID(runtimeID) != runtimematrix.RuntimePi) {
+		return "", "", false, false, false
 	}
-	return runtimematrix.RuntimeID(runtimeID), catalogDir, apply, true
+	return runtimematrix.RuntimeID(runtimeID), catalogDir, apply, adoptGuidance, true
 }
 
 // buildUpdateCandidate builds the validated bundle-bound candidate for the
@@ -311,14 +329,79 @@ func applyUpdate(stdout, stderr io.Writer, plan installplan.Plan, observation in
 // representation: skill-only v1 plans use Apply; Pi actor-aware v2 plans use
 // ApplyVerified with its fresh preflight and final readback.
 func applyCandidate(plan installplan.Plan, observation installobserve.FilesystemObservation, backupRoot, backupName string) (installtxn.Result, error) {
-	if plan.InstalledState().SchemaVersion() != 2 {
+	switch plan.InstalledState().SchemaVersion() {
+	case 1:
 		return installtxn.Apply(plan, observation, backupRoot, backupName)
+	case 2:
+	default:
+		return installtxn.Result{}, installtxn.ErrInvalid
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return installtxn.Result{}, err
 	}
 	return installtxn.ApplyVerified(plan, cwd, backupRoot, backupName)
+}
+
+// Routing recognizes captured guidance, including malformed reserved markers,
+// but never treats marker presence or readiness as ownership/write authority.
+func updateNeedsActorGuidance(plan installplan.Plan, observation installobserve.FilesystemObservation) bool {
+	if plan.RuntimeID() != runtimematrix.RuntimePi {
+		return false
+	}
+	if prior := observation.PriorState(); prior != nil && prior.Manifest.SchemaVersion() == 3 {
+		return true
+	}
+	for _, file := range plan.Files() {
+		if file.Role() == "actor" {
+			if exact, found := observation.Exact(file.LogicalID()); found {
+				_, external, err := qaactor.ParseGuidance(exact.Bytes())
+				if err != nil || len(external) != 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func updateActorGuidance(stdout, stderr io.Writer, canonical installplan.Plan, observation installobserve.FilesystemObservation, observations []runtimematrix.Observation, apply, adopt bool, warning string) int {
+	mode := "plan"
+	if apply {
+		mode = "apply"
+	}
+	header := fmt.Sprintf("runtime=%s root=%s mode=%s%s recovery=unsupported", canonical.RuntimeID(), canonical.RootPath(), mode, warning)
+	cwd, err := os.Getwd()
+	if err != nil {
+		writeError(stderr, "observation_failed")
+		return exitFailure
+	}
+	preflight, err := installcoord.PreflightActorGuidance(observations, installcoord.Unit{Plan: canonical, Observation: observation}, adopt, cwd)
+	if err != nil || !preflight.Report().Ready() {
+		_, _ = fmt.Fprintf(stdout, "%s\nstatus=conflict reason=actor_guidance_unverified\n", header)
+		return exitConflict
+	}
+	proof := preflight.Proof() // Retain the exact immutable candidate and evidence.
+	if !apply {
+		return writeUpdateOperations(stdout, header, proof.Result(), "planned")
+	}
+	backupName := nextUpdateBackupName()
+	result, err := installtxn.ApplyActorGuidance(canonical, observation, proof, cwd, filepath.Join(canonical.RootPath(), ".cortex"), backupName)
+	if err != nil {
+		writeError(stderr, "update_transaction_failed")
+		return exitTransaction
+	}
+	output := strings.Builder{}
+	output.WriteString(header + "\n")
+	for _, action := range result.Actions() {
+		fmt.Fprintf(&output, "operation=%s action=%s\n", action.LogicalID, action.Action)
+	}
+	if result.TransactionID().Valid() {
+		fmt.Fprintf(&output, "backup=%s\ntransaction=%s\n", backupName, result.TransactionID())
+	}
+	output.WriteString("status=applied\n")
+	_, _ = io.WriteString(stdout, output.String())
+	return exitOK
 }
 
 func nextUpdateBackupName() string {

@@ -41,6 +41,23 @@ func TestPreflightBindingHandsOffBoundAssetsRouteAndGit(t *testing.T) {
 	}
 }
 
+func TestPreflightBindingHandsOffComposedV3EffectiveIdentity(t *testing.T) {
+	fixture := newComposedV3PreflightFixture(t)
+	flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectiveHash := fmt.Sprintf("%x", sha256.Sum256(fixture.effective))
+	if flight.assets.ActorSHA256() != effectiveHash || flight.assets.ActorSHA256() == fixture.expected.ActorSHA256 ||
+		flight.assets.ActorPath() != fixture.actorPath || flight.assets.ActorSourceSHA256() != fixture.expected.ActorSourceSHA256 ||
+		flight.assets.ActorBindingSHA256() != fixture.expected.ActorBindingSHA256 || flight.assets.SkillSHA256() != fixture.expected.SkillSHA256 {
+		t.Fatalf("composed preflight assets = %#v", flight.assets)
+	}
+	if len(fixture.runner.calls) != 6 {
+		t.Fatalf("Git calls = %d, want 6", len(fixture.runner.calls))
+	}
+}
+
 func TestPreflightBindingStopsAtAssetsBeforeGit(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -157,6 +174,22 @@ func TestPrelaunchReceiptBasisMapsPreflightIdentityWithoutTerminalFacts(t *testi
 	}
 }
 
+func TestPrelaunchReceiptBasisCarriesComposedV3EffectiveHash(t *testing.T) {
+	fixture := newComposedV3PreflightFixture(t)
+	flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, code, err := prelaunchReceiptBasis(fixture.request, flight, syntheticBoundPi())
+	if err != nil || code != qaadmission.CodeAdmitted {
+		t.Fatalf("prelaunchReceiptBasis() = %#v, %q, %v", got, code, err)
+	}
+	effectiveHash := fmt.Sprintf("%x", sha256.Sum256(fixture.effective))
+	if got.Installation.ActorGeneratedSHA256 != effectiveHash || got.Installation.ActorGeneratedSHA256 == fixture.expected.ActorSHA256 {
+		t.Fatalf("receipt actor hash = %q, want effective %q, not canonical %q", got.Installation.ActorGeneratedSHA256, effectiveHash, fixture.expected.ActorSHA256)
+	}
+}
+
 func TestPrelaunchReceiptBasisUsesRequestedTimeoutBounds(t *testing.T) {
 	for _, timeout := range []int{qaadmission.MinimumTimeoutSeconds, qaadmission.MaximumTimeoutSeconds} {
 		t.Run(fmt.Sprintf("timeout %d", timeout), func(t *testing.T) {
@@ -260,6 +293,53 @@ func newPreflightFixture(t *testing.T) preflightFixture {
 	writePreflightFile(t, filepath.Join(root, "skills", "cortex-"+string(role), "SKILL.md"), skill.Content())
 	request := AdmissionRequest{Role: role, Backend: "pi", CurrentDirectory: cwd, Revision: head, Fingerprint: preflightFingerprint("sha1", head, tree), Task: "inspect the candidate", TimeoutSeconds: 900}
 	return preflightFixture{request: request, snapshot: snapshot, expected: expected, installRoot: root, profileRoot: testProfileRoot(t), actorPath: actorPath, runner: &preflightGitRunner{results: preflightGitResults(cwd, head, tree, "")}}
+}
+
+type composedV3PreflightFixture struct {
+	preflightFixture
+	canonical, effective []byte
+}
+
+func newComposedV3PreflightFixture(t *testing.T) composedV3PreflightFixture {
+	t.Helper()
+	fixture := newPreflightFixture(t)
+	actors := productionActorBinding(t, fixture.snapshot)
+	canonical := selectedActor(t, actors, fixture.request.Role).Content()
+	suffix := []byte("\n\n<!-- gentle-ai:pi-codegraph-guidance -->\nexternal guidance\n<!-- /gentle-ai:pi-codegraph -->\n")
+	effective := append(bytes.TrimRight(bytes.Clone(canonical), "\n"), suffix...)
+	prefix, external, err := qaactor.ParseGuidance(effective)
+	if err != nil || !bytes.Equal(prefix, bytes.TrimRight(canonical, "\n")) || !bytes.Equal(external, suffix) {
+		t.Fatalf("composed fixture layout: %v", err)
+	}
+	if fixture.expected.ActorSHA256 != fmt.Sprintf("%x", sha256.Sum256(canonical)) || bytes.Equal(canonical, effective) {
+		t.Fatal("fixture canonical identity does not match the catalog or lacks guidance")
+	}
+	installationID := installstate.InstallationID("000102030405060708090a0b0c0d0e0f")
+	inputs := []installstate.V3ArtifactInput{{V2ArtifactInput: installstate.V2ArtifactInput{
+		LogicalID: "skills/" + string(fixture.request.Role), Kind: installstate.KindSkill, CapabilityID: string(fixture.request.Role),
+		RelativePath: "skills/cortex-" + string(fixture.request.Role) + "/SKILL.md", SHA256: fixture.expected.SkillSHA256, InstallationID: installationID,
+	}}}
+	for _, actor := range actors.Actors() {
+		effectiveHash := actor.GeneratedSHA256()
+		if actor.RoleID() == fixture.request.Role {
+			effectiveHash = fmt.Sprintf("%x", sha256.Sum256(effective))
+		}
+		inputs = append(inputs, installstate.V3ArtifactInput{V2ArtifactInput: installstate.V2ArtifactInput{
+			LogicalID: actor.LogicalID(), Kind: installstate.KindPiActor, RoleID: actor.RoleID(), ActorContractVersion: qaactor.ActorContractVersion,
+			RelativePath: "agents/" + actor.Name() + ".md", SHA256: effectiveHash, InstallationID: installationID,
+		}, CanonicalSHA256: actor.GeneratedSHA256()})
+	}
+	state, err := installstate.NewV3(runtimematrix.RuntimePi, skilldest.RootKindPiUserAgent, fixture.snapshot.Fingerprint(), installationID, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := installstate.Encode(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePreflightFile(t, filepath.Join(fixture.installRoot, ".cortex", "install-state.json"), encoded)
+	writePreflightFile(t, fixture.actorPath, effective)
+	return composedV3PreflightFixture{preflightFixture: fixture, canonical: canonical, effective: effective}
 }
 
 func writePreflightFile(t *testing.T, path string, data []byte) {
@@ -438,6 +518,41 @@ func TestPrelaunchAvailabilityFailsClosedBeforeProbes(t *testing.T) {
 				t.Fatalf("prelaunchAvailability() = %#v, %q, probes=%d", got, code, probes)
 			}
 			assertIdentityFailure(t, err, tc.stage)
+		})
+	}
+}
+
+func TestPrelaunchAvailabilityRechecksComposedV3GuidanceBeforeProbes(t *testing.T) {
+	for _, name := range []string{"unchanged v3", "guidance-only drift"} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newComposedV3PreflightFixture(t)
+			flight, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.runner.calls = nil
+			if name == "guidance-only drift" {
+				changed := bytes.Replace(fixture.effective, []byte("external guidance"), []byte("changed guidance"), 1)
+				prefix, external, err := qaactor.ParseGuidance(changed)
+				_, originalExternal, originalErr := qaactor.ParseGuidance(fixture.effective)
+				if err != nil || originalErr != nil || !bytes.Equal(prefix, bytes.TrimRight(fixture.canonical, "\n")) || bytes.Equal(external, originalExternal) {
+					t.Fatalf("mutation must change only valid external guidance: %v, %v", err, originalErr)
+				}
+				writePreflightFile(t, fixture.actorPath, changed)
+			}
+			probes := 0
+			ops := readyPrelaunchOps(&probes, availabilityProbes{model: ModelProbeResult{Available: true}, auth: AuthProbeResult{Ready: true}})
+			got, code, err := prelaunchAvailability(context.Background(), fixture.request, flight, syntheticBoundPi(fixture.request.CurrentDirectory), fixture.installRoot, fixture.snapshot, fixture.runner, &ops)
+			if name == "unchanged v3" {
+				if err != nil || code != qaadmission.CodeAdmitted || probes != 1 || len(fixture.runner.calls) != 6 || got.Installation.ActorGeneratedSHA256 != fmt.Sprintf("%x", sha256.Sum256(fixture.effective)) {
+					t.Fatalf("unchanged v3 checkpoint = %#v, %q, %v, probes=%d, Git calls=%d", got, code, err, probes, len(fixture.runner.calls))
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, qaadmission.Receipt{}) || code != "" || probes != 0 || len(fixture.runner.calls) != 0 {
+				t.Fatalf("guidance drift checkpoint = %#v, %q, %v, probes=%d, Git calls=%d", got, code, err, probes, len(fixture.runner.calls))
+			}
+			assertIdentityFailure(t, err, "assets")
 		})
 	}
 }

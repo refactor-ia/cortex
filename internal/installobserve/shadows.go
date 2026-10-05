@@ -89,6 +89,12 @@ func ObserveActorShadows(candidate installplan.Plan, observation FilesystemObser
 	if err != nil {
 		return ShadowObservation{}, shadowInvalid()
 	}
+	return observeActorShadows(candidate, observation, cwd, allowedActorDecisions(classified))
+}
+
+// observeActorShadows shares all scanner and fresh target checks; callers derive
+// the narrow allowed set from ordinary ownership or bound composition evidence.
+func observeActorShadows(candidate installplan.Plan, observation FilesystemObservation, cwd string, allowed map[qarole.RoleID]bool) (ShadowObservation, error) {
 	targets, ok := shadowTargets(candidate)
 	if !ok {
 		return ShadowObservation{}, shadowInvalid()
@@ -97,7 +103,6 @@ func ObserveActorShadows(candidate installplan.Plan, observation FilesystemObser
 	if err != nil {
 		return ShadowObservation{}, shadowInvalid()
 	}
-	allowed := allowedActorDecisions(classified)
 	conflicts := make(map[ShadowConflict]struct{})
 	seen := make(map[qarole.RoleID]shadowCandidate)
 	for _, scanned := range candidates {

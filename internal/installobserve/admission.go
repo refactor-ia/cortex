@@ -33,7 +33,7 @@ type AdmissionBinding struct {
 	Role               qarole.RoleID
 	Backend            string
 	CatalogFingerprint string
-	ActorSHA256        string
+	ActorSHA256        string // Catalog canonical actor digest, never the composed effective digest.
 	ActorSourceSHA256  string
 	ActorBindingSHA256 string
 	SkillSHA256        string
@@ -54,6 +54,9 @@ func (assets AdmissionAssets) InstallationID() installstate.InstallationID {
 func (assets AdmissionAssets) CatalogFingerprint() string { return assets.catalogFingerprint }
 func (assets AdmissionAssets) RoleID() qarole.RoleID      { return assets.role }
 func (assets AdmissionAssets) Backend() string            { return assets.backend }
+
+// ActorSHA256 is the full effective actor digest, including registered guidance
+// for installed v3 actors, not their catalog canonical digest.
 func (assets AdmissionAssets) ActorSHA256() string        { return assets.actorSHA256 }
 func (assets AdmissionAssets) ActorSourceSHA256() string  { return assets.actorSourceSHA256 }
 func (assets AdmissionAssets) ActorBindingSHA256() string { return assets.actorBindingSHA256 }
@@ -77,7 +80,7 @@ func (assets AdmissionAssets) SkillPath() string { return assets.skillPath }
 // mutate the observed bytes.
 func (assets AdmissionAssets) SkillText() string { return assets.skillText }
 
-// ObserveAdmissionAssets reads only the canonical v2 state and the selected
+// ObserveAdmissionAssets reads only the canonical supported state and the selected
 // state-declared assets. It does not create an installation candidate,
 // mutate files, select a runtime, or inspect a user home directory.
 //
@@ -125,7 +128,8 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 		return AdmissionAssets{}, admissionInvalid()
 	}
 	actorBytes, actorPath, ok := admissionFile(root, actor.RelativePath(), actor.SHA256())
-	if !ok || admissionShadows(root, cwd, expected.Role, actorBytes) != nil {
+	if !ok || (manifest.SchemaVersion() == 3 && !admissionActorGuidance(actorBytes, actor, expected)) ||
+		admissionShadows(root, cwd, expected.Role, actorBytes) != nil {
 		return AdmissionAssets{}, admissionInvalid()
 	}
 	assets.actorProvenance, assets.actorSHA256, assets.actorPath = ActorProvenanceInstalled, actor.SHA256(), actorPath
@@ -140,7 +144,7 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 // one root is reachable.
 //
 // The schema requirement then follows from what install can actually write.
-// Schema v2 is by construction a Pi ledger: installstate rejects a v2 manifest
+// Schemas v2/v3 are by construction Pi ledgers: installstate rejects a manifest
 // whose runtime is not Pi or whose actor set is not the full six roles. A
 // runtime that receives skills and no actor therefore has a v1 ledger and can
 // never have anything else, so requiring v2 there would be requiring a
@@ -155,7 +159,7 @@ func admissibleLedger(manifest installstate.Manifest, backend string) bool {
 		return false
 	}
 	if qaroute.BindsInstalledActor(backend) {
-		return manifest.SchemaVersion() == 2
+		return manifest.SchemaVersion() == 2 || manifest.SchemaVersion() == 3
 	}
 	return manifest.SchemaVersion() == 1
 }
@@ -172,20 +176,24 @@ func admissionArtifact(manifest installstate.Manifest, logicalID string, kind in
 			continue
 		}
 		if kind == installstate.KindPiActor {
-			return artifact, artifact.RoleID() == expected.Role && artifact.SHA256() == expected.ActorSHA256
+			canonical := artifact.SHA256()
+			if manifest.SchemaVersion() == 3 {
+				canonical = artifact.CanonicalSHA256()
+			}
+			return artifact, artifact.RoleID() == expected.Role && canonical == expected.ActorSHA256
 		}
 		return artifact, artifact.CapabilityID() == string(expected.Role) && artifact.SHA256() == expected.SkillSHA256
 	}
 	return installstate.Artifact{}, false
 }
 
-// admissionSkill selects the one declared skill for the admitted role. A v2
+// admissionSkill selects the one declared skill for the admitted role. A v2/v3
 // ledger types and names it; a v1 ledger carries neither a kind nor a
 // capability by schema, so the logical ID and the expected digest are the
 // whole identity there, and any typed field present would mean the decoder
 // produced something its own schema forbids.
 func admissionSkill(manifest installstate.Manifest, expected AdmissionBinding) (installstate.Artifact, bool) {
-	if manifest.SchemaVersion() == 2 {
+	if manifest.SchemaVersion() == 2 || manifest.SchemaVersion() == 3 {
 		return admissionArtifact(manifest, "skills/"+string(expected.Role), installstate.KindSkill, expected)
 	}
 	logicalID := "skills/" + string(expected.Role)
@@ -197,6 +205,30 @@ func admissionSkill(manifest installstate.Manifest, expected AdmissionBinding) (
 			artifact.InstallationID() == "" && artifact.SHA256() == expected.SkillSHA256
 	}
 	return installstate.Artifact{}, false
+}
+
+// admissionActorGuidance proves actual canonical content, not just the ledger's
+// assertion. The catalog binding supplies the desired digest independently.
+// Reconstruction supports the strict helper's one-LF guidance subset only;
+// markers are structural, never proof. The registered identity helper checks
+// reconstructed canonical bytes against that catalog digest AND all effective
+// bytes against the ledger. Idempotent composition must preserve the entire
+// observed actor. This grants no adoption, mutation, or external-byte ownership.
+func admissionActorGuidance(current []byte, actor installstate.Artifact, expected AdmissionBinding) bool {
+	canonical, external, err := qaactor.ParseGuidance(current)
+	if err != nil || actor.CanonicalSHA256() != expected.ActorSHA256 {
+		return false
+	}
+	if external != nil {
+		canonical = append(canonical, '\n')
+	}
+	if hash(canonical) != expected.ActorSHA256 {
+		return false
+	}
+	proved, err := qaactor.ComposeGuidanceWithIdentity(current, canonical, qaactor.GuidanceIdentity{
+		CanonicalSHA256: expected.ActorSHA256, EffectiveSHA256: actor.SHA256(),
+	})
+	return err == nil && bytes.Equal(proved, current)
 }
 
 func admissionFile(root, relative, expectedHash string) ([]byte, string, bool) {

@@ -118,6 +118,11 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 }
 
 func classify(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation) Result {
+	return classifyWithGuidance(manifest, stateHash, prior, priorArtifacts, slots, nil)
+}
+
+func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation, proof *ActorGuidanceClassification) Result {
+	guidanceVerified := proof != nil && proof.validPrior(prior, proof.candidate)
 	artifacts := artifactMap(manifest)
 	decisions := make([]ArtifactDecision, 0, len(slots))
 	observed := make([]ownership.ObservedArtifact, 0, len(slots))
@@ -130,6 +135,12 @@ func classify(manifest installstate.Manifest, stateHash string, prior *PriorStat
 		owner, action := ownership.Unrelated, ownership.Preserve
 		priorHash, owned := priorArtifacts[slot.LogicalID]
 		switch {
+		case guidanceVerified && desired && kind == installstate.KindPiActor && slot.Present && proof.preimages[slot.LogicalID] == slot.SHA256:
+			// Only the canonical portion is owned; never infer whole-file deletion.
+			owner, action = ownership.UserOwned, ownership.Replace
+			if slot.SHA256 == artifact.SHA256() {
+				action = ownership.Unchanged
+			}
 		case !slot.Present && desired:
 			owner, action = ownership.CortexOwned, ownership.Create
 		case !slot.Present:
@@ -188,6 +199,10 @@ func validV1Candidate(candidate installplan.Plan) (installstate.Manifest, string
 }
 
 func validPrior(prior PriorState, candidate installplan.Plan, current installstate.Manifest) (map[string]string, bool) {
+	return validPriorWithGuidance(prior, candidate, current, nil)
+}
+
+func validPriorWithGuidance(prior PriorState, candidate installplan.Plan, current installstate.Manifest, proof *ActorGuidanceClassification) (map[string]string, bool) {
 	encoded, err := installstate.Encode(prior.Manifest)
 	if err != nil || prior.StateSHA256 != hash(encoded) || prior.Manifest.RuntimeID() != candidate.RuntimeID() || prior.Manifest.RootKind() != candidate.RootKind() || current.RuntimeID() != prior.Manifest.RuntimeID() || current.RootKind() != prior.Manifest.RootKind() {
 		return nil, false
@@ -199,8 +214,9 @@ func validPrior(prior PriorState, candidate installplan.Plan, current installsta
 		for _, artifact := range priorArtifacts {
 			out[artifact.LogicalID()] = artifact.SHA256()
 		}
-	case 2:
-		if current.SchemaVersion() != 2 || current.InstallationID() != prior.Manifest.InstallationID() {
+	case 2, 3:
+		composed := proof != nil && proof.validPrior(&prior, candidate) && current.SchemaVersion() == 3
+		if (!composed && (prior.Manifest.SchemaVersion() != 2 || current.SchemaVersion() != 2)) || current.InstallationID() != prior.Manifest.InstallationID() {
 			return nil, false
 		}
 		currentArtifacts := artifactMap(current)
@@ -232,11 +248,18 @@ func sameOwnershipMetadata(left, right installstate.Artifact) bool {
 }
 
 func validExactObservation(candidate installplan.Plan, observation FilesystemObservation, prior *PriorState) bool {
+	return validExactObservationWithGuidance(candidate, observation, prior, nil)
+}
+
+func validExactObservationWithGuidance(candidate installplan.Plan, observation FilesystemObservation, prior *PriorState, proof *ActorGuidanceClassification) bool {
+	if proof != nil && !proof.Matches(candidate, observation) {
+		return false
+	}
 	artifacts := artifactMap(candidate.InstalledState())
 	priorArtifacts := map[string]string(nil)
 	if prior != nil {
 		var valid bool
-		priorArtifacts, valid = validPrior(*prior, candidate, candidate.InstalledState())
+		priorArtifacts, valid = validPriorWithGuidance(*prior, candidate, candidate.InstalledState(), proof)
 		if !valid {
 			return false
 		}

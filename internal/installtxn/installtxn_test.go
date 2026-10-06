@@ -1066,6 +1066,53 @@ func TestPriorOwnershipIndexCanonical(t *testing.T) {
 	}
 }
 
+func TestPriorOwnershipIndexRejectsUnsupportedSchema(t *testing.T) {
+	plan := actorAwareCandidate(t)
+	for _, version := range []string{"3", "99"} {
+		t.Run("schema-"+version, func(t *testing.T) {
+			state := []byte(strings.Replace(string(plan.StateJSON()), `"schemaVersion":2`, `"schemaVersion":`+version, 1))
+			if version == "3" {
+				state = []byte(strings.ReplaceAll(string(state), `"kind":"pi-actor"`, `"kind":"pi-actor","canonicalSha256":"`+strings.Repeat("c", 64)+`"`))
+				manifest, err := installstate.Decode(state)
+				must(t, err)
+				if manifest.SchemaVersion() != 3 {
+					t.Fatal("fixture is not valid v3")
+				}
+				state, err = installstate.Encode(manifest)
+				must(t, err)
+			}
+			files := make(map[string][]byte)
+			for _, file := range plan.Files() {
+				if file.Role() != "state" {
+					files[file.RelativePath()] = file.Content()
+				}
+			}
+			snapshot := snapshotWithFiles(t, state, 0o600, files)
+			for relative, data := range files {
+				digest := sha256.Sum256([]byte(relative))
+				must(t, os.WriteFile(filepath.Join(snapshot.Dir, "payloads", hex.EncodeToString(digest[:])), data, 0o600))
+			}
+			index, err := priorIndex(snapshot)
+			if !errors.Is(err, errPriorOwnership) || index.schemaVersion != 0 || len(index.artifacts) != 0 {
+				t.Fatalf("unsupported schema granted ownership: (%#v, %v)", index, err)
+			}
+			if after, err := deriveAcceptedAfter(plan, snapshot); !errors.Is(err, ErrInvalid) || len(after) != 0 {
+				t.Fatalf("unsupported schema granted After evidence: (%#v, %v)", after, err)
+			}
+			for _, entry := range snapshot.Manifest.Entries {
+				want := files[entry.Path]
+				if entry.Path == stateRelativePath {
+					want = state
+				}
+				got, err := snapshot.Payload(entry.Path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("snapshot changed %q: %v", entry.Path, err)
+				}
+			}
+		})
+	}
+}
+
 func TestPriorOwnershipIndexRejectsInvalid(t *testing.T) {
 	plan := candidate(t, physicalTempDir(t), "one", "alpha")
 	state := plan.Files()[len(plan.Files())-1].Content()

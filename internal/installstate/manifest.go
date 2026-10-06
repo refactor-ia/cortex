@@ -21,6 +21,7 @@ type ArtifactInput struct{ LogicalID, RelativePath, SHA256 string }
 // Artifact is one immutable logical artifact identity.
 type Artifact struct {
 	logicalID, relativePath, sha256 string
+	canonicalSHA256                 string
 	kind                            Kind
 	capabilityID                    string
 	roleID                          qarole.RoleID
@@ -28,9 +29,15 @@ type Artifact struct {
 	installationID                  InstallationID
 }
 
-func (artifact Artifact) LogicalID() string            { return artifact.logicalID }
-func (artifact Artifact) RelativePath() string         { return artifact.relativePath }
-func (artifact Artifact) SHA256() string               { return artifact.sha256 }
+func (artifact Artifact) LogicalID() string    { return artifact.logicalID }
+func (artifact Artifact) RelativePath() string { return artifact.relativePath }
+
+// SHA256 is the full effective on-disk digest, not canonical actor identity.
+func (artifact Artifact) SHA256() string { return artifact.sha256 }
+
+// CanonicalSHA256 is caller-supplied canonical actor identity in schema v3 only.
+// It is not proof of provenance or permission to mutate composed content.
+func (artifact Artifact) CanonicalSHA256() string      { return artifact.canonicalSHA256 }
 func (artifact Artifact) Kind() Kind                   { return artifact.kind }
 func (artifact Artifact) CapabilityID() string         { return artifact.capabilityID }
 func (artifact Artifact) RoleID() qarole.RoleID        { return artifact.roleID }
@@ -126,8 +133,8 @@ func Decode(data []byte) (Manifest, error) {
 	switch *version.SchemaVersion {
 	case 1:
 		return decodeV1(data)
-	case 2:
-		return decodeV2(data)
+	case 2, 3:
+		return decodeActorState(data, *version.SchemaVersion)
 	default:
 		return Manifest{}, invalid()
 	}
@@ -170,6 +177,7 @@ type v2ArtifactWire struct {
 	ActorContractVersion *string         `json:"actorContractVersion"`
 	RelativePath         *string         `json:"relativePath"`
 	SHA256               *string         `json:"sha256"`
+	CanonicalSHA256      json.RawMessage `json:"canonicalSha256"`
 	InstallationID       *InstallationID `json:"installationId"`
 }
 
@@ -184,7 +192,8 @@ type v2ManifestWire struct {
 	Artifacts           *map[string]*v2ArtifactWire `json:"artifacts"`
 }
 
-func decodeV2(data []byte) (Manifest, error) {
+// The typed schemas share ownership shape; canonical metadata is v3-only.
+func decodeActorState(data []byte, schema int) (Manifest, error) {
 	if err := rejectDuplicateV2ArtifactMembers(data); err != nil {
 		return Manifest{}, invalid()
 	}
@@ -200,20 +209,27 @@ func decodeV2(data []byte) (Manifest, error) {
 	if wire.SchemaVersion == nil || wire.Owner == nil || wire.Scope == nil || wire.Runtime == nil || wire.RootKind == nil || wire.SnapshotFingerprint == nil || wire.InstallationID == nil || wire.Artifacts == nil {
 		return Manifest{}, errors.New("install state: required field is missing")
 	}
-	if *wire.SchemaVersion != 2 || *wire.Owner != "cortex" || *wire.Scope != "user" {
+	if *wire.SchemaVersion != schema || *wire.Owner != "cortex" || *wire.Scope != "user" {
 		return Manifest{}, invalid()
 	}
-	inputs := make([]V2ArtifactInput, 0, len(*wire.Artifacts))
+	inputs := make([]V3ArtifactInput, 0, len(*wire.Artifacts))
 	for logicalID, artifact := range *wire.Artifacts {
 		if artifact == nil || artifact.Kind == nil || artifact.RelativePath == nil || artifact.SHA256 == nil || artifact.InstallationID == nil {
 			return Manifest{}, invalid()
 		}
-		input := V2ArtifactInput{
+		input := V3ArtifactInput{V2ArtifactInput: V2ArtifactInput{
 			LogicalID:      logicalID,
 			Kind:           *artifact.Kind,
 			RelativePath:   *artifact.RelativePath,
 			SHA256:         *artifact.SHA256,
 			InstallationID: *artifact.InstallationID,
+		}}
+		if schema == 3 && input.Kind == KindPiActor {
+			if json.Unmarshal(artifact.CanonicalSHA256, &input.CanonicalSHA256) != nil || !validHash(input.CanonicalSHA256) {
+				return Manifest{}, invalid()
+			}
+		} else if artifact.CanonicalSHA256 != nil {
+			return Manifest{}, invalid()
 		}
 		switch input.Kind {
 		case KindSkill:
@@ -232,11 +248,14 @@ func decodeV2(data []byte) (Manifest, error) {
 		}
 		inputs = append(inputs, input)
 	}
-	manifest, err := NewV2(*wire.Runtime, *wire.RootKind, *wire.SnapshotFingerprint, *wire.InstallationID, inputs)
-	if err != nil {
-		return Manifest{}, invalid()
+	if schema == 3 {
+		return NewV3(*wire.Runtime, *wire.RootKind, *wire.SnapshotFingerprint, *wire.InstallationID, inputs)
 	}
-	return manifest, nil
+	base := make([]V2ArtifactInput, len(inputs))
+	for index, input := range inputs {
+		base[index] = input.V2ArtifactInput
+	}
+	return NewV2(*wire.Runtime, *wire.RootKind, *wire.SnapshotFingerprint, *wire.InstallationID, base)
 }
 
 func rejectDuplicateV2ArtifactMembers(data []byte) error {
@@ -353,6 +372,7 @@ type v2ArtifactEncoded struct {
 	ActorContractVersion string         `json:"actorContractVersion,omitempty"`
 	RelativePath         string         `json:"relativePath"`
 	SHA256               string         `json:"sha256"`
+	CanonicalSHA256      string         `json:"canonicalSha256,omitempty"`
 	InstallationID       InstallationID `json:"installationId"`
 }
 
@@ -379,7 +399,7 @@ func Encode(manifest Manifest) ([]byte, error) {
 			artifacts[artifact.logicalID] = artifactEncoded{artifact.relativePath, artifact.sha256}
 		}
 		return json.Marshal(manifestEncoded{manifest.schemaVersion, manifest.owner, manifest.scope, manifest.runtimeID, manifest.rootKind, manifest.snapshotFingerprint, artifacts})
-	case 2:
+	case 2, 3:
 		artifacts := make(map[string]v2ArtifactEncoded, len(manifest.artifacts))
 		for _, artifact := range manifest.artifacts {
 			artifacts[artifact.logicalID] = v2ArtifactEncoded{
@@ -389,6 +409,7 @@ func Encode(manifest Manifest) ([]byte, error) {
 				ActorContractVersion: artifact.actorContractVersion,
 				RelativePath:         artifact.relativePath,
 				SHA256:               artifact.sha256,
+				CanonicalSHA256:      artifact.canonicalSHA256,
 				InstallationID:       artifact.installationID,
 			}
 		}
@@ -414,6 +435,8 @@ func valid(manifest Manifest) bool {
 		return validV1(manifest)
 	case 2:
 		return validV2(manifest)
+	case 3:
+		return validV3(manifest)
 	default:
 		return false
 	}
@@ -425,7 +448,7 @@ func validV1(manifest Manifest) bool {
 	}
 	seen := make(map[string]bool, len(manifest.artifacts))
 	for _, artifact := range manifest.artifacts {
-		if !validArtifact(artifact) || artifact.kind != "" || artifact.capabilityID != "" || artifact.roleID != "" || artifact.actorContractVersion != "" || artifact.installationID != "" || seen[artifact.logicalID] {
+		if !validArtifact(artifact) || artifact.canonicalSHA256 != "" || artifact.kind != "" || artifact.capabilityID != "" || artifact.roleID != "" || artifact.actorContractVersion != "" || artifact.installationID != "" || seen[artifact.logicalID] {
 			return false
 		}
 		seen[artifact.logicalID] = true

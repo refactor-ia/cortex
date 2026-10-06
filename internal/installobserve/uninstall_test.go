@@ -7,10 +7,12 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installplan"
+	"github.com/refactor-ia/cortex/internal/installstate"
 )
 
 func TestObserveUninstallClassifiesCanonicalPriorState(t *testing.T) {
@@ -291,6 +293,58 @@ func TestObserveUninstallRejectsUnsafeOrInvalidPriorState(t *testing.T) {
 			}
 			if _, err := installobserve.ObserveUninstall(root, tc.options); err == nil {
 				t.Fatal("ObserveUninstall() succeeded")
+			}
+		})
+	}
+}
+
+func TestObserveUninstallOwnershipSchemaBoundary(t *testing.T) {
+	for _, version := range []int{1, 2, 3, 99} {
+		t.Run(fmt.Sprintf("schema-%d", version), func(t *testing.T) {
+			candidate := makeActorAwareCandidate(t)
+			if version == 1 {
+				candidate, _ = makeCandidate(t, "one", "alpha")
+			}
+			writeCandidateFiles(t, candidate)
+			state := candidate.StateJSON()
+			if version > 2 {
+				state = []byte(strings.Replace(string(state), `"schemaVersion":2`, fmt.Sprintf(`"schemaVersion":%d`, version), 1))
+				if version == 3 {
+					state = []byte(strings.ReplaceAll(string(state), `"kind":"pi-actor"`, `"kind":"pi-actor","canonicalSha256":"`+strings.Repeat("c", 64)+`"`))
+					manifest, decodeErr := installstate.Decode(state)
+					if decodeErr != nil || manifest.SchemaVersion() != 3 {
+						t.Fatalf("fixture is not valid v3: %v", decodeErr)
+					}
+					var encodeErr error
+					state, encodeErr = installstate.Encode(manifest)
+					if encodeErr != nil {
+						t.Fatal(encodeErr)
+					}
+				}
+				writeStateBytes(t, candidate, state)
+			}
+			observation, err := installobserve.ObserveUninstall(uninstallRoot(t, candidate), installobserve.DefaultOptions())
+			if version <= 2 {
+				if err != nil || !observation.Ready() || len(observation.RemovalCandidates()) != len(candidate.Files()) {
+					t.Fatalf("supported schema lost removal evidence: (%#v, %v)", observation.Records(), err)
+				}
+			} else if err == nil || observation.Ready() || len(observation.Records()) != 0 || len(observation.RemovalCandidates()) != 0 {
+				t.Fatalf("unsupported schema granted evidence: (%#v, %v)", observation.Records(), err)
+			}
+			for _, file := range candidate.Files() {
+				want := file.Content()
+				if file.Role() == "state" {
+					want = state
+				}
+				got, readErr := os.ReadFile(file.AbsolutePath())
+				if readErr != nil || !bytes.Equal(got, want) {
+					t.Fatalf("observation changed %q: %v", file.LogicalID(), readErr)
+				}
+				if version > 2 {
+					if _, found := observation.RemovalEvidence(file.LogicalID()); found {
+						t.Fatalf("unsupported schema authorized %q", file.LogicalID())
+					}
+				}
 			}
 		})
 	}

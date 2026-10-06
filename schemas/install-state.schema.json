@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/refactor-ia/cortex/schemas/install-state.schema.json",
   "title": "Cortex installed-state manifest",
-  "$comment": "Decode remains authoritative for raw duplicate artifact keys; NewV2 remains authoritative for installation-ID equality, unique paths, skill key-to-field/path correlation, and the desired skill set.",
-  "oneOf": [{"$ref": "#/$defs/v1Manifest"}, {"$ref": "#/$defs/v2Manifest"}],
+  "$comment": "Go decoding and validation remain authoritative for duplicate JSON keys, installation identity equality, unique paths, key-to-field/path correlations, and the full desired skill set.",
+  "oneOf": [{"$ref": "#/$defs/v1Manifest"}, {"$ref": "#/$defs/v2Manifest"}, {"$ref": "#/$defs/v3Manifest"}],
   "$defs": {
     "hash": {
       "type": "string",
@@ -160,6 +160,74 @@
         "snapshotFingerprint": {"$ref": "#/$defs/hash"},
         "installationId": {"$ref": "#/$defs/installationID"},
         "artifacts": {"$ref": "#/$defs/v2Artifacts"}
+      }
+    },
+    "v3ActorArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "roleId", "actorContractVersion", "relativePath", "sha256", "installationId", "canonicalSha256"],
+      "properties": {
+        "kind": {"const": "pi-actor"},
+        "roleId": {
+          "enum": [
+            "requirements-analyst",
+            "test-designer",
+            "exploratory-tester",
+            "adversarial-tester",
+            "test-runner",
+            "evidence-auditor"
+          ]
+        },
+        "actorContractVersion": {"const": "cortex.qa.pi-actor.v1"},
+        "relativePath": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "installationId": {"$ref": "#/$defs/installationID"},
+        "canonicalSha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "v3RequirementsAnalystActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "requirements-analyst"}, "relativePath": {"const": "agents/cortex-requirements-analyst.md"}}}]},
+    "v3TestDesignerActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "test-designer"}, "relativePath": {"const": "agents/cortex-test-designer.md"}}}]},
+    "v3ExploratoryTesterActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "exploratory-tester"}, "relativePath": {"const": "agents/cortex-exploratory-tester.md"}}}]},
+    "v3AdversarialTesterActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "adversarial-tester"}, "relativePath": {"const": "agents/cortex-adversarial-tester.md"}}}]},
+    "v3TestRunnerActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "test-runner"}, "relativePath": {"const": "agents/cortex-test-runner.md"}}}]},
+    "v3EvidenceAuditorActor": {"allOf": [{"$ref": "#/$defs/v3ActorArtifact"}, {"properties": {"roleId": {"const": "evidence-auditor"}, "relativePath": {"const": "agents/cortex-evidence-auditor.md"}}}]},
+    "v3Artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 7,
+      "required": [
+        "actors/requirements-analyst",
+        "actors/test-designer",
+        "actors/exploratory-tester",
+        "actors/adversarial-tester",
+        "actors/test-runner",
+        "actors/evidence-auditor"
+      ],
+      "properties": {
+        "actors/requirements-analyst": {"$ref": "#/$defs/v3RequirementsAnalystActor"},
+        "actors/test-designer": {"$ref": "#/$defs/v3TestDesignerActor"},
+        "actors/exploratory-tester": {"$ref": "#/$defs/v3ExploratoryTesterActor"},
+        "actors/adversarial-tester": {"$ref": "#/$defs/v3AdversarialTesterActor"},
+        "actors/test-runner": {"$ref": "#/$defs/v3TestRunnerActor"},
+        "actors/evidence-auditor": {"$ref": "#/$defs/v3EvidenceAuditorActor"}
+      },
+      "patternProperties": {
+        "^skills/[a-z0-9]+(?:-[a-z0-9]+)*$": {"$ref": "#/$defs/skillArtifact"}
+      }
+    },
+    "v3Manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "owner", "scope", "runtime", "rootKind", "snapshotFingerprint", "installationId", "artifacts"],
+      "properties": {
+        "schemaVersion": {"const": 3},
+        "owner": {"const": "cortex"},
+        "scope": {"const": "user"},
+        "runtime": {"const": "pi"},
+        "rootKind": {"const": "pi-user-agent"},
+        "snapshotFingerprint": {"$ref": "#/$defs/hash"},
+        "installationId": {"$ref": "#/$defs/installationID"},
+        "artifacts": {"$ref": "#/$defs/v3Artifacts"}
       }
     }
   }

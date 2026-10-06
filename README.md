@@ -2,7 +2,7 @@
 
 **Cortex installs a curated set of agent capabilities into the AI coding runtimes you already use, and takes them back out cleanly.**
 
-You point it at your machine. It detects which runtimes are present — [Pi](https://github.com/earendil-works/pi), OpenCode, Claude Code — writes its own skills and agents into each one, and stops there. Your configuration stays yours: Cortex owns only the files it created, writes them in a transaction that rolls back on failure, and `uninstall` removes exactly what it installed and nothing else.
+You point it at your machine. It detects which runtimes are present — [Pi](https://github.com/earendil-works/pi), OpenCode, Claude Code — writes its own skills and agents into each one, and stops there. Your configuration stays yours: Cortex owns only its material and writes transactionally with in-process rollback on failure. Conservative `uninstall` removes only verified Cortex-owned material; shared actor state can block removal, as described below.
 
 It does not install those runtimes, replace them, or sit between you and them. When you are not running a Cortex command, nothing about your setup is different.
 
@@ -71,7 +71,7 @@ runtime=opencode presence=present compatibility=compatible action=configure touc
 runtime=claude-code presence=present compatibility=uncertified action=configure touch=applied
 ```
 
-That is eight skills on each runtime — seven quality-assurance skills (six agent-backed roles plus the non-agent `qa-no-ci` report-only guidance skill) and the non-agent `maintainer-delivery` advisory delivery-practice skill in the reasoning family — plus one state manifest each and six Pi actor definitions. The resulting owned artifact counts are Pi 15, OpenCode 9, and Claude Code 9; Pi represents each general-core role as both a skill and an agent, while `qa-no-ci` and `maintainer-delivery` remain skills only. Installing again is a no-op, and reports that honestly as `create=0 unchanged=33`. `uninstall` removes only what Cortex owns:
+That is eight skills on each runtime — seven quality-assurance skills (six agent-backed roles plus the non-agent `qa-no-ci` report-only guidance skill) and the non-agent `maintainer-delivery` advisory delivery-practice skill in the reasoning family — plus one state manifest each and six Pi actor definitions. The resulting owned artifact counts are Pi 15, OpenCode 9, and Claude Code 9; Pi represents each general-core role as both a skill and an agent, while `qa-no-ci` and `maintainer-delivery` remain skills only. Installing again is a no-op, and reports that honestly as `create=0 unchanged=33`. For this ordinary installation, `uninstall` removes only what Cortex owns:
 
 ```
 $ cortex uninstall
@@ -80,7 +80,25 @@ runtime=opencode uninstall=completed remove=9 absent=0 conflict=0
 runtime=claude-code uninstall=completed remove=9 absent=0 conflict=0
 ```
 
-Every command reports one line per runtime, in the same order, in `key=value` form meant to be read by a person and parsed by a script.
+The lifecycle examples above use `key=value` runtime summaries. Output shape depends on the command: explicit `update` reports include operation and detail lines, and `uninstall` can append diagnostic notes. Do not assume one line per runtime.
+
+### Update Pi actors with external guidance
+
+In current source builds, an existing Pi actor installation with legacy Gentle CodeGraph guidance requires explicit `--adopt-guidance` consent. Inspect the read-only plan first, using a catalog root containing `catalog.json`:
+
+```bash
+cortex update --runtime pi --catalog ./catalog --adopt-guidance
+```
+
+Only add `--apply` if you choose to perform that adoption:
+
+```bash
+cortex update --runtime pi --catalog ./catalog --adopt-guidance --apply
+```
+
+`--adopt-guidance` is Pi-only, not a drift override. A successful adoption registers v3 state; later verified updates use `cortex update --runtime pi --catalog ./catalog` to plan, or add `--apply` to write, without repeating consent. These updates preserve the external bytes and native `agents/cortex-*.md` placement.
+
+**Limits:** v3 state blocks the entire grouped `cortex uninstall`, leaving all runtime roots, files and state unchanged. In-process rollback is supported, but composed crash/restart recovery is not. This source implementation does not certify native runtime behavior. See the [actor-guidance safety contract](references/runtime-adapter-contract.md#pi-actor-guidance-updates) for identity checks and supported legacy endings.
 
 ### Try a QA report
 
@@ -138,9 +156,9 @@ Evidence is caller-supplied untrusted data, not independently verified execution
 | A runtime recorded as known-incompatible | Skips that adapter only; the others still apply |
 | A version it cannot identify | Refuses to write to that runtime. Cortex will not touch what it cannot recognise |
 | A capability the runtime cannot represent honestly | Refuses rather than approximating |
-| A file it does not own | Fails closed before mutating anything |
+| A file without verified ownership or explicit actor-guidance adoption evidence | Fails closed before mutating anything |
 
-Writes are transactional and read back before success is reported; a failed transaction rolls back. The versions with verified end-to-end evidence are listed under [Runtime admission evidence](#runtime-admission-evidence) — that table records what was tested, and does not gate what you may install.
+Writes are transactional and read back before success is reported; in-process failures trigger rollback. [Composed actor updates](references/runtime-adapter-contract.md#pi-actor-guidance-updates) do not support crash/restart recovery. The versions with verified end-to-end evidence are listed under [Runtime admission evidence](#runtime-admission-evidence) — that table records what was tested, and does not gate what you may install.
 
 ## What works today—and what does not
 

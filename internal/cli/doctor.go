@@ -264,32 +264,6 @@ func readQAFile(path string, maximum int) ([]byte, error) {
 	return data, nil
 }
 
-func runUncertifiedOperation(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string) int {
-	matrix, err := probeMatrix(ctx, runner)
-	if err != nil {
-		writeError(stderr, "probe_failed")
-		return exitFailure
-	}
-	output := "operation=" + operation + " status=not_applied reason=compatibility_uncertified touch=denied\n" + runtimeReport(matrix)
-	if _, err := io.WriteString(stdout, output); err != nil {
-		writeError(stderr, "output_failed")
-		return exitFailure
-	}
-	return exitUnknown
-}
-
-func probeMatrix(ctx context.Context, runner runtimeprobe.Runner) (runtimematrix.Matrix, error) {
-	reports, err := probe(ctx, runner)
-	if err != nil {
-		return runtimematrix.Matrix{}, err
-	}
-	observations, err := runtimeprobe.Observations(reports)
-	if err != nil {
-		return runtimematrix.Matrix{}, err
-	}
-	return runtimematrix.Decide(observations)
-}
-
 func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, policy runtimecompat.Policy) (runtimematrix.Matrix, error) {
 	reports, err := probe(ctx, runner)
 	if err != nil {
@@ -300,14 +274,6 @@ func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, p
 		return runtimematrix.Matrix{}, err
 	}
 	return runtimematrix.Decide(observations)
-}
-
-func runtimeReport(matrix runtimematrix.Matrix) string {
-	var output strings.Builder
-	for _, decision := range matrix.Decisions {
-		output.WriteString(installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false))
-	}
-	return output.String()
 }
 
 // The note is separate from the per-runtime records: their machine-readable

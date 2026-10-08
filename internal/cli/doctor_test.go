@@ -498,7 +498,7 @@ func TestRunInstallAndUpdateRejectFlags(t *testing.T) {
 }
 
 func TestRunRejectsInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{{"unknown"}, {"doctor", "extra"}} {
+	for _, args := range [][]string{{"unknown"}, {"model-routing"}, {"doctor", "extra"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if got := Run(context.Background(), args, &stdout, &stderr, readyRunner()); got != 64 {

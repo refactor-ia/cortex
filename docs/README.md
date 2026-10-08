@@ -7,6 +7,7 @@ This map lists the authorities available in the clean Cortex repository.
 | Topic | Authority | Status |
 | --- | --- | --- |
 | Product identity and current foundation status | [Root README](../README.md) | Authoritative public overview |
+| Archive verification and runtime admission evidence | [Verification and release evidence](verification.md) | Reference record; records what was tested, gates nothing |
 | Target product boundary and architecture | [Architecture overview](architecture/overview.md) | Authoritative target contract; implementation is incomplete |
 | Contribution workflow and public language | [Contributing guide](../CONTRIBUTING.md) | Current collaboration contract |
 | Community conduct | [Code of Conduct](../CODE_OF_CONDUCT.md) | Current community policy |

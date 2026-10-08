@@ -64,6 +64,7 @@ EXPECTED_FILES = {
         "catalog/families/web/router.md",
         "cmd/cortex/main.go",
         "docs/README.md",
+        "docs/operating.md",
         "docs/verification.md",
         "docs/architecture/overview.md",
         "go.mod",
@@ -435,8 +436,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 381)
-                self.assertEqual(len(actual_files), 381)
+                self.assertEqual(len(EXPECTED_FILES), 382)
+                self.assertEqual(len(actual_files), 382)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

@@ -23,10 +23,12 @@ On Pi, the six QA roles are also registered as agents, not just skills.
 
 ## Start in two minutes
 
-Download the [latest evaluation prerelease](https://github.com/refactor-ia/cortex/releases) into an empty directory and verify the archive before extracting it (the exact `curl` + `shasum -c` commands are in each release's notes):
+Download the archive for your platform into an empty directory and verify your platform's line before extracting (replace `darwin_arm64` with `linux_amd64` on Linux; a full `shasum -c` over `SHA256SUMS` reports the other platform's line as missing):
 
 ```bash
-tar xzf cortex_v0.1.0-alpha.8_darwin_arm64.tar.gz
+curl -LO https://github.com/refactor-ia/cortex/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS 2>/dev/null | grep cortex-
+tar xzf cortex-<version>-<platform>.tar.gz
 ```
 
 Then walk the lifecycle:

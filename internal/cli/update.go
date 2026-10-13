@@ -269,6 +269,10 @@ func writeUpdateOperations(stdout io.Writer, header string, classified installob
 		if item.Action == ownership.Conflict {
 			status = "conflict"
 		}
+		if item.ModeDrift {
+			fmt.Fprintf(&output, "operation=%s action=%s mode_drift=true observed_mode=%04o canonical_mode=0600\n", item.LogicalID, item.Action, item.ObservedMode.Perm())
+			continue
+		}
 		fmt.Fprintf(&output, "operation=%s action=%s\n", item.LogicalID, item.Action)
 	}
 	if classified.StateAction() == ownership.Conflict {

@@ -381,6 +381,11 @@ func allowedActorDecisions(result Result) map[qarole.RoleID]bool {
 			continue
 		}
 		role := qarole.RoleID(strings.TrimPrefix(decision.LogicalID, "actors/"))
+		if decision.ModeDrift {
+			// A mode-drifted actor cannot be shadow-authenticated (shadowAllowed
+			// requires the canonical mode); it stays fail-closed as a conflict.
+			continue
+		}
 		if decision.ObservedOwnership == ownership.CortexOwned && (decision.Action == ownership.Unchanged || decision.Action == ownership.Replace) {
 			allowed[role] = true
 		}

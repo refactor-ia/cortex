@@ -35,6 +35,11 @@ func applyActorGuidanceWith(canonical installplan.Plan, observation installobser
 		return Result{}, ErrConflict
 	}
 	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ModeDrift {
+			// Mode drift stays fail-closed (issue #238): restore the canonical
+			// mode before any mutation; classification reports it as mode drift.
+			return Result{}, ErrConflict
+		}
 		if decision.Kind == installstate.KindPiActor {
 			if decision.ObservedOwnership != ownership.UserOwned || (decision.Action != ownership.Replace && decision.Action != ownership.Unchanged) {
 				return Result{}, ErrConflict

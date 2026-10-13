@@ -124,6 +124,28 @@ func TestBuildReadyChangesAndObservedOnlyActions(t *testing.T) {
 	}
 }
 
+func TestBuildReportsModeDriftAsReplaceWithCanonicalRestore(t *testing.T) {
+	bundle := bundle(t, "desired/same")
+	same := desiredHash(t, bundle, "desired/same")
+	plan, err := ownership.Build(bundle, []ownership.ObservedArtifact{
+		{LogicalID: "desired/same", CurrentHash: same, Ownership: ownership.CortexOwned, ModeDrift: true, ObservedMode: 0o644},
+	})
+	if err != nil || !plan.Ready() || !plan.HasChanges() {
+		t.Fatalf("Build() = (%#v, %v), want ready plan with changes", plan, err)
+	}
+	decisions := plan.Decisions()
+	if len(decisions) != 1 {
+		t.Fatalf("Decisions() = %#v, want one decision", decisions)
+	}
+	decision := decisions[0]
+	if decision.Action != ownership.Replace || !decision.TouchAllowed || !decision.ModeDrift {
+		t.Fatalf("decision = %#v, want Replace with ModeDrift and touch allowed", decision)
+	}
+	if decision.ObservedOwnership != ownership.CortexOwned {
+		t.Fatalf("ObservedOwnership = %q, want CortexOwned: content is unchanged, only the mode drifted", decision.ObservedOwnership)
+	}
+}
+
 func TestBuildNoChangesAndEmptyObserved(t *testing.T) {
 	bundle := bundle(t, "desired/same")
 	same := desiredHash(t, bundle, "desired/same")

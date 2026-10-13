@@ -212,6 +212,7 @@ func TestClassifyFilesystemPriorV2Integrity(t *testing.T) {
 		logicalID     string
 		ownership     ownership.Ownership
 		action        ownership.Action
+		modeDrift     bool
 		allUnchanged  bool
 	}{
 		{
@@ -236,12 +237,13 @@ func TestClassifyFilesystemPriorV2Integrity(t *testing.T) {
 			action:        ownership.Conflict,
 		},
 		{
-			name:      "actor mode drift conflicts",
+			name:      "actor mode drift reports replace with mode drift",
 			modes:     map[string]os.FileMode{"actors/requirements-analyst": 0o640},
 			state:     ownership.Unchanged,
 			logicalID: "actors/requirements-analyst",
-			ownership: ownership.UserOwned,
-			action:    ownership.Conflict,
+			ownership: ownership.CortexOwned,
+			action:    ownership.Replace,
+			modeDrift: true,
 		},
 		{
 			name:      "prior state mode rejects",
@@ -285,6 +287,9 @@ func TestClassifyFilesystemPriorV2Integrity(t *testing.T) {
 				if decision.LogicalID == tc.logicalID {
 					if decision.ObservedOwnership != tc.ownership || decision.Action != tc.action {
 						t.Fatalf("decision = %#v, want ownership %q action %q", decision, tc.ownership, tc.action)
+					}
+					if decision.ModeDrift != tc.modeDrift {
+						t.Fatalf("decision = %#v, want ModeDrift %t", decision, tc.modeDrift)
 					}
 					return
 				}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -34,6 +35,8 @@ type ArtifactDecision struct {
 	Kind              installstate.Kind
 	ObservedOwnership ownership.Ownership
 	Action            ownership.Action
+	ModeDrift         bool
+	ObservedMode      fs.FileMode
 }
 
 // Result is detached neutral ownership input plus candidate lifecycle decisions.
@@ -77,10 +80,8 @@ func Classify(candidate installplan.Plan, prior *PriorState, slots []SlotObserva
 	if !validSlots(slots, ids) {
 		return Result{}, invalid()
 	}
-	return classify(manifest, stateHash, prior, priorArtifacts, slots), nil
+	return classify(manifest, stateHash, prior, priorArtifacts, slots, nil), nil
 }
-
-const nonCanonicalOwnershipHash = "noncanonical-mode"
 
 // ClassifyFilesystem classifies an observation bound to the exact candidate.
 func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObservation) (Result, error) {
@@ -109,19 +110,31 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 	if !validExactObservation(candidate, observation, prior) {
 		return Result{}, invalid()
 	}
+	return classify(manifest, hash(candidate.StateJSON()), prior, priorArtifacts, observation.Slots(), modeDrift(priorArtifacts, observation)), nil
+}
+
+// modeDrift records the observed permission of each prior artifact whose file
+// mode diverges from the canonical mode. Content comparison stays untouched:
+// mode drift is a distinct fact from content divergence and must never be
+// encoded into a hash field (issue #238).
+func modeDrift(priorArtifacts map[string]string, observation FilesystemObservation) map[string]fs.FileMode {
+	drift := map[string]fs.FileMode(nil)
 	for id := range priorArtifacts {
 		if exact, found := observation.exact[id]; found && exact.mode != installplan.CanonicalFileMode {
-			priorArtifacts[id] = nonCanonicalOwnershipHash
+			if drift == nil {
+				drift = make(map[string]fs.FileMode)
+			}
+			drift[id] = exact.mode
 		}
 	}
-	return classify(manifest, hash(candidate.StateJSON()), prior, priorArtifacts, observation.Slots()), nil
+	return drift
 }
 
-func classify(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation) Result {
-	return classifyWithGuidance(manifest, stateHash, prior, priorArtifacts, slots, nil)
+func classify(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation, drift map[string]fs.FileMode) Result {
+	return classifyWithGuidance(manifest, stateHash, prior, priorArtifacts, slots, nil, drift)
 }
 
-func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation, proof *ActorGuidanceClassification) Result {
+func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prior *PriorState, priorArtifacts map[string]string, slots []SlotObservation, proof *ActorGuidanceClassification, drift map[string]fs.FileMode) Result {
 	guidanceVerified := proof != nil && proof.validPrior(prior, proof.candidate)
 	artifacts := artifactMap(manifest)
 	decisions := make([]ArtifactDecision, 0, len(slots))
@@ -133,6 +146,7 @@ func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prio
 			kind = artifact.Kind()
 		}
 		owner, action := ownership.Unrelated, ownership.Preserve
+		driftedMode, drifted := drift[slot.LogicalID]
 		priorHash, owned := priorArtifacts[slot.LogicalID]
 		switch {
 		case guidanceVerified && desired && kind == installstate.KindPiActor && slot.Present && proof.preimages[slot.LogicalID] == slot.SHA256:
@@ -144,6 +158,11 @@ func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prio
 		case !slot.Present && desired:
 			owner, action = ownership.CortexOwned, ownership.Create
 		case !slot.Present:
+		case owned && slot.SHA256 == priorHash && desired && slot.SHA256 == artifact.SHA256() && drifted:
+			// Content is byte-identical to the owned prior state; only the file
+			// mode drifted. Stay on the Cortex-owned path and restore the
+			// canonical mode through replace instead of reporting a conflict.
+			owner, action = ownership.CortexOwned, ownership.Replace
 		case owned && slot.SHA256 == priorHash && desired && slot.SHA256 == artifact.SHA256():
 			owner, action = ownership.CortexOwned, ownership.Unchanged
 		case owned && slot.SHA256 == priorHash && desired:
@@ -158,9 +177,9 @@ func classifyWithGuidance(manifest installstate.Manifest, stateHash string, prio
 			owner, action = ownership.Unrelated, ownership.Conflict
 		}
 		if slot.Present && kind == installstate.KindSkill {
-			observed = append(observed, ownership.ObservedArtifact{LogicalID: slot.LogicalID, CurrentHash: slot.SHA256, Ownership: owner})
+			observed = append(observed, ownership.ObservedArtifact{LogicalID: slot.LogicalID, CurrentHash: slot.SHA256, Ownership: owner, ModeDrift: drifted, ObservedMode: driftedMode})
 		}
-		decisions = append(decisions, ArtifactDecision{LogicalID: slot.LogicalID, Kind: kind, ObservedOwnership: owner, Action: action})
+		decisions = append(decisions, ArtifactDecision{LogicalID: slot.LogicalID, Kind: kind, ObservedOwnership: owner, Action: action, ModeDrift: drifted, ObservedMode: driftedMode})
 	}
 	action := ownership.Create
 	if prior != nil {

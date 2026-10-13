@@ -117,7 +117,14 @@ func TestClassifyActorGuidance(t *testing.T) {
 				}
 				if d.Kind == installstate.KindSkill {
 					want := ownership.Unchanged
-					if name == "skill drift" || name == "skill mode" || d.LogicalID == unrelated {
+					if name == "skill mode" {
+						// Content is identical; only the mode drifted (#238): stay
+						// Cortex-owned and restore via replace, not a conflict.
+						want = ownership.Replace
+						if !d.ModeDrift {
+							t.Fatalf("skill decision = %#v, want ModeDrift", d)
+						}
+					} else if name == "skill drift" || d.LogicalID == unrelated {
 						want = ownership.Conflict
 					}
 					if d.LogicalID == unrelated && d.ObservedOwnership != ownership.Unrelated {

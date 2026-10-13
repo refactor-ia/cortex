@@ -2,6 +2,7 @@ package installobserve
 
 import (
 	"bytes"
+	"io/fs"
 	"reflect"
 
 	"github.com/refactor-ia/cortex/internal/installplan"
@@ -62,11 +63,15 @@ func ClassifyActorGuidance(canonical installplan.Plan, observation FilesystemObs
 	if !valid || !validExactObservationWithGuidance(candidate, observation, captured, &proof) {
 		return ActorGuidanceClassification{}, invalid()
 	}
+	var drift map[string]fs.FileMode
 	for id := range previous {
 		if exact, found := observation.exact[id]; found && exact.mode != installplan.CanonicalFileMode {
-			previous[id] = nonCanonicalOwnershipHash
+			if drift == nil {
+				drift = make(map[string]fs.FileMode)
+			}
+			drift[id] = exact.mode
 		}
 	}
-	proof.result = classifyWithGuidance(candidate.InstalledState(), hash(candidate.StateJSON()), captured, previous, observation.Slots(), &proof)
+	proof.result = classifyWithGuidance(candidate.InstalledState(), hash(candidate.StateJSON()), captured, previous, observation.Slots(), &proof, drift)
 	return proof, nil
 }

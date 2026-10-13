@@ -27,6 +27,12 @@ func deriveActorGuidanceAcceptedAfter(candidate installplan.Plan, proof installo
 		return nil, ErrConflict
 	}
 	for _, decision := range classified.ArtifactDecisions() {
+		if decision.ModeDrift {
+			// Mode drift stays fail-closed (issue #238): the remedy is restoring
+			// the canonical mode, and classification now reports it as mode
+			// drift instead of misreporting a content conflict.
+			return nil, ErrConflict
+		}
 		if decision.Kind == installstate.KindPiActor {
 			if decision.ObservedOwnership != ownership.UserOwned || (decision.Action != ownership.Replace && decision.Action != ownership.Unchanged) {
 				return nil, ErrConflict

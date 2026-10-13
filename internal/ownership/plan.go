@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -36,9 +37,11 @@ const (
 
 // ObservedArtifact records one present provider-observed logical slot.
 type ObservedArtifact struct {
-	LogicalID   string
-	CurrentHash string
-	Ownership   Ownership
+	LogicalID    string
+	CurrentHash  string
+	Ownership    Ownership
+	ModeDrift    bool
+	ObservedMode fs.FileMode
 }
 
 // Decision records neutral ownership intent for one logical artifact.
@@ -49,6 +52,7 @@ type Decision struct {
 	CurrentHash       string
 	Action            Action
 	TouchAllowed      bool
+	ModeDrift         bool
 }
 
 // Plan is an immutable ownership plan. It does not authorize materialization.
@@ -105,6 +109,8 @@ func Build(bundle artifact.Bundle, observed []ObservedArtifact) (Plan, error) {
 		switch {
 		case wanted && !present:
 			decision.ObservedOwnership, decision.Action, decision.TouchAllowed = CortexOwned, Create, true
+		case wanted && item.Ownership == CortexOwned && item.CurrentHash == desiredHash && item.ModeDrift:
+			decision.ObservedOwnership, decision.CurrentHash, decision.Action, decision.TouchAllowed, decision.ModeDrift = item.Ownership, item.CurrentHash, Replace, true, true
 		case wanted && item.Ownership == CortexOwned && item.CurrentHash == desiredHash:
 			decision.ObservedOwnership, decision.CurrentHash, decision.Action = item.Ownership, item.CurrentHash, Unchanged
 		case wanted && item.Ownership == CortexOwned:

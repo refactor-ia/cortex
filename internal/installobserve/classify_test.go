@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
@@ -297,6 +299,71 @@ func TestClassifyFilesystemPriorV2Integrity(t *testing.T) {
 			t.Fatalf("ArtifactDecisions() = %#v, missing %q", result.ArtifactDecisions(), tc.logicalID)
 		})
 	}
+}
+
+func TestClassifyFilesystemNamesUnsupportedPriorSchema(t *testing.T) {
+	candidate := makeActorAwareCandidate(t)
+	v3 := priorV3(t, candidate, "")
+	writePriorV2(t, candidate, v3, nil, nil, nil)
+	observation, err := installobserve.Observe(candidate, installobserve.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = installobserve.ClassifyFilesystem(candidate, observation)
+	var unsupported *installobserve.UnsupportedPriorStateError
+	if !errors.As(err, &unsupported) || unsupported.PriorSchema != 3 {
+		t.Fatalf("ClassifyFilesystem() error = %v, want UnsupportedPriorStateError with PriorSchema 3", err)
+	}
+}
+
+func bumpPriorSchema(t *testing.T, manifest installstate.Manifest, schema int) installstate.Manifest {
+	t.Helper()
+	data, err := installstate.Encode(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := []byte(`"schemaVersion":2`)
+	new := []byte(`"schemaVersion":` + strconv.Itoa(schema))
+	bumped := bytes.Replace(data, old, new, 1)
+	if bytes.Equal(bumped, data) {
+		t.Fatal("schemaVersion not found in encoded manifest")
+	}
+	decoded, err := installstate.Decode(bumped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
+// priorV3 builds a valid schema-3 prior manifest from the candidate: the same
+// artifact set, with the canonical SHA-256 v3 requires on pi-actor entries.
+func priorV3(t *testing.T, candidate installplan.Plan, installationID installstate.InstallationID) installstate.Manifest {
+	t.Helper()
+	if installationID == "" {
+		installationID = candidate.InstalledState().InstallationID()
+	}
+	inputs := make([]installstate.V3ArtifactInput, 0, len(candidate.InstalledState().Artifacts()))
+	for _, artifact := range candidate.InstalledState().Artifacts() {
+		input := installstate.V3ArtifactInput{V2ArtifactInput: installstate.V2ArtifactInput{
+			LogicalID:            artifact.LogicalID(),
+			Kind:                 artifact.Kind(),
+			CapabilityID:         artifact.CapabilityID(),
+			RoleID:               artifact.RoleID(),
+			ActorContractVersion: artifact.ActorContractVersion(),
+			RelativePath:         artifact.RelativePath(),
+			SHA256:               artifact.SHA256(),
+			InstallationID:       installationID,
+		}}
+		if artifact.Kind() == installstate.KindPiActor {
+			input.CanonicalSHA256 = artifact.SHA256()
+		}
+		inputs = append(inputs, input)
+	}
+	manifest, err := installstate.NewV3(candidate.RuntimeID(), candidate.RootKind(), candidate.InstalledState().SnapshotFingerprint(), installationID, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest
 }
 
 func TestClassifyFilesystemRejectsMalformedPriorV2Metadata(t *testing.T) {

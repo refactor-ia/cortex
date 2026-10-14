@@ -356,7 +356,10 @@ func applyVerifiedWith(candidate installplan.Plan, cwd, backupRoot, backupName s
 		return Result{}, ErrFailed
 	}
 	classified, err := installobserve.ClassifyFilesystem(candidate, current)
-	if err != nil || !verifiedDecisionsReady(classified) {
+	if err != nil {
+		return Result{}, errors.Join(ErrInvalid, err)
+	}
+	if !verifiedDecisionsReady(classified) {
 		return Result{}, ErrConflict
 	}
 	shadows, err := installobserve.ObserveActorShadows(candidate, current, cwd)
@@ -592,7 +595,7 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 			if errors.Is(err, ErrConflict) {
 				return GroupResult{}, ErrConflict
 			}
-			return GroupResult{}, ErrInvalid
+			return GroupResult{}, errors.Join(ErrInvalid, err)
 		}
 		result.runtimeIDs = append(result.runtimeIDs, request.Plan.RuntimeID())
 		result.counts = addCounts(result.counts, single)
@@ -901,7 +904,7 @@ func prepareVerified(candidate installplan.Plan, observation installobserve.File
 	}
 	classified, err := installobserve.ClassifyFilesystem(candidate, observation)
 	if err != nil {
-		return sequencedOperations{}, Result{}, ErrInvalid
+		return sequencedOperations{}, Result{}, errors.Join(ErrInvalid, err)
 	}
 	if !verifiedDecisionsReady(classified) {
 		return sequencedOperations{}, Result{actions: actionsFromClassification(classified)}, ErrConflict

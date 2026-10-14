@@ -104,6 +104,20 @@ anyone planning, starting, or contributing work in this repository.
   treatment.
 - No dates and no promised versions anywhere in the workflow.
 
+## Prior install-state schemas
+
+Cortex classifies prior installs with schema 1 or 2. A prior install state this build
+cannot classify blocks install and update by design; the refusal names itself instead of
+an opaque transaction failure:
+
+- `cortex install` reports `reason=install_state_schema_unsupported prior_schema=N supported=1,2`.
+- `cortex doctor` reports `note=install_state_schema_unsupported runtime=... prior_schema=N supported=1,2 remedy=...` and exits non-zero, so its exit code stays honest about install readiness.
+
+Operator path when blocked: adopt the prior state through a guided update where one is
+offered, or archive the stale state (the `.cortex` directory and the projected files it
+lists) and reinstall. Archiving means a dated backup directory outside the runtime —
+never deletion.
+
 ## Where to read more
 
 - [Architecture overview](architecture/overview.md) — the target product contract (authority).

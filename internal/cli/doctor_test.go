@@ -14,6 +14,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
+	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
 type fakeRun struct {
@@ -118,6 +119,47 @@ func TestDoctorReportsBackendAvailabilityPerRuntime(t *testing.T) {
 
 // TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
 // separate from installed asset ownership, even when a probe answers ready.
+func TestRunDoctorReportsUnsupportedPriorInstallState(t *testing.T) {
+	home := canonicalHome(t)
+	stateDir := filepath.Join(home, ".pi", "agent", ".cortex")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"schemaVersion":3,"owner":"cortex","scope":"user"}`
+	if err := os.WriteFile(filepath.Join(stateDir, "install-state.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runDoctor(context.Background(), stdout, stderr, certifiedRunner(), runtimecompat.BuiltInPolicy(), func() ([]skillroot.UninstallRoot, error) {
+		return skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home})
+	})
+	if code != exitConflict {
+		t.Fatalf("doctor exit = %d, want %d for unsupported prior install state", code, exitConflict)
+	}
+	for _, want := range []string{
+		"install_state_schema_unsupported runtime=pi prior_schema=3 supported=1,2",
+		"remedy=",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("doctor output = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunDoctorStaysOKWithoutPriorState(t *testing.T) {
+	home := canonicalHome(t)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runDoctor(context.Background(), stdout, stderr, certifiedRunner(), runtimecompat.BuiltInPolicy(), func() ([]skillroot.UninstallRoot, error) {
+		return skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home})
+	})
+	if code != exitOK {
+		t.Fatalf("doctor exit = %d, want %d with no prior install state", code, exitOK)
+	}
+	if strings.Contains(stdout.String(), "install_state_schema_unsupported") {
+		t.Fatalf("doctor output = %q, want no unsupported-schema note", stdout.String())
+	}
+}
+
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string

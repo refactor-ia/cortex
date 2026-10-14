@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -94,13 +95,24 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 	}
 	group, err := deps.applyGroup(requests, home, backupName)
 	if err != nil {
-		reason, code := "transaction_failed", exitTransaction
-		if errors.Is(err, installtxn.ErrConflict) {
-			reason, code = "ownership_conflict", exitConflict
-		}
+		reason, code := installFailureReason(err)
 		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
 	}
 	return writeInstallResult(stdout, stderr, operation, "status=completed touch=applied", warning, results, true, group.Counts(), exitOK)
+}
+
+// installFailureReason maps a grouped-transaction failure to the operator reason
+// and exit code. Fail-closed refusals name their cause and remedy instead of the
+// opaque transaction_failed (issue #281).
+func installFailureReason(err error) (string, int) {
+	var unsupported *installobserve.UnsupportedPriorStateError
+	if errors.As(err, &unsupported) {
+		return fmt.Sprintf("install_state_schema_unsupported prior_schema=%d supported=1,2", unsupported.PriorSchema), exitConflict
+	}
+	if errors.Is(err, installtxn.ErrConflict) {
+		return "ownership_conflict", exitConflict
+	}
+	return "transaction_failed", exitTransaction
 }
 
 // uncertifiedAdmissionWarning discloses how many uncertified runtimes the

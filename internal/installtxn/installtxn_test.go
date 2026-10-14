@@ -97,6 +97,51 @@ func TestApplyGroupCreatesAbsentRoots(t *testing.T) {
 	}
 }
 
+func TestApplyGroupNamesUnsupportedPriorSchema(t *testing.T) {
+	home := physicalTempDir(t)
+	plan := actorAwareCandidateWith(t, home, "000102030405060708090a0b0c0d0e0f")
+	mustMkdir(t, plan.RootPath())
+	inputs := make([]installstate.V3ArtifactInput, 0, len(plan.InstalledState().Artifacts()))
+	for _, artifact := range plan.InstalledState().Artifacts() {
+		input := installstate.V3ArtifactInput{V2ArtifactInput: installstate.V2ArtifactInput{
+			LogicalID:            artifact.LogicalID(),
+			Kind:                 artifact.Kind(),
+			CapabilityID:         artifact.CapabilityID(),
+			RoleID:               artifact.RoleID(),
+			ActorContractVersion: artifact.ActorContractVersion(),
+			RelativePath:         artifact.RelativePath(),
+			SHA256:               artifact.SHA256(),
+			InstallationID:       plan.InstalledState().InstallationID(),
+		}}
+		if artifact.Kind() == installstate.KindPiActor {
+			input.CanonicalSHA256 = artifact.SHA256()
+		}
+		inputs = append(inputs, input)
+	}
+	manifest, err := installstate.NewV3(plan.RuntimeID(), plan.RootKind(), plan.InstalledState().SnapshotFingerprint(), plan.InstalledState().InstallationID(), inputs)
+	must(t, err)
+	for _, file := range plan.Files() {
+		mustMkdir(t, filepath.Dir(file.AbsolutePath()))
+		must(t, os.WriteFile(file.AbsolutePath(), file.Content(), file.DesiredMode()))
+	}
+	state, err := installstate.Encode(manifest)
+	must(t, err)
+	stateFile := plan.Files()[len(plan.Files())-1]
+	must(t, os.WriteFile(stateFile.AbsolutePath(), state, stateFile.DesiredMode()))
+
+	requests := groupRequests(t, plan)
+	for index := range requests {
+		if requests[index].Plan.InstalledState().SchemaVersion() != 1 {
+			requests[index].CWD = home
+		}
+	}
+	_, err = ApplyGroup(requests, filepath.Join(home, "backups"), ".cortex-backup-test")
+	var unsupported *installobserve.UnsupportedPriorStateError
+	if !errors.As(err, &unsupported) || unsupported.PriorSchema != 3 {
+		t.Fatalf("ApplyGroup() error = %v, want UnsupportedPriorStateError with PriorSchema 3", err)
+	}
+}
+
 func TestApplyGroupCreatesSingletonAndMixedAbsentRoots(t *testing.T) {
 	t.Run("singleton", func(t *testing.T) {
 		home := t.TempDir()

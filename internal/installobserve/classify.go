@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -97,6 +98,9 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 		return Classify(candidate, prior, observation.Slots())
 	}
 	if manifest.SchemaVersion() != 2 || prior != nil && (prior.Manifest.SchemaVersion() != 1 && prior.Manifest.SchemaVersion() != 2) {
+		if prior != nil {
+			return Result{}, &UnsupportedPriorStateError{PriorSchema: prior.Manifest.SchemaVersion()}
+		}
 		return Result{}, invalid()
 	}
 	priorArtifacts := map[string]string(nil)
@@ -360,5 +364,18 @@ func hash(value []byte) string {
 	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:])
 }
+
+// UnsupportedPriorStateError reports an install-state prior whose schema this
+// build cannot classify, naming the observed schema. The operator must learn
+// why admission refused, not just that the transaction failed (issue #281).
+type UnsupportedPriorStateError struct {
+	PriorSchema int
+}
+
+func (e *UnsupportedPriorStateError) Error() string {
+	return fmt.Sprintf("install observe: prior install-state schema %d is unsupported; supported schemas are 1 and 2", e.PriorSchema)
+}
+
+var _ error = (*UnsupportedPriorStateError)(nil)
 
 func invalid() error { return errors.New("install observe: invalid input") }

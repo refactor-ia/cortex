@@ -11,6 +11,7 @@ import (
 
 	"os/exec"
 
+	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/installtxn"
 	"github.com/refactor-ia/cortex/internal/projection"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
@@ -44,6 +45,19 @@ func canonicalHome(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return home
+}
+
+func TestInstallFailureReasonNamesUnsupportedPriorSchema(t *testing.T) {
+	reason, code := installFailureReason(errors.Join(installtxn.ErrInvalid, &installobserve.UnsupportedPriorStateError{PriorSchema: 3}))
+	if reason != "install_state_schema_unsupported prior_schema=3 supported=1,2" || code != exitConflict {
+		t.Fatalf("installFailureReason(unsupported prior) = (%q, %d)", reason, code)
+	}
+	if reason, code := installFailureReason(installtxn.ErrConflict); reason != "ownership_conflict" || code != exitConflict {
+		t.Fatalf("installFailureReason(conflict) = (%q, %d)", reason, code)
+	}
+	if reason, code := installFailureReason(errors.New("other")); reason != "transaction_failed" || code != exitTransaction {
+		t.Fatalf("installFailureReason(other) = (%q, %d)", reason, code)
+	}
 }
 
 func TestRunInstallCompatibleFreshRoot(t *testing.T) {

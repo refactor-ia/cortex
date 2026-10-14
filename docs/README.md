@@ -10,6 +10,7 @@ This map lists the authorities available in the clean Cortex repository.
 | Operating and setup for agents acting on a user's behalf | [Operating guide](operating.md) | Current operating contract for agent-operated hosts |
 | Archive verification and runtime admission evidence | [Verification and release evidence](verification.md) | Reference record; records what was tested, gates nothing |
 | Target product boundary and architecture | [Architecture overview](architecture/overview.md) | Authoritative target contract; implementation is incomplete |
+| Product direction and sequencing | [Roadmap](../ROADMAP.md) | Direction document; consistent with the target architecture |
 | Project mandatory foundations | [Project constitution design](design/project-constitution.md) | Proposed specification for issue #146; not yet implemented |
 | User-global construction policy (fork-first) | [Fork First, Upstream Last design](design/fork-first-upstream-last.md) | Proposed specification for issue #3; not yet implemented |
 | Contribution workflow and public language | [Contributing guide](../CONTRIBUTING.md) | Current collaboration contract |

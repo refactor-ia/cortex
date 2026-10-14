@@ -78,7 +78,7 @@ These run only when they unblock A/B:
 
 - Seam compatibility from measured negotiated contracts, not parsed version strings
   (#235).
-- Detect Gentle AI capability overlap before it becomes a yield (#207).
+- Detect Gentle-AI™ capability overlap before it becomes a yield (#207).
 - Implement the project constitution (#146) and the fork-first policy (#3) as their
   child issues define.
 

@@ -63,7 +63,7 @@ The report should flag the two incompatible timing requirements. QA runs support
 | A capability the runtime cannot represent honestly | Refuses rather than approximating |
 | A file without verified ownership or explicit adoption evidence | Fails closed before mutating anything |
 
-Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no lifecycle-governance harness; and no memory-server ownership. It complements Gentle AI™: when Gentle AI™ ships an official capability that overlaps one of ours, Cortex yields it.
+Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no lifecycle-governance harness; and no memory-server ownership. It complements Gentle-AI™: when Gentle-AI™ ships an official capability that overlaps one of ours, Cortex yields it.
 
 ## Status
 
@@ -73,7 +73,7 @@ Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no life
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix. Not yet an end-to-end product. |
 | **Target only** | Full 11-family × 3-runtime parity, release certification, the remaining ten families' capabilities. |
 
-Where it is going: one curated distribution projecting approved capabilities into compatible runtimes through generated adapters, across eleven curation families — reasoning, model intelligence, execution, quality assurance, web, mobile, PCSoft, services, personal, memory integration, and documentation. Families are internal curation boundaries, not user-selected packs. No delivery date is promised. User model profiles are not a Cortex capability: gentle-shell owns them.
+Where it is going: one curated distribution projecting approved capabilities into compatible runtimes through generated adapters, across eleven curation families — reasoning, model intelligence, execution, quality assurance, web, mobile, PCSoft, services, personal, memory integration, and documentation. Families are internal curation boundaries, not user-selected packs. No delivery date is promised. User model profiles are not a Cortex capability: Gentle-Shell™ owns them.
 
 ## Reference
 
@@ -88,5 +88,5 @@ Its canonical repository is [github.com/refactor-ia/cortex](https://github.com/r
 ---
 
 <a href="https://github.com/Gentleman-Programming/gentle-ai">
-  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI™" />
 </a>

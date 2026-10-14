@@ -406,7 +406,11 @@ func runProbeCommand(ctx context.Context, binary, cwd string, arguments []string
 func fixedAvailabilityCommand(kind availabilityCommand) ([]string, int, int, bool) {
 	switch kind {
 	case availabilityModel:
-		return []string{"--list-models"}, maxModelOutputBytes, maxAuthOutputBytes, true
+		// The probe runs on the same extension surface as the report run, which
+		// launches with --no-extensions. Probing the default surface would see
+		// extension-provided models the run cannot use and admit a run that is
+		// guaranteed to fail (issue #298).
+		return []string{"--list-models", "--no-extensions"}, maxModelOutputBytes, maxAuthOutputBytes, true
 	case availabilityAuth:
 		return []string{"auth", "check", "--provider", "nan", "--json", "--no-refresh"}, maxAuthOutputBytes, maxAuthOutputBytes, true
 	default:

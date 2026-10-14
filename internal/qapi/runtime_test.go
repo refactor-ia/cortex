@@ -501,7 +501,7 @@ func main() {
  behavior := %q
  if strings.HasPrefix(behavior, "availability-") {
   switch strings.Join(os.Args[1:], " ") {
-  case "--list-models":
+  case "--list-models --no-extensions":
    record("model")
    switch behavior {
    case "availability-ready", "availability-auth-not-ready", "availability-malformed-auth": modelTable("qwen3.6")

@@ -193,7 +193,7 @@ func TestPiAvailabilityProbeIsUnchanged(t *testing.T) {
 		t.Fatalf("verdict = %#v", verdict)
 	}
 	want := [][]string{
-		{"--list-models"},
+		{"--list-models", "--no-extensions"},
 		{"auth", "check", "--provider", "nan", "--json", "--no-refresh"},
 	}
 	if len(recorder.issued) != len(want) {

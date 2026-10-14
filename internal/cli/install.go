@@ -107,7 +107,7 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 func installFailureReason(err error) (string, int) {
 	var unsupported *installobserve.UnsupportedPriorStateError
 	if errors.As(err, &unsupported) {
-		return fmt.Sprintf("install_state_schema_unsupported prior_schema=%d supported=1,2", unsupported.PriorSchema), exitConflict
+		return fmt.Sprintf("install_state_schema_unsupported prior_schema=%d supported="+installobserve.SupportedPriorSchemas, unsupported.PriorSchema), exitConflict
 	}
 	if errors.Is(err, installtxn.ErrConflict) {
 		return "ownership_conflict", exitConflict

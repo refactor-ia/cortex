@@ -151,7 +151,7 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 			continue
 		}
 		notes = append(notes, fmt.Sprintf(
-			"note=install_state_schema_unsupported runtime=%s prior_schema=%d supported=1,2 remedy=adopt the prior state through a guided update or archive it and reinstall",
+			"note=install_state_schema_unsupported runtime=%s prior_schema=%d supported=" + installobserve.SupportedPriorSchemas + " remedy=adopt the prior state through a guided update or archive it and reinstall",
 			root.RuntimeID(), *version.SchemaVersion))
 	}
 	return strings.Join(notes, "\n"), len(notes) > 0

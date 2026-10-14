@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/adapterplan"
@@ -314,25 +313,6 @@ func TestClassifyFilesystemNamesUnsupportedPriorSchema(t *testing.T) {
 	if !errors.As(err, &unsupported) || unsupported.PriorSchema != 3 {
 		t.Fatalf("ClassifyFilesystem() error = %v, want UnsupportedPriorStateError with PriorSchema 3", err)
 	}
-}
-
-func bumpPriorSchema(t *testing.T, manifest installstate.Manifest, schema int) installstate.Manifest {
-	t.Helper()
-	data, err := installstate.Encode(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := []byte(`"schemaVersion":2`)
-	new := []byte(`"schemaVersion":` + strconv.Itoa(schema))
-	bumped := bytes.Replace(data, old, new, 1)
-	if bytes.Equal(bumped, data) {
-		t.Fatal("schemaVersion not found in encoded manifest")
-	}
-	decoded, err := installstate.Decode(bumped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return decoded
 }
 
 // priorV3 builds a valid schema-3 prior manifest from the candidate: the same

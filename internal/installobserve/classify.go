@@ -373,8 +373,11 @@ type UnsupportedPriorStateError struct {
 }
 
 func (e *UnsupportedPriorStateError) Error() string {
-	return fmt.Sprintf("install observe: prior install-state schema %d is unsupported; supported schemas are 1 and 2", e.PriorSchema)
+	return fmt.Sprintf("install observe: prior install-state schema %d is unsupported; supported schemas are %s", e.PriorSchema, SupportedPriorSchemas)
 }
+
+// SupportedPriorSchemas lists the prior install-state schemas this build classifies.
+const SupportedPriorSchemas = "1,2"
 
 var _ error = (*UnsupportedPriorStateError)(nil)
 

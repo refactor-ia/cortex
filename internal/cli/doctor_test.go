@@ -117,8 +117,9 @@ func TestDoctorReportsBackendAvailabilityPerRuntime(t *testing.T) {
 	}
 }
 
-// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
-// separate from installed asset ownership, even when a probe answers ready.
+// TestRunDoctorReportsUnsupportedPriorInstallState keeps doctor exit 0 honest:
+// a prior install state this build cannot classify blocks install, and doctor
+// must name the same blocking condition with its remedy.
 func TestRunDoctorReportsUnsupportedPriorInstallState(t *testing.T) {
 	home := canonicalHome(t)
 	stateDir := filepath.Join(home, ".pi", "agent", ".cortex")
@@ -160,6 +161,8 @@ func TestRunDoctorStaysOKWithoutPriorState(t *testing.T) {
 	}
 }
 
+// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
+// separate from installed asset ownership, even when a probe answers ready.
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string

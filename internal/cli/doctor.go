@@ -147,7 +147,7 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 		if json.Unmarshal(data, &version) != nil || version.SchemaVersion == nil {
 			continue
 		}
-		if *version.SchemaVersion == 1 || *version.SchemaVersion == 2 {
+		if installobserve.PriorSchemaSupported(*version.SchemaVersion) {
 			continue
 		}
 		notes = append(notes, fmt.Sprintf(

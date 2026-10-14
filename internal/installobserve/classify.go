@@ -97,7 +97,7 @@ func ClassifyFilesystem(candidate installplan.Plan, observation FilesystemObserv
 		}
 		return Classify(candidate, prior, observation.Slots())
 	}
-	if manifest.SchemaVersion() != 2 || prior != nil && (prior.Manifest.SchemaVersion() != 1 && prior.Manifest.SchemaVersion() != 2) {
+	if manifest.SchemaVersion() != 2 || prior != nil && !PriorSchemaSupported(prior.Manifest.SchemaVersion()) {
 		if prior != nil {
 			return Result{}, &UnsupportedPriorStateError{PriorSchema: prior.Manifest.SchemaVersion()}
 		}
@@ -378,6 +378,13 @@ func (e *UnsupportedPriorStateError) Error() string {
 
 // SupportedPriorSchemas lists the prior install-state schemas this build classifies.
 const SupportedPriorSchemas = "1,2"
+
+// PriorSchemaSupported reports whether the prior install-state schema is one
+// this build classifies. The single predicate drives classification, the CLI
+// reason, and the doctor probe so they can never disagree.
+func PriorSchemaSupported(schema int) bool {
+	return schema == 1 || schema == 2
+}
 
 var _ error = (*UnsupportedPriorStateError)(nil)
 

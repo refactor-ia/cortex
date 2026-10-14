@@ -3,8 +3,8 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -151,7 +151,7 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 			continue
 		}
 		notes = append(notes, fmt.Sprintf(
-			"note=install_state_schema_unsupported runtime=%s prior_schema=%d supported=" + installobserve.SupportedPriorSchemas + " remedy=adopt the prior state through a guided update or archive it and reinstall",
+			"note=install_state_schema_unsupported runtime=%s prior_schema=%d supported="+installobserve.SupportedPriorSchemas+" remedy=adopt the prior state through a guided update or archive it and reinstall",
 			root.RuntimeID(), *version.SchemaVersion))
 	}
 	return strings.Join(notes, "\n"), len(notes) > 0
@@ -159,7 +159,7 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 
 const (
 	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode] [--evidence <file.json>]\n"
-	qaHelp = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
+	qaHelp  = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
 		"Write a short, bounded plain-text request (request.txt):\n" +
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
 		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +

@@ -220,6 +220,25 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	return []string{"qa", "run", "--role", roleName, "--request", "requirements.txt", "--catalog", catalogRoot}
 }
 
+
+func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
+	args := roleReportFixture(t, "requirements-analyst")
+	broken := t.TempDir()
+	mustOK(os.WriteFile(filepath.Join(broken, "catalog.json"), []byte("not a catalog"), 0o600))
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			args[index+1] = broken
+		}
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code == exitOK {
+		t.Fatalf("qa run exit = %d, want failure for an unloadable catalog", code)
+	}
+	if !strings.Contains(stderr.String(), "stage=catalog") {
+		t.Fatalf("stderr = %q, want stage=catalog", stderr.String())
+	}
+}
+
 func TestQARunEvidenceSidecar(t *testing.T) {
 	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":true}]`
 	for _, role := range qarole.Catalog() {

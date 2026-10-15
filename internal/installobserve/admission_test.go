@@ -3,6 +3,7 @@ package installobserve_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,72 @@ import (
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/skilldest"
 )
+
+
+func TestObserveAdmissionAssetsNamesUnavailableCause(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		setup     func(t *testing.T, fixture admissionFixture)
+		stage     string
+		expected  string
+		found     string
+		assertErr func(t *testing.T, fixture admissionFixture, unavailable *installobserve.AdmissionUnavailableError)
+	}{
+		{name: "missing state names the stage", setup: func(t *testing.T, fixture admissionFixture) {
+			mustRemove(t, fixture.statePath)
+		}, stage: "install_state_missing"},
+		{name: "foreign catalog fingerprint names expected and found", assertErr: func(t *testing.T, fixture admissionFixture, unavailable *installobserve.AdmissionUnavailableError) {
+			if unavailable.Expected != fixture.expected.CatalogFingerprint {
+				t.Fatalf("Expected = %q, want the binary catalog fingerprint", unavailable.Expected)
+			}
+			if unavailable.Found != strings.Repeat("f", 64) {
+				t.Fatalf("Found = %q, want the installed foreign fingerprint", unavailable.Found)
+			}
+		}, setup: func(t *testing.T, fixture admissionFixture) {
+			state, err := os.ReadFile(fixture.statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreign := strings.Repeat("f", 64)
+			state = []byte(strings.Replace(string(state), fixture.expected.CatalogFingerprint, foreign, 1))
+			if err := os.WriteFile(fixture.statePath, state, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, stage: "catalog_fingerprint"},
+		{name: "missing skill file names the stage and expected digest", setup: func(t *testing.T, fixture admissionFixture) {
+			mustRemove(t, fixture.skillPath)
+		}, stage: "skill_missing", expected: admissionHash([]byte("skill bytes"))},
+		{name: "skill content drift names expected and found", setup: func(t *testing.T, fixture admissionFixture) {
+			if err := os.WriteFile(fixture.skillPath, []byte("drifted skill"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, stage: "skill_mismatch", expected: admissionHash([]byte("skill bytes")), found: admissionHash([]byte("drifted skill"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newAdmissionFixture(t)
+			if tc.setup != nil {
+				tc.setup(t, fixture)
+			}
+			_, err := installobserve.ObserveAdmissionAssets(fixture.root, fixture.cwd, fixture.expected)
+			var unavailable *installobserve.AdmissionUnavailableError
+			if !errors.As(err, &unavailable) {
+				t.Fatalf("ObserveAdmissionAssets() error = %v, want AdmissionUnavailableError", err)
+			}
+			if unavailable.Stage != tc.stage {
+				t.Fatalf("Stage = %q, want %q", unavailable.Stage, tc.stage)
+			}
+			if tc.expected != "" && unavailable.Expected != tc.expected {
+				t.Fatalf("Expected = %q, want %q", unavailable.Expected, tc.expected)
+			}
+			if tc.found != "" && unavailable.Found != tc.found {
+				t.Fatalf("Found = %q, want %q", unavailable.Found, tc.found)
+			}
+			if tc.assertErr != nil {
+				tc.assertErr(t, fixture, unavailable)
+			}
+		})
+	}
+}
 
 func TestAdmissionAssets(t *testing.T) {
 	for _, tc := range []struct {
@@ -355,5 +422,12 @@ func TestAdmissionAssetsCarryTheVerifiedSkillText(t *testing.T) {
 				t.Fatal("SkillText() does not hash to the attested skill digest")
 			}
 		})
+	}
+}
+
+func mustRemove(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 }

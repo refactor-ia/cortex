@@ -263,6 +263,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitFailure
 		}
 		failure := qaFailure(stderr, string(code))
+		if diagnostic := qaAdmissionDiagnostic(err); diagnostic != "" {
+			_, _ = io.WriteString(stderr, diagnostic)
+		}
 		if code == qaadmission.CodeNormalizationFailed {
 			var diagnostic *qapi.ReportNormalizationError
 			if errors.As(err, &diagnostic) {
@@ -282,6 +285,20 @@ func qaFailure(stderr io.Writer, code string) int {
 	writeError(stderr, code)
 	_, _ = io.WriteString(stderr, qaReportNote)
 	return exitFailure
+}
+
+// qaAdmissionDiagnostic renders one bounded diagnostic line for admission
+// failures, naming the stage and the expected/found identity (issue #294).
+// Digests and the catalog fingerprint are the only values it may carry.
+func qaAdmissionDiagnostic(err error) string {
+	var unavailable *installobserve.AdmissionUnavailableError
+	if !errors.As(err, &unavailable) {
+		return ""
+	}
+	if unavailable.Expected == "" && unavailable.Found == "" {
+		return fmt.Sprintf("admission_stage=%s\n", unavailable.Stage)
+	}
+	return fmt.Sprintf("admission_stage=%s expected=%s found=%s\n", unavailable.Stage, unavailable.Expected, unavailable.Found)
 }
 
 func readRequestTask(path string) ([]byte, error) {

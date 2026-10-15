@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 
+	"github.com/refactor-ia/cortex/internal/builtinassets"
+	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -72,6 +75,60 @@ func qaBackendIdentity(backend string) string {
 // the production probe.
 var qaBackendProbe func(ctx context.Context, backend string) string
 
+// qaAssetCheck is the installed-asset seam for the doctor QA line. It runs the
+// same read-only admission check qa run performs: the binary's embedded catalog
+// against the installed assets of the backend's runtime root (issue #294).
+var qaAssetCheck func(backend string) error
+
+// checkQAAssets verifies the installed assets of one backend against the
+// binary's embedded catalog. Read-only: it observes, never writes.
+func checkQAAssets(backend string) error {
+	snapshot, err := builtinassets.Snapshot()
+	if err != nil {
+		return err
+	}
+	expected, err := qapi.CatalogAdmissionBinding(snapshot, qaProbeRole, backend)
+	if err != nil {
+		return err
+	}
+	installRoot, err := qaInstallRoot(backend)
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	_, err = installobserve.ObserveAdmissionAssets(installRoot, cwd, expected)
+	return err
+}
+
+// qaAssetAvailabilityFromError maps an admission failure onto the doctor QA
+// availability token and its bounded diagnostic. Missing assets and mismatched
+// assets are two tokens; the diagnostic carries only stages and hex digests.
+func qaAssetAvailabilityFromError(err error) (string, string) {
+	var unavailable *installobserve.AdmissionUnavailableError
+	if !errors.As(err, &unavailable) {
+		return "", ""
+	}
+	switch unavailable.Stage {
+	case "install_state_missing", "install_state_unreadable", "skill_missing", "skill_unlisted", "actor_missing", "actor_unlisted":
+		diagnostic := " qa_assets_stage=" + unavailable.Stage
+		if unavailable.Expected != "" {
+			diagnostic += " expected=" + unavailable.Expected
+		}
+		return "assets_missing", diagnostic
+	}
+	diagnostic := " qa_assets_stage=" + unavailable.Stage
+	if unavailable.Expected != "" {
+		diagnostic += " expected=" + unavailable.Expected
+	}
+	if unavailable.Found != "" {
+		diagnostic += " found=" + unavailable.Found
+	}
+	return "assets_mismatch", diagnostic
+}
+
 // probeQABackend answers whether one backend could run a report, without
 // running one. It binds the runtime and issues that backend's own fixed,
 // bounded availability probes — the read-only prefix of a report run, and
@@ -104,15 +161,27 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 		return ""
 	}
 	availability := qaAvailabilityNotProbed
+	diagnostic := ""
 	if present {
 		probe := qaBackendProbe
 		if probe == nil {
 			probe = probeQABackend
 		}
 		availability = probe(ctx, backend)
+		if availability == qaAvailabilityReady {
+			check := qaAssetCheck
+			if check == nil {
+				check = checkQAAssets
+			}
+			if err := check(backend); err != nil {
+				if token, note := qaAssetAvailabilityFromError(err); token != "" {
+					availability, diagnostic = token, note
+				}
+			}
+		}
 	}
 	return " qa_backend=" + backend + " qa_identity=" + qaBackendIdentity(backend) +
-		" qa_probe_role=" + string(qaProbeRole) + " qa_availability=" + availability
+		" qa_probe_role=" + string(qaProbeRole) + " qa_availability=" + availability + diagnostic
 }
 
 // qaInstallRoot resolves the installed asset root of one QA backend. It

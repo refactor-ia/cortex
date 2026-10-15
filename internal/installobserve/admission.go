@@ -3,6 +3,7 @@ package installobserve
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 
 	"github.com/refactor-ia/cortex/internal/installplan"
@@ -97,22 +98,30 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 		return AdmissionAssets{}, admissionInvalid()
 	}
 	state, mode, present, err := readRegular(root, ".cortex/install-state.json", DefaultMaxStateBytes)
-	if err != nil || !present || mode != installplan.CanonicalFileMode {
-		return AdmissionAssets{}, admissionInvalid()
+	if err != nil {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "install_state_unreadable"}
+	}
+	if !present {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "install_state_missing"}
+	}
+	if mode != installplan.CanonicalFileMode {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "install_state_mode"}
 	}
 	manifest, err := installstate.Decode(state)
 	encoded, encodeErr := installstate.Encode(manifest)
-	if err != nil || encodeErr != nil || !bytes.Equal(state, encoded) || !admissibleLedger(manifest, expected.Backend) ||
-		manifest.SnapshotFingerprint() != expected.CatalogFingerprint {
-		return AdmissionAssets{}, admissionInvalid()
+	if err != nil || encodeErr != nil || !bytes.Equal(state, encoded) || !admissibleLedger(manifest, expected.Backend) {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "install_state_invalid"}
+	}
+	if manifest.SnapshotFingerprint() != expected.CatalogFingerprint {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: expected.CatalogFingerprint, Found: manifest.SnapshotFingerprint()}
 	}
 	skill, ok := admissionSkill(manifest, expected)
 	if !ok {
-		return AdmissionAssets{}, admissionInvalid()
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "skill_unlisted"}
 	}
-	skillBytes, skillPath, ok := admissionFile(root, skill.RelativePath(), skill.SHA256())
-	if !ok {
-		return AdmissionAssets{}, admissionInvalid()
+	skillBytes, skillPath, skillErr := admissionFile(root, skill.RelativePath(), skill.SHA256(), "skill")
+	if skillErr != nil {
+		return AdmissionAssets{}, skillErr
 	}
 	assets := AdmissionAssets{
 		installationID: string(manifest.InstallationID()), catalogFingerprint: manifest.SnapshotFingerprint(),
@@ -124,11 +133,17 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 		return assets, nil
 	}
 	actor, ok := admissionArtifact(manifest, "actors/"+string(expected.Role), installstate.KindPiActor, expected)
-	if !ok || actor.ActorContractVersion() != qaactor.ActorContractVersion {
-		return AdmissionAssets{}, admissionInvalid()
+	if !ok {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "actor_unlisted"}
 	}
-	actorBytes, actorPath, ok := admissionFile(root, actor.RelativePath(), actor.SHA256())
-	if !ok || (manifest.SchemaVersion() == 3 && !admissionActorGuidance(actorBytes, actor, expected)) ||
+	if actor.ActorContractVersion() != qaactor.ActorContractVersion {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "actor_contract", Expected: qaactor.ActorContractVersion, Found: actor.ActorContractVersion()}
+	}
+	actorBytes, actorPath, actorErr := admissionFile(root, actor.RelativePath(), actor.SHA256(), "actor")
+	if actorErr != nil {
+		return AdmissionAssets{}, actorErr
+	}
+	if (manifest.SchemaVersion() == 3 && !admissionActorGuidance(actorBytes, actor, expected)) ||
 		admissionShadows(root, cwd, expected.Role, actorBytes) != nil {
 		return AdmissionAssets{}, admissionInvalid()
 	}
@@ -231,12 +246,38 @@ func admissionActorGuidance(current []byte, actor installstate.Artifact, expecte
 	return err == nil && bytes.Equal(proved, current)
 }
 
-func admissionFile(root, relative, expectedHash string) ([]byte, string, bool) {
+func admissionFile(root, relative, expectedHash, kind string) ([]byte, string, *AdmissionUnavailableError) {
 	data, mode, present, err := readRegular(root, relative, DefaultMaxFileBytes)
-	if err != nil || !present || mode != installplan.CanonicalFileMode || hash(data) != expectedHash {
-		return nil, "", false
+	if err != nil || !present {
+		return nil, "", &AdmissionUnavailableError{Stage: kind + "_missing", Expected: expectedHash}
 	}
-	return data, filepath.Join(root, filepath.FromSlash(relative)), true
+	if mode != installplan.CanonicalFileMode {
+		return nil, "", &AdmissionUnavailableError{Stage: kind + "_mode"}
+	}
+	found := hash(data)
+	if found != expectedHash {
+		return nil, "", &AdmissionUnavailableError{Stage: kind + "_mismatch", Expected: expectedHash, Found: found}
+	}
+	return data, filepath.Join(root, filepath.FromSlash(relative)), nil
 }
+
+// AdmissionUnavailableError names why admission assets are unavailable. Stage
+// is a fixed vocabulary token; Expected and Found carry hex digests or the
+// catalog fingerprint, never paths, file content, or provider output
+// (issue #294: the operator learns what mismatched, not just that it failed).
+type AdmissionUnavailableError struct {
+	Stage    string
+	Expected string
+	Found    string
+}
+
+func (e *AdmissionUnavailableError) Error() string {
+	if e.Expected == "" && e.Found == "" {
+		return "install observe: admission assets unavailable: " + e.Stage
+	}
+	return fmt.Sprintf("install observe: admission assets unavailable: %s (expected %s, found %s)", e.Stage, e.Expected, e.Found)
+}
+
+var _ error = (*AdmissionUnavailableError)(nil)
 
 func admissionInvalid() error { return errors.New("install observe: admission assets unavailable") }

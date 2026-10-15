@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/refactor-ia/cortex/internal/installobserve"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
@@ -75,6 +76,9 @@ func certifiedRunner() *fakeRunner {
 func stubQABackendProbe(t *testing.T, answers map[string]string) {
 	t.Helper()
 	original := qaBackendProbe
+	originalAssetCheck := qaAssetCheck
+	qaAssetCheck = func(_ string) error { return nil }
+	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
 	qaBackendProbe = func(_ context.Context, backend string) string {
 		answer, known := answers[backend]
 		if !known {
@@ -163,6 +167,63 @@ func TestRunDoctorStaysOKWithoutPriorState(t *testing.T) {
 
 // TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
 // separate from installed asset ownership, even when a probe answers ready.
+
+func TestQAAdmissionDiagnosticNamesUnavailableCause(t *testing.T) {
+	line := qaAdmissionDiagnostic(&installobserve.AdmissionUnavailableError{Stage: "skill_mismatch", Expected: "aa11", Found: "bb22"})
+	if line != "admission_stage=skill_mismatch expected=aa11 found=bb22\n" {
+		t.Fatalf("diagnostic = %q", line)
+	}
+	if line := qaAdmissionDiagnostic(&installobserve.AdmissionUnavailableError{Stage: "install_state_missing"}); line != "admission_stage=install_state_missing\n" {
+		t.Fatalf("diagnostic = %q", line)
+	}
+	if line := qaAdmissionDiagnostic(errors.New("unrelated")); line != "" {
+		t.Fatalf("diagnostic = %q, want empty for unrelated errors", line)
+	}
+}
+
+
+func TestQAAssetAvailabilityFromError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		token     string
+		diagnostic string
+	}{
+		{name: "missing state is assets_missing", err: &installobserve.AdmissionUnavailableError{Stage: "install_state_missing"}, token: "assets_missing", diagnostic: " qa_assets_stage=install_state_missing"},
+		{name: "missing skill is assets_missing", err: &installobserve.AdmissionUnavailableError{Stage: "skill_missing", Expected: "aa"}, token: "assets_missing", diagnostic: " qa_assets_stage=skill_missing expected=aa"},
+		{name: "foreign catalog is assets_mismatch with identity", err: &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=catalog_fingerprint expected=cc11 found=ff22"},
+		{name: "skill drift is assets_mismatch", err: &installobserve.AdmissionUnavailableError{Stage: "skill_mismatch", Expected: "aa", Found: "bb"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=skill_mismatch expected=aa found=bb"},
+		{name: "unrelated errors keep ready", err: errors.New("unrelated"), token: "", diagnostic: ""},
+	} {
+		token, diagnostic := qaAssetAvailabilityFromError(tc.err)
+		if token != tc.token || diagnostic != tc.diagnostic {
+			t.Fatalf("%s: qaAssetAvailabilityFromError() = (%q, %q), want (%q, %q)", tc.name, token, diagnostic, tc.token, tc.diagnostic)
+		}
+	}
+}
+
+func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
+	originalProbe := qaBackendProbe
+	originalCheck := qaAssetCheck
+	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
+	qaBackendProbe = func(_ context.Context, _ string) string { return qaAvailabilityReady }
+	qaAssetCheck = func(_ string) error {
+		return &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}
+	}
+	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	if !strings.Contains(line, "qa_availability=assets_mismatch") {
+		t.Fatalf("line = %q, want assets_mismatch availability", line)
+	}
+	if !strings.Contains(line, "qa_assets_stage=catalog_fingerprint expected=cc11 found=ff22") {
+		t.Fatalf("line = %q, want the asset diagnostic", line)
+	}
+	qaAssetCheck = func(_ string) error { return nil }
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	if !strings.Contains(line, "qa_availability=ready") || strings.Contains(line, "qa_assets_stage") {
+		t.Fatalf("line = %q, want plain ready when assets match", line)
+	}
+}
+
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -218,6 +279,9 @@ func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 func TestDoctorDoesNotProbeAbsentRuntimes(t *testing.T) {
 	var probed []string
 	original := qaBackendProbe
+	originalAssetCheck := qaAssetCheck
+	qaAssetCheck = func(_ string) error { return nil }
+	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
 	qaBackendProbe = func(_ context.Context, backend string) string {
 		probed = append(probed, backend)
 		return "ready"

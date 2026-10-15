@@ -163,7 +163,9 @@ const (
 		"Write a short, bounded plain-text request (request.txt):\n" +
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
 		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +
-		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n"
+		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n" +
+		"Optional evidence sidecar (--evidence evidence.json): a JSON array of execution records\n" +
+		`[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]` + "\n"
 	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n\n" + qaHelp
 	// qaReportNote surfaces runtime prerequisites on non-catalog failures.
 	// The default route provider is the policy placeholder "nan"; Cortex applies
@@ -265,6 +267,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		failure := qaFailure(stderr, string(code))
 		if diagnostic := qaAdmissionDiagnostic(err); diagnostic != "" {
 			_, _ = io.WriteString(stderr, diagnostic)
+		}
+		if err != nil && strings.Contains(err.Error(), "stream_retained=") {
+			_, _ = fmt.Fprintf(stderr, "%s\n", err.Error())
 		}
 		if code == qaadmission.CodeModelUnavailable {
 			_, _ = io.WriteString(stderr, qaRouteSetupNote(catalogRoot))

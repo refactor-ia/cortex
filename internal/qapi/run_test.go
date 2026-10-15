@@ -17,6 +17,23 @@ import (
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 )
 
+func TestCappedWriterFitsRealPiStreams(t *testing.T) {
+	// Pi's --mode json event stream for a full adversarial answer reaches
+	// ~2.1MB (issue #308): the report capture must hold it without
+	// truncation, or a paid model answer is discarded.
+	writer := cappedWriter{maximum: qaadmission.MaxStdoutBytes}
+	payload := bytes.Repeat([]byte(`{"type":"message","text":"answer fragment"},`), 70000)
+	if written, err := writer.Write(payload); written != len(payload) || err != nil {
+		t.Fatalf("write = %d, %v", written, err)
+	}
+	if writer.truncated {
+		t.Fatalf("stream of %d bytes truncated at bound %d", len(payload), qaadmission.MaxStdoutBytes)
+	}
+	if len(writer.bytes) != len(payload) {
+		t.Fatalf("captured %d bytes, want %d", len(writer.bytes), len(payload))
+	}
+}
+
 func TestCappedWriterAndMinimalEnvironment(t *testing.T) {
 	writer := cappedWriter{maximum: 2}
 	if written, err := writer.Write([]byte("abc")); written != 3 || err != nil || !writer.truncated || string(writer.bytes) != "ab" {

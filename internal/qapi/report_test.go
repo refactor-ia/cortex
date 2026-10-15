@@ -553,3 +553,21 @@ func TestPiFrameStillReferencesTheInstalledSkill(t *testing.T) {
 		t.Fatal("pi frame gained a delivery field it never needed")
 	}
 }
+
+func TestRetainRunStreamWritesUserOwnedFile(t *testing.T) {
+	cwd := t.TempDir()
+	path, ok := retainRunStream(cwd, "evidence-auditor", []byte(`{"type":"message","text":"paid answer"}`), []byte("stderr noise"))
+	if !ok {
+		t.Fatal("retainRunStream() ok = false, want retention for a non-empty stream")
+	}
+	if !strings.Contains(path, filepath.Join(".cortex", "qa-streams")) || !strings.Contains(path, "evidence-auditor") {
+		t.Fatalf("path = %q, want the user-owned qa-streams location with the role", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte("paid answer")) {
+		t.Fatalf("read %q = (%q, %v)", path, data, err)
+	}
+	if _, ok := retainRunStream(cwd, "evidence-auditor", nil, nil); ok {
+		t.Fatal("empty stream must not be retained")
+	}
+}

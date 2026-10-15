@@ -10,7 +10,7 @@ const (
 	MaxRequestBytes         = 128 * 1024
 	MaxTaskBytes            = 64 * 1024
 	MaxProfileSnapshotBytes = 256 * 1024
-	MaxStdoutBytes          = 1024 * 1024
+	MaxStdoutBytes          = 16 * 1024 * 1024 // Pi --mode json streams reach ~2.1MB (issue #308)
 	MaxStderrBytes          = 256 * 1024
 	MaxReceiptBytes         = 512 * 1024
 	MaxDiagnosticBytes      = 16 * 1024

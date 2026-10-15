@@ -238,6 +238,19 @@ func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	}
 }
 
+
+func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	if code := Run(context.Background(), []string{"qa", "--help"}, stdout, io.Discard, nil); code != exitOK {
+		t.Fatalf("qa --help exit = %d", code)
+	}
+	for _, field := range []string{"exit_code", "output_tail", "provenance", "truncated"} {
+		if !strings.Contains(stdout.String(), field) {
+			t.Fatalf("qa --help = %q, want the evidence schema field %q documented", stdout.String(), field)
+		}
+	}
+}
+
 func TestQARunEvidenceSidecar(t *testing.T) {
 	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":true}]`
 	for _, role := range qarole.Catalog() {

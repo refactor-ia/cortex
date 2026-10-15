@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -179,19 +181,19 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 		return "", qaadmission.CodeExecutionFailed, fmt.Errorf("report run was cancelled before launch")
 	}
 	facts := runOnce(run, invocation, frame, time.Duration(request.TimeoutSeconds)*time.Second)
-	switch {
-	case facts.invalid:
-		return "", qaadmission.CodeInvalidRequest, fmt.Errorf("invalid report run")
-	case facts.launchFailed:
-		return "", qaadmission.CodeLaunchFailed, nil
-	case facts.timedOut:
-		return "", qaadmission.CodeExecutionTimedOut, nil
-	case facts.exitNonZero || facts.waitFailed:
-		return "", qaadmission.CodeExecutionFailed, nil
-	case facts.stdoutTruncated || facts.stderrTruncated:
-		return "", qaadmission.CodeOutputTruncated, nil
-	case len(facts.stdout) == 0:
-		return "", qaadmission.CodeOutputSilent, nil
+	code, runErr := reportRunOutcome(facts)
+	if code != "" && len(facts.stdout) > 0 {
+		if path, retained := retainRunStream(request.CurrentDirectory, string(request.Role), facts.stdout, facts.stderr); retained {
+			if runErr != nil {
+				runErr = fmt.Errorf("%w stream_retained=%s", runErr, path)
+			} else {
+				runErr = fmt.Errorf("stream_retained=%s", path)
+			}
+		}
+		return "", code, runErr
+	}
+	if code != "" {
+		return "", code, runErr
 	}
 	report, diagnostic := backend.ParseReport(facts.stdout)
 	if diagnostic != nil {
@@ -370,6 +372,49 @@ func validSkillText(skill []byte) bool {
 
 // EncodeReportInput frames one bounded report input. Unlike EncodeInput it does
 // not demand an identity echo and carries no revision or candidate claim.
+// reportRunOutcome maps one completed run's facts onto its terminal admission
+// outcome. Empty outcome means the stream proceeds to parsing.
+func reportRunOutcome(facts runFacts) (qaadmission.Code, error) {
+	switch {
+	case facts.invalid:
+		return qaadmission.CodeInvalidRequest, fmt.Errorf("invalid report run")
+	case facts.launchFailed:
+		return qaadmission.CodeLaunchFailed, nil
+	case facts.timedOut:
+		return qaadmission.CodeExecutionTimedOut, nil
+	case facts.exitNonZero || facts.waitFailed:
+		return qaadmission.CodeExecutionFailed, nil
+	case facts.stdoutTruncated || facts.stderrTruncated:
+		return qaadmission.CodeOutputTruncated, nil
+	case len(facts.stdout) == 0:
+		return qaadmission.CodeOutputSilent, nil
+	}
+	return "", nil
+}
+
+// retainRunStream writes one run's captured stream to a user-owned location
+// under the invocation directory, so a model answer Cortex discards is not
+// lost (issue #308: the user pays for the call and keeps the evidence). It
+// returns the file path and whether anything was written; empty streams are
+// not retained. Retained files sit outside the receipt and never enter it.
+func retainRunStream(cwd, role string, stdout, stderr []byte) (string, bool) {
+	if len(stdout) == 0 {
+		return "", false
+	}
+	directory := filepath.Join(cwd, ".cortex", "qa-streams")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", false
+	}
+	path := filepath.Join(directory, fmt.Sprintf("qa-stream-%d-%s.json", time.Now().Unix(), role))
+	if err := os.WriteFile(path, stdout, 0o600); err != nil {
+		return "", false
+	}
+	if len(stderr) > 0 {
+		_ = os.WriteFile(strings.TrimSuffix(path, ".json")+".stderr.txt", stderr, 0o600)
+	}
+	return path, true
+}
+
 func EncodeReportInput(route qaroute.ResolvedRoute, actorSHA256, skillSHA256 string, task []byte) ([]byte, error) {
 	return encodeReportInput(route, piBackendID, actorSHA256, skillSHA256, nil, task)
 }

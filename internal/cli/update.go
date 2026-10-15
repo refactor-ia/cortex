@@ -340,7 +340,7 @@ func applyCandidate(plan installplan.Plan, observation installobserve.Filesystem
 	default:
 		return installtxn.Result{}, installtxn.ErrInvalid
 	}
-	cwd, err := os.Getwd()
+	cwd, err := canonicalWorkingDirectory()
 	if err != nil {
 		return installtxn.Result{}, err
 	}
@@ -375,7 +375,7 @@ func updateActorGuidance(stdout, stderr io.Writer, canonical installplan.Plan, o
 		mode = "apply"
 	}
 	header := fmt.Sprintf("runtime=%s root=%s mode=%s%s recovery=unsupported", canonical.RuntimeID(), canonical.RootPath(), mode, warning)
-	cwd, err := os.Getwd()
+	cwd, err := canonicalWorkingDirectory()
 	if err != nil {
 		writeError(stderr, "observation_failed")
 		return exitFailure

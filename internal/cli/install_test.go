@@ -60,6 +60,47 @@ func TestInstallFailureReasonNamesUnsupportedPriorSchema(t *testing.T) {
 	}
 }
 
+func TestCanonicalWorkingDirectoryResolvesSymlinks(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PWD", link)
+	t.Chdir(link)
+	// t.TempDir() sits under /var (itself a symlink to /private/var on macOS),
+	// so the expectation is the fully resolved real path.
+	expected, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := canonicalWorkingDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != expected {
+		t.Fatalf("canonicalWorkingDirectory() = %q, want the real path %q", resolved, expected)
+	}
+}
+
+func TestRunInstallSucceedsFromSymlinkedWorkingDirectory(t *testing.T) {
+	home := canonicalHome(t)
+	deps := compatibleInstallDependencies(t, home)
+	var stdout, stderr bytes.Buffer
+	real := filepath.Join(home, "real-cwd")
+	mustOK(os.MkdirAll(real, 0o700))
+	link := filepath.Join(home, "link-cwd")
+	mustOK(os.Symlink(real, link))
+	t.Setenv("PWD", link)
+	t.Chdir(link)
+	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitOK {
+		t.Fatalf("install from symlinked cwd exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "operation=install status=completed touch=applied") {
+		t.Fatalf("install output = %q", stdout.String())
+	}
+}
+
 func TestRunInstallCompatibleFreshRoot(t *testing.T) {
 	home := canonicalHome(t)
 	deps := compatibleInstallDependencies(t, home)

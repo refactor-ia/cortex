@@ -163,7 +163,7 @@ func buildInstallRequests(observations []runtimematrix.Observation, deps install
 	}
 	// An actor-aware candidate is admitted against the shadows visible from the
 	// process working directory, so the group carries it for every request.
-	cwd, err := os.Getwd()
+	cwd, err := canonicalWorkingDirectory()
 	if err != nil {
 		return nil, nil, err
 	}

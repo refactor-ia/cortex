@@ -112,12 +112,10 @@ func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 	if base.provider == "" || base.model == "" || base.effort == "" {
 		return ResolvedRoute{}, Failure{Code: "route_incomplete"}
 	}
-	if base.provider != "nan" {
-		return ResolvedRoute{}, Failure{Code: "non_nan_route"}
-	}
-	if base != defaults[request.Role] {
-		return ResolvedRoute{}, Failure{Code: "route_disallowed"}
-	}
+	// Profile-defined routes are the user's own routing surface (issue #298
+	// decision): the policy no longer pins the provider or requires the
+	// profile to restate the placeholder defaults. Availability of the pinned
+	// model is verified at preflight on the run's extension surface.
 	return ResolvedRoute{
 		PolicyVersion: PolicyVersion, Role: request.Role, Backend: request.Backend,
 		Provider: base.provider, Model: base.model, Effort: base.effort,

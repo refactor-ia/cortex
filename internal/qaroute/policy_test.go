@@ -74,9 +74,6 @@ func TestResolveCompleteOverrideCanReplaceAnIncompleteSelectedRoute(t *testing.T
 }
 
 func TestResolveRejectsTerminalRoutes(t *testing.T) {
-	profile := func(provider, model, effort string) []byte {
-		return []byte(fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":%q,"model":%q,"effort":%q}}}}}}`, provider, model, effort))
-	}
 	for _, tc := range []struct {
 		name     string
 		request  Request
@@ -85,8 +82,6 @@ func TestResolveRejectsTerminalRoutes(t *testing.T) {
 	}{
 		{"missing-profile", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{}, "profile_invalid"},
 		{"incomplete-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: []byte(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6"}}}}}}`)}, "route_incomplete"},
-		{"non-nan-precedes-disallowed", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: profile("other", "qwen3.6", "high")}, "non_nan_route"},
-		{"disallowed-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: profile("nan", "glm5.3", "high")}, "route_disallowed"},
 		{"disallowed-backend", Request{Role: qarole.RequirementsAnalyst, Backend: "other"}, Snapshot{}, "route_disallowed"},
 		{"disallowed-role", Request{Role: "unknown", Backend: "pi"}, Snapshot{}, "route_disallowed"},
 	} {
@@ -94,6 +89,29 @@ func TestResolveRejectsTerminalRoutes(t *testing.T) {
 			_, failure := Resolve(tc.request, tc.snapshot)
 			if failure.Code != tc.code {
 				t.Fatalf("Resolve() failure = %q, want %q", failure.Code, tc.code)
+			}
+		})
+	}
+}
+
+func TestResolveHonorsProfileDefinedRoutes(t *testing.T) {
+	profile := func(provider, model, effort string) []byte {
+		return []byte(fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":%q,"model":%q,"effort":%q}}}}}}`, provider, model, effort))
+	}
+	for _, tc := range []struct {
+		name     string
+		snapshot Snapshot
+		provider string
+		model    string
+	}{
+		{"non-nan provider resolves", Snapshot{Present: true, Bytes: profile("other", "qwen3.6", "high")}, "other", "qwen3.6"},
+		{"nan with non-default model resolves", Snapshot{Present: true, Bytes: profile("nan", "glm5.3", "high")}, "nan", "glm5.3"},
+		{"base-catalog provider resolves", Snapshot{Present: true, Bytes: profile("openai-codex", "gpt-5.6", "high")}, "openai-codex", "gpt-5.6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, tc.snapshot)
+			if failure.Code != "" || got.Provider != tc.provider || got.Model != tc.model || got.Effort != "high" {
+				t.Fatalf("Resolve() = (%+v, %q), want %s/%s", got, failure.Code, tc.provider, tc.model)
 			}
 		})
 	}

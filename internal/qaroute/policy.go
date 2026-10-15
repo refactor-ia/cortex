@@ -3,7 +3,7 @@ package qaroute
 import "github.com/refactor-ia/cortex/internal/qarole"
 
 const (
-	PolicyVersion   = "cortex.qa.nan-policy.v1"
+	PolicyVersion   = "cortex.qa.profile-policy.v2"
 	ProfileContract = "cortex.qa.nan-profile.v1"
 	maxProfileBytes = 256 * 1024
 )

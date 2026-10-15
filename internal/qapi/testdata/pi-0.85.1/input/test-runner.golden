@@ -1,12 +1,12 @@
 /skill:cortex-test-runner
-identity 602
+identity 606
 input_contract cortex.qa.pi-input.v1
 role test-runner
 actor_contract cortex.qa.pi-actor.v1
 actor_sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 skill_contract cortex.qa.pi-skill.v1
 skill_sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-route_policy cortex.qa.nan-policy.v1
+route_policy cortex.qa.profile-policy.v2
 route_backend pi
 route_provider nan
 route_model qwen3.6

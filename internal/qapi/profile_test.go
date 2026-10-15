@@ -13,7 +13,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/qarole"
 )
 
-
 func TestProfileRouteHonorsDefaultProfileWithoutFlag(t *testing.T) {
 	root := testProfileRoot(t)
 	data := []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`)

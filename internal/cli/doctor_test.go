@@ -220,13 +220,10 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	}
 }
 
-// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
-// separate from installed asset ownership, even when a probe answers ready.
-
 func TestQARouteSetupNoteNamesProfilePathAndShape(t *testing.T) {
-	note := qaRouteSetupNote("/home/jb/fleet-catalog")
+	note := qaRouteSetupNote("/home/user/fleet-catalog")
 	for _, want := range []string{
-		"route_setup=/home/jb/fleet-catalog/cortex/qa-profiles.json",
+		"route_setup=/home/user/fleet-catalog/cortex/qa-profiles.json",
 		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`,
 	} {
 		if !strings.Contains(note, want) {
@@ -235,6 +232,8 @@ func TestQARouteSetupNoteNamesProfilePathAndShape(t *testing.T) {
 	}
 }
 
+// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
+// separate from installed asset ownership, even when a probe answers ready.
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string

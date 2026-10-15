@@ -501,10 +501,26 @@ func TestQARunReport(t *testing.T) {
 	t.Run("truncated stream diagnostic stays bounded and sanitized", func(t *testing.T) {
 		mustOK(os.WriteFile("qa-report-scenario", []byte("truncated"), 0o600))
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		expected := "error=normalization_failed\n" + qaReportNote + "normalization_stage=stream normalization_reason=unterminated\n"
-		if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 || stderr.String() != expected ||
-			strings.Contains(stderr.String(), "SENSITIVE-FIXTURE-MARKER") {
-			t.Fatalf("truncated stream = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		got := Run(context.Background(), args, stdout, stderr, nil)
+		want := []string{
+			"error=normalization_failed",
+			"normalization_stage=stream normalization_reason=unterminated",
+			"stream_retained=qa-stream-",
+		}
+		if got != exitFailure || stdout.Len() != 0 {
+			t.Fatalf("truncated stream = %d stdout %q stderr %q", got, stdout.String(), stderr.String())
+		}
+		for _, want := range want {
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), want)
+			}
+		}
+		// Sanitized: no machine paths, no temp dirs, and none of the stream's
+		// sensitive fixture content may reach stderr.
+		for _, forbidden := range []string{"SENSITIVE-FIXTURE-MARKER", "/private/", t.TempDir()} {
+			if strings.Contains(stderr.String(), forbidden) {
+				t.Fatalf("stderr = %q, must not contain %q", stderr.String(), forbidden)
+			}
 		}
 	})
 	t.Run("invalid arguments exit with usage", func(t *testing.T) {

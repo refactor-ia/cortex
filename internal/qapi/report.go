@@ -185,10 +185,14 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	code, runErr := reportRunOutcome(facts)
 	if code != "" && len(facts.stdout) > 0 {
 		if path, retained := retainRunStream(request.CurrentDirectory, string(request.Role), facts.stdout, facts.stderr); retained {
+			// The diagnostic stays sanitized: the file name only — the
+			// location convention (<cwd>/.cortex/qa-streams/) is documented,
+			// never a machine path.
+			name := filepath.Base(path)
 			if runErr != nil {
-				runErr = fmt.Errorf("%w stream_retained=%s", runErr, path)
+				runErr = fmt.Errorf("%w stream_retained=%s", runErr, name)
 			} else {
-				runErr = fmt.Errorf("stream_retained=%s", path)
+				runErr = fmt.Errorf("stream_retained=%s", name)
 			}
 		}
 		return "", code, runErr
@@ -198,7 +202,11 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	}
 	report, diagnostic := backend.ParseReport(facts.stdout)
 	if diagnostic != nil {
-		return "", reportFailureCode(diagnostic), diagnostic
+		code := reportFailureCode(diagnostic)
+		if path, retained := retainRunStream(request.CurrentDirectory, string(request.Role), facts.stdout, facts.stderr); retained {
+			return "", code, fmt.Errorf("%w stream_retained=%s", diagnostic, filepath.Base(path))
+		}
+		return "", code, diagnostic
 	}
 	if strings.TrimSpace(report) == "" {
 		return "", qaadmission.CodeNormalizationFailed, &ReportNormalizationError{reportStageReport, reportReasonBlank}

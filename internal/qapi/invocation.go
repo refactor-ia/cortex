@@ -100,6 +100,17 @@ func validRoute(route qaroute.ResolvedRoute) bool {
 // which is what keeps a landed adapter unreachable until admitting it is a
 // deliberate policy change in qaroute.
 func validRouteFor(route qaroute.ResolvedRoute, backendID string) bool {
-	allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: backendID}, qaroute.Snapshot{})
-	return failure.Code == "" && route.PolicyVersion == qaroute.PolicyVersion && route.Backend == backendID && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
+	if route.PolicyVersion != qaroute.PolicyVersion || route.Backend != backendID {
+		return false
+	}
+	if route.ProfileID == "" || route.ProfileID == "role-default" {
+		// Placeholder route: re-resolve the policy and require an exact match,
+		// so a mutated route cannot reach the backend's argv.
+		allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: backendID}, qaroute.Snapshot{})
+		return failure.Code == "" && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
+	}
+	// Profile-defined route (issue #298): the user's own routing surface. The
+	// resolved identity is attested by ProfileID + ProfileSHA256 in the frame
+	// and receipt; the pinned model's availability was verified at preflight.
+	return route.Provider != "" && route.Model != "" && route.Effort != ""
 }

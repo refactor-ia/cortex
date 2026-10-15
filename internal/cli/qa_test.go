@@ -238,7 +238,6 @@ func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	}
 }
 
-
 func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	if code := Run(context.Background(), []string{"qa", "--help"}, stdout, io.Discard, nil); code != exitOK {

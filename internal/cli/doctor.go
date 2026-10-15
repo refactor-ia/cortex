@@ -266,6 +266,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if diagnostic := qaAdmissionDiagnostic(err); diagnostic != "" {
 			_, _ = io.WriteString(stderr, diagnostic)
 		}
+		if code == qaadmission.CodeModelUnavailable {
+			_, _ = io.WriteString(stderr, qaRouteSetupNote(catalogRoot))
+		}
 		if code == qaadmission.CodeNormalizationFailed {
 			var diagnostic *qapi.ReportNormalizationError
 			if errors.As(err, &diagnostic) {
@@ -285,6 +288,14 @@ func qaFailure(stderr io.Writer, code string) int {
 	writeError(stderr, code)
 	_, _ = io.WriteString(stderr, qaReportNote)
 	return exitFailure
+}
+
+// qaRouteSetupNote names the user-owned profile file and its shape, so an
+// unavailable pinned model leads to configuration instead of guessing. The
+// fleet ships no models: each owner routes with their own (issue #298).
+func qaRouteSetupNote(catalogRoot string) string {
+	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`
+	return fmt.Sprintf("route_setup=%s/cortex/qa-profiles.json example=%s\n", catalogRoot, example)
 }
 
 // qaAdmissionDiagnostic renders one bounded diagnostic line for admission

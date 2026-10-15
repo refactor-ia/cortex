@@ -13,6 +13,20 @@ import (
 	"github.com/refactor-ia/cortex/internal/qarole"
 )
 
+
+func TestProfileRouteHonorsDefaultProfileWithoutFlag(t *testing.T) {
+	root := testProfileRoot(t)
+	data := []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`)
+	writeProfile(t, root, data)
+
+	got, failure := resolveProfileRoute(root, AdmissionRequest{
+		Role: qarole.EvidenceAuditor, Backend: "pi",
+	})
+	if failure.Code != "" || got.Model != "glm5.3" || got.Provider != "nan" || got.ProfileID != "balanced" {
+		t.Fatalf("resolveProfileRoute() = (%+v, %q), want the file's defaultProfile route", got, failure.Code)
+	}
+}
+
 func TestProfileRouteDefaultBypassesProfileSource(t *testing.T) {
 	got, failure := resolveProfileRoute(filepath.Join(t.TempDir(), "missing"), AdmissionRequest{
 		Role: qarole.ExploratoryTester, Backend: "pi",

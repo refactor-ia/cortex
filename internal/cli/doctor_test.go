@@ -222,6 +222,19 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 
 // TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
 // separate from installed asset ownership, even when a probe answers ready.
+
+func TestQARouteSetupNoteNamesProfilePathAndShape(t *testing.T) {
+	note := qaRouteSetupNote("/home/jb/fleet-catalog")
+	for _, want := range []string{
+		"route_setup=/home/jb/fleet-catalog/cortex/qa-profiles.json",
+		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`,
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note = %q, want it to contain %q", note, want)
+		}
+	}
+}
+
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string

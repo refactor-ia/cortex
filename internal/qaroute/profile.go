@@ -123,3 +123,18 @@ func number(data json.RawMessage, want int) bool {
 	var value int
 	return json.Unmarshal(data, &value) == nil && value == want
 }
+
+// DefaultProfileID extracts the defaultProfile identifier from one profile
+// snapshot, mirroring decodeProfiles' extraction. It lets callers honor the
+// file's default selection without a per-run flag (issue #298 decision).
+func DefaultProfileID(data []byte) (string, bool) {
+	root, ok := object(data, "schemaVersion", "defaultProfile", "profiles")
+	if !ok || !number(root["schemaVersion"], 1) {
+		return "", false
+	}
+	defaultID, ok := text(root["defaultProfile"], 64)
+	if !ok || !profileIDPattern.MatchString(defaultID) {
+		return "", false
+	}
+	return defaultID, true
+}

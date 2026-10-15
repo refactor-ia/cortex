@@ -25,6 +25,18 @@ func resolveProfileRoute(root string, request AdmissionRequest) (qaroute.Resolve
 		Role: request.Role, Backend: request.Backend, ProfileID: request.Profile, Override: request.Override,
 	}
 	if request.Profile == "" {
+		// A user-owned profile file with a defaultProfile configures the route
+		// without a per-run flag: the fleet ships no models, each owner routes
+		// with their own (issue #298 decision). Without a valid source, the
+		// policy placeholder applies.
+		if source, ok := inspectProfileSource(root); ok {
+			if bytes, ok := source.read(); ok {
+				if defaultID, ok := qaroute.DefaultProfileID(bytes); ok {
+					routeRequest.ProfileID = defaultID
+					return qaroute.Resolve(routeRequest, qaroute.Snapshot{Present: true, Bytes: bytes})
+				}
+			}
+		}
 		return qaroute.Resolve(routeRequest, qaroute.Snapshot{})
 	}
 

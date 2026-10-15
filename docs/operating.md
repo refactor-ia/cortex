@@ -118,6 +118,22 @@ offered, or archive the stale state (the `.cortex` directory and the projected f
 lists) and reinstall. Archiving means a dated backup directory outside the runtime —
 never deletion.
 
+## Configure your QA route
+
+The QA fleet ships no models: the route policy's `nan` provider is a placeholder, and
+Cortex applies no model fallback. Each owner configures their own route through a
+user-owned profile file in the catalog root:
+
+```json
+{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}
+```
+
+Location: `<catalog-root>/cortex/qa-profiles.json` (mode 0600, regular file). The
+`defaultProfile` applies to every `qa run` without a `--profile` flag; pass
+`--profile <id>` to select another profile for one run. When the pinned model is
+absent from the runtime's effective catalog, `qa run` refuses at preflight with
+`model_unavailable` and prints this setup path — no launch, no silent fallback.
+
 ## Where to read more
 
 - [Architecture overview](architecture/overview.md) — the target product contract (authority).

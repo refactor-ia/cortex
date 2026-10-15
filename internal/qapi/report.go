@@ -69,6 +69,7 @@ func reportInstruction(role qarole.RoleID) (string, bool) {
 // roots are explicit caller inputs; Cortex never infers them from ambient state.
 type ReportRequest struct {
 	Role             qarole.RoleID
+	Profile          string // Optional user-owned route profile id; empty uses the policy placeholder route.
 	CatalogRoot      string
 	InstallRoot      string
 	CurrentDirectory string
@@ -120,7 +121,7 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	if err := validateEvidence(request.Evidence); err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
-	route, failure := qaroute.Resolve(qaroute.Request{Role: request.Role, Backend: backend.ID()}, qaroute.Snapshot{})
+	route, failure := resolveProfileRoute(request.CatalogRoot, AdmissionRequest{Role: request.Role, Backend: backend.ID(), Profile: request.Profile})
 	if failure.Code != "" {
 		return "", qaadmission.Code(failure.Code), fmt.Errorf("report route: %s", failure.Code)
 	}

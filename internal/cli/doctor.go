@@ -206,11 +206,11 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage
 	}
-	backend, evidencePath := "pi", ""
+	backend, evidencePath, profile := "pi", "", ""
 	seen := map[string]bool{}
 	for index := 7; index < len(args); index += 2 {
 		flag, value := args[index], args[index+1]
-		if value == "" || seen[flag] || flag != "--backend" && flag != "--evidence" {
+		if value == "" || seen[flag] || flag != "--backend" && flag != "--evidence" && flag != "--profile" {
 			writeError(stderr, "invalid_arguments")
 			_, _ = io.WriteString(stderr, qaUsage)
 			return exitUsage
@@ -254,7 +254,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return qaFailure(stderr, "actor_unavailable")
 	}
 	report, code, err := qapi.RunLocalReportOn(ctx, qapi.ReportRequest{
-		Role: role, CatalogRoot: catalogRoot, InstallRoot: installRoot,
+		Role: role, Profile: profile, CatalogRoot: catalogRoot, InstallRoot: installRoot,
 		CurrentDirectory: cwd, Task: task, Evidence: evidence, TimeoutSeconds: qaadmission.DefaultTimeoutSeconds,
 	}, backend, qaPiResolver)
 	if err != nil || code != "" {

@@ -50,6 +50,7 @@ func fakePi() int {
 		fmt.Print("provider      model                context  max-out  thinking  images\n" +
 			"nan           qwen3.6              262.1K   16.4K    yes       no\n" +
 			"nan           glm5.3               262.1K   16.4K    yes       no\n" +
+			"openai-codex  gpt-5.6-terra        272.0K   128.0K   yes       yes\n" +
 			"nan           deepseek-v4-flash    262.1K   16.4K    yes       no\n")
 		return 0
 	}
@@ -247,6 +248,33 @@ func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 		if !strings.Contains(stdout.String(), field) {
 			t.Fatalf("qa --help = %q, want the evidence schema field %q documented", stdout.String(), field)
 		}
+	}
+}
+
+func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
+	args := roleReportFixture(t, "requirements-analyst")
+	var catalogRoot string
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			catalogRoot = args[index+1]
+		}
+	}
+	if catalogRoot == "" {
+		t.Fatal("fixture did not carry a --catalog argument")
+	}
+	profileDir := filepath.Join(catalogRoot, "cortex")
+	mustOK(os.MkdirAll(profileDir, 0o700))
+	profile := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`)
+	mustOK(os.WriteFile(filepath.Join(profileDir, "qa-profiles.json"), profile, 0o600))
+	t.Cleanup(func() { os.RemoveAll(profileDir) })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("qa run exit = %d stderr = %q", code, stderr.String())
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	if !bytes.Contains(frame, []byte("route_model gpt-5.6-terra")) {
+		t.Fatalf("frame route_model did not come from the catalog profile: %q", frame[:400])
 	}
 }
 

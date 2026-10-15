@@ -17,7 +17,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/skilldest"
 )
 
-
 func TestObserveAdmissionAssetsNamesUnavailableCause(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -165,9 +165,6 @@ func TestRunDoctorStaysOKWithoutPriorState(t *testing.T) {
 	}
 }
 
-// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
-// separate from installed asset ownership, even when a probe answers ready.
-
 func TestQAAdmissionDiagnosticNamesUnavailableCause(t *testing.T) {
 	line := qaAdmissionDiagnostic(&installobserve.AdmissionUnavailableError{Stage: "skill_mismatch", Expected: "aa11", Found: "bb22"})
 	if line != "admission_stage=skill_mismatch expected=aa11 found=bb22\n" {
@@ -181,12 +178,11 @@ func TestQAAdmissionDiagnosticNamesUnavailableCause(t *testing.T) {
 	}
 }
 
-
 func TestQAAssetAvailabilityFromError(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		err       error
-		token     string
+		name       string
+		err        error
+		token      string
 		diagnostic string
 	}{
 		{name: "missing state is assets_missing", err: &installobserve.AdmissionUnavailableError{Stage: "install_state_missing"}, token: "assets_missing", diagnostic: " qa_assets_stage=install_state_missing"},
@@ -224,6 +220,8 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	}
 }
 
+// TestRunDoctorExplainsProbeAndOwnershipBoundary keeps backend/model readiness
+// separate from installed asset ownership, even when a probe answers ready.
 func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -233,12 +231,12 @@ func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	}{
 		{
 			name: "ready is not ownership", runner: certifiedRunner(),
-			answers: map[string]string{"pi": "ready", "opencode": "ready", "claude": "ready"},
+			answers:        map[string]string{"pi": "ready", "opencode": "ready", "claude": "ready"},
 			piAvailability: "ready",
 		},
 		{
 			name: "unavailable model is not ownership", runner: certifiedRunner(),
-			answers: map[string]string{"pi": "model_unavailable", "opencode": "ready", "claude": "ready"},
+			answers:        map[string]string{"pi": "model_unavailable", "opencode": "ready", "claude": "ready"},
 			piAvailability: "model_unavailable",
 		},
 		{

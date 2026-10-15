@@ -220,7 +220,6 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	return []string{"qa", "run", "--role", roleName, "--request", "requirements.txt", "--catalog", catalogRoot}
 }
 
-
 func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	args := roleReportFixture(t, "requirements-analyst")
 	broken := t.TempDir()

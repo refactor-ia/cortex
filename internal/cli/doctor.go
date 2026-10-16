@@ -158,8 +158,9 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 }
 
 const (
-	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode] [--evidence <file.json>]\n"
-	qaHelp  = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
+	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode] [--evidence <file.json>] [--profile <id>]\n" +
+		"usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--effort <e>]\n"
+	qaHelp = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
 		"Write a short, bounded plain-text request (request.txt):\n" +
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
 		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +
@@ -198,6 +199,9 @@ var qaPiResolver qapi.PathResolver
 // runQA executes one local QA report command. It never mutates user
 // configuration and never claims admission.
 func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "setup" {
+		return runQASetup(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "run" && args[1] == "--help" {
 		return writeHelp(stdout, stderr, qaHelp)
 	}

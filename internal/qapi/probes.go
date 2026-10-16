@@ -2,8 +2,11 @@ package qapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -318,4 +321,34 @@ func stripANSI(line string) string {
 		}
 	}
 	return plain.String()
+}
+
+// AvailableModels returns the provider/model pairs the Pi runtime offers on
+// its extension-free surface (the same surface a report run uses). It backs
+// qa setup, which configures routes only with models the runtime actually
+// has. The resolver may be nil for the production PATH lookup.
+func AvailableModels(ctx context.Context, resolver PathResolver) (map[string]bool, error) {
+	backend := NewPiBackend(resolver)
+	pi, ok := backend.(piBackend)
+	if !ok {
+		return nil, fmt.Errorf("qa setup: pi backend unavailable")
+	}
+	bound, err := bindPi(ctx, cwdForBinding(), pi.resolver)
+	if err != nil {
+		return nil, err
+	}
+	capture := runAvailabilityCommand(ctx, bound, availabilityModel)
+	rows, valid := parseModelTable(string(capture.stdout))
+	if !valid {
+		return nil, fmt.Errorf("qa setup: runtime model table unreadable")
+	}
+	return rows, nil
+}
+
+func cwdForBinding() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "/"
+	}
+	return wd
 }

@@ -278,6 +278,64 @@ func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	}
 }
 
+func TestQASetupWritesProfileForAllRoles(t *testing.T) {
+	catalog := t.TempDir()
+	original := qaPiResolver
+	qaPiResolver = fixturePi{must(os.Executable())}
+	t.Cleanup(func() { qaPiResolver = original })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	args := []string{"qa", "setup", "--catalog", catalog, "--provider", "openai-codex", "--model", "gpt-5.6-terra", "--effort", "high"}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("qa setup exit = %d stderr = %q", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(catalog, "cortex", "qa-profiles.json"))
+	if err != nil {
+		t.Fatalf("profile file = %v", err)
+	}
+	var parsed struct {
+		SchemaVersion  int    `json:"schemaVersion"`
+		DefaultProfile string `json:"defaultProfile"`
+		Profiles       map[string]struct {
+			Routes map[string]map[string]struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+				Effort   string `json:"effort"`
+			} `json:"routes"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("profile json = %v", err)
+	}
+	if parsed.SchemaVersion != 1 || parsed.DefaultProfile == "" || len(parsed.Profiles[parsed.DefaultProfile].Routes) != 6 {
+		t.Fatalf("profile = %s", data)
+	}
+	for role, route := range parsed.Profiles[parsed.DefaultProfile].Routes {
+		if route["pi"].Provider != "openai-codex" || route["pi"].Model != "gpt-5.6-terra" || route["pi"].Effort != "high" {
+			t.Fatalf("role %s route = %+v", role, route["pi"])
+		}
+	}
+}
+
+func TestQASetupRefusesModelsTheRuntimeDoesNotHave(t *testing.T) {
+	catalog := t.TempDir()
+	original := qaPiResolver
+	qaPiResolver = fixturePi{must(os.Executable())}
+	t.Cleanup(func() { qaPiResolver = original })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	args := []string{"qa", "setup", "--catalog", catalog, "--provider", "openai-codex", "--model", "model-that-does-not-exist"}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure {
+		t.Fatalf("qa setup exit = %d, want failure for a model the runtime does not have", code)
+	}
+	if !strings.Contains(stderr.String(), "gpt-5.6-terra") {
+		t.Fatalf("stderr = %q, want the available models listed", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(catalog, "cortex", "qa-profiles.json")); !os.IsNotExist(err) {
+		t.Fatal("a refused setup must not write a profile file")
+	}
+}
+
 func TestQARunEvidenceSidecar(t *testing.T) {
 	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":true}]`
 	for _, role := range qarole.Catalog() {

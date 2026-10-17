@@ -163,8 +163,18 @@ func validTask(task []byte) bool {
 			return false
 		}
 	}
+	// Reserved-line guards apply to unquoted lines only. A line whose first
+	// non-blank character is '>' is the declared blockquote convention (issue
+	// #305): the quote prefix is payload the role reads as content, so a diff
+	// or quoted text inside it can carry '/', 'actor=', or similar sequences
+	// without being a frame directive — and the quote prefix is passed through
+	// verbatim, so the frame never gains a directive-looking line. Control
+	// characters and size bounds still apply to every line, quoted or not.
 	for _, line := range strings.Split(string(task), "\n") {
 		line = strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(line, ">") {
+			continue
+		}
 		if strings.HasPrefix(line, "/") || reservedAssignment(line) {
 			return false
 		}

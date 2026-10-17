@@ -166,7 +166,9 @@ const (
 		"Use a catalog root directory containing catalog.json (for example, ./catalog):\n" +
 		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n" +
 		"Optional evidence sidecar (--evidence evidence.json): a JSON array of execution records\n" +
-		`[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]` + "\n"
+		`[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]` + "\n" +
+		"To audit a code diff, prefix every diff line with '>' (blockquote): quoted lines are content,\n" +
+		"so frame directives stay rejected while the quoted diff passes validation (issue #305).\n"
 	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n\n" + qaHelp
 	// qaReportNote surfaces runtime prerequisites on non-catalog failures.
 	// The default route provider is the policy placeholder "nan"; Cortex applies

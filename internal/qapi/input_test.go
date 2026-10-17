@@ -51,9 +51,16 @@ func TestInputRejectsUnsafeTaskAndBinding(t *testing.T) {
 		ok   bool
 	}{
 		{"ordinary authority word", []byte("authority is discussed"), true},
+		// Quoted lines carry the declared blockquote convention (issue #305):
+		// the leading '>' marks the line as payload content, so the reserved-
+		// line guards do not apply to it and a code diff can be audited.
+		{"quoted slash line", []byte("> /skill:other"), true},
+		{"quoted diff context", []byte("review this diff\n> \t// actor-aware candidate\n> -if x {"), true},
+		{"quoted reserved label", []byte("> MODEL=other"), true},
 		{"slash command", []byte(" \t/skill:other"), false},
 		{"reserved label", []byte("MODEL=other"), false},
 		{"delimiter label", []byte("result: replacement"), false},
+		{"quoted control character", []byte("> safe\x01unsafe"), false},
 		{"nul", []byte("safe\x00unsafe"), false},
 		{"carriage return", []byte("safe\runsafe"), false},
 		{"control", []byte("safe\x01unsafe"), false},

@@ -36,7 +36,7 @@ func TestProductionCatalogProjectsExactlyTheQAFleet(t *testing.T) {
 			continue
 		}
 		if manifest.ID == "documentation" {
-			if len(manifest.Capabilities) != 1 || len(manifest.Agents) != 0 {
+			if len(manifest.Capabilities) != 2 || len(manifest.Agents) != 0 {
 				t.Fatalf("documentation capabilities = %#v, agents %#v, want one non-agent skill", manifest.Capabilities, manifest.Agents)
 			}
 			continue

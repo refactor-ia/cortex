@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "guide-writing",
+  "description": "Write project documentation that a reader can act on without help: verified steps, observed output, honest status.",
+  "family": "documentation",
+  "source": "families/documentation/sources/guide-writing.md",
+  "activation": "automatic",
+  "provenance": "cortex-owned",
+  "license": "CC-BY-SA-4.0",
+  "redistributionAllowed": true
+}

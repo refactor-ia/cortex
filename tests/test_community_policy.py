@@ -69,6 +69,10 @@ EXPECTED_FILES = {
         "catalog/families/documentation/sources/odd-roadmap.md",
         "internal/builtinassets/catalog/families/documentation/capabilities/odd-roadmap.json",
         "internal/builtinassets/catalog/families/documentation/sources/odd-roadmap.md",
+        "catalog/families/documentation/capabilities/guide-writing.json",
+        "catalog/families/documentation/sources/guide-writing.md",
+        "internal/builtinassets/catalog/families/documentation/capabilities/guide-writing.json",
+        "internal/builtinassets/catalog/families/documentation/sources/guide-writing.md",
         "docs/README.md",
         "ROADMAP.md",
         "docs/design/fork-first-upstream-last.md",
@@ -445,8 +449,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 391)
-                self.assertEqual(len(actual_files), 391)
+                self.assertEqual(len(EXPECTED_FILES), 395)
+                self.assertEqual(len(actual_files), 395)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

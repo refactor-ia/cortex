@@ -53,9 +53,9 @@ type source struct {
 }
 
 var builtInAdmissions = []admission{{
-	id:             "catalog.1.ea1673540c1ebd43be0441c1d872e1cab4c59f2697cdfead1fe4e4d244f2853c",
+	id:             "catalog.1.22442a82c57eb4016af24df09a0a68c039d2228a5c6b843f53b1c8c8819213b2",
 	catalogVersion: 1,
-	fingerprint:    "ea1673540c1ebd43be0441c1d872e1cab4c59f2697cdfead1fe4e4d244f2853c",
+	fingerprint:    "22442a82c57eb4016af24df09a0a68c039d2228a5c6b843f53b1c8c8819213b2",
 }}
 
 // BuiltInSource returns Cortex's compiled release catalog policy.

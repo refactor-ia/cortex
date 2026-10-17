@@ -3,7 +3,8 @@
   "id": "documentation",
   "router": "families/documentation/router.md",
   "capabilities": [
-    "families/documentation/capabilities/odd-roadmap.json"
+    "families/documentation/capabilities/odd-roadmap.json",
+    "families/documentation/capabilities/guide-writing.json"
   ],
   "agents": []
 }

@@ -430,3 +430,51 @@ func TestUpdateActorAwarePiApplyTwiceIsIdempotent(t *testing.T) {
 		t.Fatalf("installation ID = %q after the second apply, want the recorded %q", second.InstallationID(), first.InstallationID())
 	}
 }
+
+// TestUpdatePlanReportsModeDrift verifies that when an installed artifact has its
+// file mode changed (e.g. chmod 0640) while keeping byte-identical content, the
+// update plan reports mode_drift=true with observed and canonical modes, marks
+// the action as replace rather than conflict, and leaves plan status as planned.
+func TestUpdatePlanReportsModeDrift(t *testing.T) {
+	fixture := newUpdateFixture(t)
+	root := updateRootPath(t, fixture, runtimematrix.RuntimePi)
+	deps := fixture.dependencies(runtimematrix.RuntimePi)
+
+	code, stdout, stderr := runUpdateCommand(t, deps, "update", "--runtime", "pi", "--catalog", fixture.catalog, "--apply")
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "status=applied") {
+		t.Fatalf("setup apply = (%d, %q, %q)", code, stdout, stderr)
+	}
+	manifest := updateStateIdentity(t, root)
+	const targetLogicalID = "skills/requirements-analyst"
+	var targetArtifact installstate.Artifact
+	found := false
+	for _, artifact := range manifest.Artifacts() {
+		if artifact.LogicalID() == targetLogicalID {
+			targetArtifact, found = artifact, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("installed manifest has no %s artifact", targetLogicalID)
+	}
+
+	targetPath := filepath.Join(root, filepath.FromSlash(targetArtifact.RelativePath()))
+	mustOK(os.Chmod(targetPath, 0o640))
+
+	code, stdout, stderr = runUpdateCommand(t, deps, "update", "--runtime", "pi", "--catalog", fixture.catalog)
+	if code != exitOK || stderr != "" {
+		t.Fatalf("update plan = (%d, %q, %q)", code, stdout, stderr)
+	}
+
+	expectedLine := "operation=" + targetArtifact.LogicalID() + " action=replace mode_drift=true observed_mode=0640 canonical_mode=0600"
+	if !strings.Contains(stdout, expectedLine) {
+		t.Fatalf("stdout %q does not contain expected mode drift line %q", stdout, expectedLine)
+	}
+
+	if strings.Contains(stdout, "action=conflict") {
+		t.Fatalf("stdout %q contains action=conflict, want action=replace", stdout)
+	}
+	if !strings.Contains(stdout, "status=planned") || strings.Contains(stdout, "status=conflict") {
+		t.Fatalf("stdout %q does not have status=planned or contains status=conflict", stdout)
+	}
+}

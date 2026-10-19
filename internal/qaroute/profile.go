@@ -12,7 +12,9 @@ import (
 
 var profileIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
-type profile struct{ routes map[qarole.RoleID]route }
+type profile struct {
+	routes map[qarole.RoleID]map[string]route
+}
 
 type profiles map[string]profile
 
@@ -45,27 +47,37 @@ func decodeProfiles(data []byte) (profiles, bool) {
 		if !ok {
 			return nil, false
 		}
-		parsed := profile{routes: make(map[qarole.RoleID]route, len(routes))}
+		parsed := profile{routes: make(map[qarole.RoleID]map[string]route, len(routes))}
 		for role, rawRoute := range routes {
 			roleID := qarole.RoleID(role)
 			if _, allowed := defaults[roleID]; !allowed {
 				return nil, false
 			}
-			backend, ok := object(rawRoute, "pi")
-			if !ok {
+			// Backend-scoped routes (#328): a role carries one route per
+			// admitted backend the owner configured. Unknown backend keys fail
+			// closed; a role with no admitted route at all fails closed.
+			backends, ok := object(rawRoute)
+			if !ok || len(backends) == 0 {
 				return nil, false
 			}
-			fields, ok := object(backend["pi"], "provider", "model", "effort")
-			if !ok {
-				return nil, false
+			byBackend := make(map[string]route, len(backends))
+			for backendToken, rawEntry := range backends {
+				if !Admits(backendToken) {
+					return nil, false
+				}
+				fields, ok := object(rawEntry, "provider", "model", "effort")
+				if !ok {
+					return nil, false
+				}
+				provider, providerOK := routeText(fields["provider"])
+				model, modelOK := routeText(fields["model"])
+				effort, effortOK := routeText(fields["effort"])
+				if !providerOK || !modelOK || !effortOK {
+					return nil, false
+				}
+				byBackend[backendToken] = route{provider, model, effort}
 			}
-			provider, providerOK := routeText(fields["provider"])
-			model, modelOK := routeText(fields["model"])
-			effort, effortOK := routeText(fields["effort"])
-			if !providerOK || !modelOK || !effortOK {
-				return nil, false
-			}
-			parsed.routes[roleID] = route{provider, model, effort}
+			parsed.routes[roleID] = byBackend
 		}
 		decoded[id] = parsed
 	}

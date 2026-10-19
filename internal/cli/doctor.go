@@ -280,6 +280,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if code == qaadmission.CodeModelUnavailable {
 			_, _ = io.WriteString(stderr, qaRouteSetupNote(catalogRoot))
 		}
+		if code == "route_incomplete" {
+			_, _ = fmt.Fprintf(stderr, "route_missing_backend=%s remedy=cortex qa setup --catalog %s --backend %s --provider <p> --model <m>\n", backend, catalogRoot, backend)
+		}
 		if code == qaadmission.CodeNormalizationFailed {
 			var diagnostic *qapi.ReportNormalizationError
 			if errors.As(err, &diagnostic) {

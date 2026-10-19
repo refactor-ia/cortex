@@ -88,8 +88,11 @@ func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 		if !exists {
 			return ResolvedRoute{}, Failure{Code: "profile_invalid"}
 		}
-		var found bool
-		base, found = selected.routes[request.Role]
+		byBackend, found := selected.routes[request.Role]
+		if !found {
+			return ResolvedRoute{}, Failure{Code: "route_incomplete"}
+		}
+		base, found = byBackend[request.Backend]
 		if !found {
 			return ResolvedRoute{}, Failure{Code: "route_incomplete"}
 		}

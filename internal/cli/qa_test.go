@@ -698,3 +698,51 @@ func TestQARunRejectsUnknownAndEmptyRoles(t *testing.T) {
 		})
 	}
 }
+
+// TestQASetupWritesRoutesForTheRequestedBackend pins backend-scoped setup
+// (#328): --backend selects which backend the routes are written for, routes
+// for other backends already present in the profile are preserved, and an
+// unadmitted backend token is a usage error.
+func TestQASetupWritesRoutesForTheRequestedBackend(t *testing.T) {
+	catalog := t.TempDir()
+	original := qaPiResolver
+	qaPiResolver = fixturePi{must(os.Executable())}
+	t.Cleanup(func() { qaPiResolver = original })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	piArgs := []string{"qa", "setup", "--catalog", catalog, "--provider", "openai-codex", "--model", "gpt-5.6-terra"}
+	if code := Run(context.Background(), piArgs, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("pi setup exit = %d stderr = %q", code, stderr.String())
+	}
+	claudeArgs := []string{"qa", "setup", "--catalog", catalog, "--backend", "claude", "--provider", "claude-bridge", "--model", "claude-fixture"}
+	if code := Run(context.Background(), claudeArgs, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("claude setup exit = %d stderr = %q", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(catalog, "cortex", "qa-profiles.json"))
+	if err != nil {
+		t.Fatalf("profile file = %v", err)
+	}
+	var parsed struct {
+		Profiles map[string]struct {
+			Routes map[string]map[string]struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"routes"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("profile json = %v", err)
+	}
+	routes := parsed.Profiles["qa-fleet"].Routes
+	if len(routes) != 6 {
+		t.Fatalf("routes = %d, want 6 roles", len(routes))
+	}
+	for role, route := range routes {
+		if route["pi"].Model != "gpt-5.6-terra" || route["claude"].Model != "claude-fixture" {
+			t.Fatalf("role %s routes = %+v; want preserved pi route and claude route", role, route)
+		}
+	}
+	if code := Run(context.Background(), []string{"qa", "setup", "--catalog", catalog, "--backend", "shell", "--provider", "p", "--model", "m"}, io.Discard, io.Discard, nil); code != exitUsage {
+		t.Fatalf("unadmitted backend exit = %d, want usage error", code)
+	}
+}

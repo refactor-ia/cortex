@@ -50,3 +50,36 @@ func TestResolveUsesOnlyTheExplicitProfile(t *testing.T) {
 		})
 	}
 }
+
+// TestResolvePerBackendRoutes pins backend-scoped profile routes (#328): a
+// profile may carry one route per admitted backend for a role, resolution
+// selects the requested backend's entry, a role without the requested
+// backend's route resolves as route_incomplete, and an unadmitted backend key
+// fails closed as profile_invalid.
+func TestResolvePerBackendRoutes(t *testing.T) {
+	body := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"openai","model":"gpt-fixture","effort":"high"},"claude":{"provider":"claude","model":"claude-fixture","effort":"medium"}}}}}}`)
+	for _, tc := range []struct {
+		backend, wantProvider, wantFailure string
+	}{
+		{"pi", "openai", ""},
+		{"claude", "claude", ""},
+		{"opencode", "", "route_incomplete"},
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			got, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: tc.backend, ProfileID: "fleet"}, Snapshot{Present: true, Bytes: body})
+			if tc.wantFailure != "" {
+				if failure.Code != tc.wantFailure {
+					t.Fatalf("Resolve() failure = %q, want %q", failure.Code, tc.wantFailure)
+				}
+				return
+			}
+			if failure.Code != "" || got.Provider != tc.wantProvider {
+				t.Fatalf("Resolve() = (%+v, %q); want provider %q", got, failure.Code, tc.wantProvider)
+			}
+		})
+	}
+	unadmitted := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"shell":{"provider":"openai","model":"gpt-fixture","effort":"high"}}}}}}`)
+	if _, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "fleet"}, Snapshot{Present: true, Bytes: unadmitted}); failure.Code != "profile_invalid" {
+		t.Fatalf("unadmitted backend key failure = %q, want profile_invalid", failure.Code)
+	}
+}

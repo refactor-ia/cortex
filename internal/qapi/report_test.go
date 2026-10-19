@@ -571,3 +571,57 @@ func TestRetainRunStreamWritesUserOwnedFile(t *testing.T) {
 		t.Fatal("empty stream must not be retained")
 	}
 }
+
+// TestParseReportStreamTerminalProviderFailure pins the typed backend-failure
+// path (#326): a terminal assistant message with stopReason "error" is the
+// runtime reporting it could not answer, never a malformed stream. A provider
+// transport diagnostic names unavailability; any other terminal error is a
+// backend failure. Neither may surface as normalization rejection.
+func TestParseReportStreamTerminalProviderFailure(t *testing.T) {
+	const text = "Requirements analysis fixture report"
+	failure := func(stopReason string, diagnostics string) []byte {
+		encoded, err := json.Marshal(map[string]any{
+			"role":        "assistant",
+			"content":     []any{},
+			"provider":    "openai",
+			"model":       "gpt-fixture",
+			"stopReason":  stopReason,
+			"diagnostics": json.RawMessage(diagnostics),
+			"usage":       map[string]any{"totalTokens": 0},
+			"timestamp":   0,
+		})
+		if err != nil {
+			panic(err)
+		}
+		valid := reportStreamFixture(text, "")
+		end := `{"type":"message_end","message":`
+		start := strings.Index(string(valid), end)
+		turn := strings.Index(string(valid), `{"type":"turn_end"`)
+		agent := strings.Index(string(valid), `{"type":"agent_end","messages":[`)
+		stream := []byte(string(valid)[:start] + end + string(encoded) + "}\n" +
+			string(valid)[turn:agent] + string(encoded) + "]")
+		return append(stream, '\n')
+	}
+	for _, tc := range []struct {
+		name            string
+		stream          []byte
+		wantStageReason string
+	}{
+		{"provider transport failure is unavailability", failure("error", `[{"type":"provider_transport_failure","error":{"message":"WebSocket error"}}]`), reportStageMessage + "/" + reportReasonBackendUnavailable},
+		{"other terminal errors are backend failures", failure("error", `[]`), reportStageMessage + "/" + reportReasonBackendFailed},
+		{"successful runs keep the parser contract", reportStreamFixture(text, ""), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, ok, diagnostic := parseReportStream(tc.stream)
+			if tc.wantStageReason == "" {
+				if !ok || diagnostic != nil {
+					t.Fatalf("parseReportStream() = %q, %v; want accepted", report, diagnostic)
+				}
+				return
+			}
+			if ok || diagnostic == nil || diagnostic.Stage+"/"+diagnostic.Reason != tc.wantStageReason {
+				t.Fatalf("parseReportStream() = %q, %v; want %s", report, diagnostic, tc.wantStageReason)
+			}
+		})
+	}
+}

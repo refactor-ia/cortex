@@ -595,6 +595,9 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			}
 			text, ok, diagnostic := reportText(event)
 			if !ok {
+				if failure := piTerminalFailure(event); failure != nil {
+					return "", false, failure
+				}
 				return "", false, diagnostic
 			}
 			report = text
@@ -658,6 +661,31 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 		return report, true, nil
 	}
 	return "", false, &ReportNormalizationError{reportStageStream, reportReasonIncomplete}
+}
+
+// piTerminalFailure names a backend-reported terminal failure in the pi
+// report stream. A terminal assistant message with stopReason "error" is the
+// runtime saying it could not answer; it is a typed backend failure, never a
+// parser rejection (#326). A provider transport diagnostic names
+// unavailability; any other terminal error is a backend failure. Both map to
+// CodeExecutionFailed through reportFailureCode, keeping the producer split
+// documented there.
+func piTerminalFailure(event map[string]json.RawMessage) *ReportNormalizationError {
+	var message struct {
+		StopReason  string `json:"stopReason"`
+		Diagnostics []struct {
+			Type string `json:"type"`
+		} `json:"diagnostics"`
+	}
+	if json.Unmarshal(event["message"], &message) != nil || message.StopReason != "error" {
+		return nil
+	}
+	for _, entry := range message.Diagnostics {
+		if entry.Type == "provider_transport_failure" {
+			return &ReportNormalizationError{reportStageMessage, reportReasonBackendUnavailable}
+		}
+	}
+	return &ReportNormalizationError{reportStageMessage, reportReasonBackendFailed}
 }
 
 func reportText(event map[string]json.RawMessage) (string, bool, *ReportNormalizationError) {

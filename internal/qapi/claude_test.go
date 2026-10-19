@@ -148,9 +148,9 @@ func TestParseClaudeReportStreamRejections(t *testing.T) {
 			stage: reportStageResult, reason: reportReasonTurnMismatch,
 		},
 		{
-			name:   "more than one assistant message",
-			stream: joinStream(slices.Insert(slices.Clone(lines), result, lines[assistant])),
-			stage:  reportStageMessage, reason: reportReasonExtraMessages,
+			name:   "assistant event after the terminal result",
+			stream: joinStream(append(slices.Clone(lines), lines[assistant])),
+			stage:  reportStageEnvelope, reason: reportReasonUnexpected,
 		},
 		{
 			name: "non-text assistant content",
@@ -346,4 +346,18 @@ type failingResolver struct{}
 
 func (failingResolver) Resolve(context.Context) (string, error) {
 	return "", errors.New("claude is not installed")
+}
+
+// TestParseClaudeReportStreamAcceptsThinkingTokens pins the live Claude Code
+// 2.1.303 stream shape (#327): informational system events with subtype
+// thinking_tokens between session init and the assistant message must not
+// fail the stream; the run completed and the report is evidence.
+func TestParseClaudeReportStreamAcceptsThinkingTokens(t *testing.T) {
+	report, diagnostic := parseClaudeReportStream(claudeCapture(t, "stream-success-thinking-tokens.jsonl"))
+	if diagnostic != nil {
+		t.Fatalf("thinking_tokens stream rejected: %v", diagnostic)
+	}
+	if report != "OK" {
+		t.Fatalf("report = %q, want %q", report, "OK")
+	}
 }

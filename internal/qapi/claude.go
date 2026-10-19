@@ -248,10 +248,21 @@ func parseClaudeReportStream(data []byte) (string, *ReportNormalizationError) {
 		switch {
 		case kind == "system":
 			subtype, ok := stringField(event, "subtype")
-			if index != 0 || initialized || !ok || subtype != "init" {
-				return "", &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
+			if !ok {
+				return "", &ReportNormalizationError{reportStageEnvelope, reportReasonMissingType}
 			}
-			initialized = true
+			if index == 0 && !initialized && subtype == "init" {
+				initialized = true
+				continue
+			}
+			// Informational system events between init and the assistant
+			// message (live Claude Code 2.1.303 emits thinking_tokens usage
+			// counters) describe the transport, not the report; skip them
+			// rather than fail a run that completed (#327).
+			if initialized && subtype == "thinking_tokens" {
+				continue
+			}
+			return "", &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
 		case !initialized:
 			// Nothing precedes system/init, not even an ignored event: without
 			// it there is no evidence the run started under the neutralized
@@ -261,9 +272,11 @@ func parseClaudeReportStream(data []byte) (string, *ReportNormalizationError) {
 			if resultSeen {
 				return "", &ReportNormalizationError{reportStageEnvelope, reportReasonUnexpected}
 			}
-			if assistantSeen {
-				return "", &ReportNormalizationError{reportStageMessage, reportReasonExtraMessages}
-			}
+			// Live Claude Code 2.1.303 streams one turn as several assistant
+			// events (a thinking event followed by the text event). Every one
+			// is validated, so the turn-stayed-tool-free proof holds per event;
+			// the single-turn bound is enforced by the terminal result's
+			// num_turns, not by event count (#327).
 			assistantSeen = true
 			if diagnostic := claudeAssistantMessage(event); diagnostic != nil {
 				return "", diagnostic

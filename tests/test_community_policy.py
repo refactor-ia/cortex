@@ -333,6 +333,7 @@ EXPECTED_FILES = {
         "internal/qapi/testdata/claude-2.1.278/auth/status-authenticated.json",
         "internal/qapi/testdata/claude-2.1.278/auth/status-unauthenticated.json",
         "internal/qapi/testdata/claude-2.1.278/responses/stream-success.jsonl",
+        "internal/qapi/testdata/claude-2.1.278/responses/stream-success-thinking-tokens.jsonl",
         "internal/qapi/testdata/claude-2.1.278/responses/stream-unauthenticated.jsonl",
         "internal/qapi/testdata/opencode-1.18.25/README.md",
         "internal/qapi/testdata/opencode-1.18.25/auth/credentials-absent.txt",
@@ -449,8 +450,8 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 395)
-                self.assertEqual(len(actual_files), 395)
+                self.assertEqual(len(EXPECTED_FILES), 396)
+                self.assertEqual(len(actual_files), 396)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

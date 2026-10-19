@@ -134,6 +134,41 @@ Location: `<catalog-root>/cortex/qa-profiles.json` (mode 0600, regular file). Th
 absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
 
+## Walk the QA fleet end to end
+
+The showcase path (#286): from a fresh directory, install from a release, configure a
+route, and receive bounded, attributable QA evidence for one request. What a verified
+run looks like, and where it currently stops:
+
+1. **Fresh install.** Download a release tarball, unpack it, and run `./cortex install`
+   from an empty directory. Expect `status=completed`, per-runtime lines, and the
+   `warning=uncertified_admission` disclosure. Verify readiness with `cortex doctor`:
+   every runtime reports `qa_availability` for the probe role only — it is a model
+   availability probe, not an admission guarantee.
+2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
+   from the runtime's extension-free surface and run
+   `cortex qa setup --catalog <abs-path>/catalog --provider <p> --model <m>`. Use an
+   **absolute** catalog path: `qa run` only reads the route profile from a canonical
+   absolute root (#324). `qa setup` writes `<catalog>/cortex/qa-profiles.json` with one
+   route per fleet role, pi-backend scoped (#328).
+3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
+
+   ```sh
+   printf '[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]' > evidence.json
+   cortex qa run --role requirements-analyst --request request.txt \
+     --catalog <abs-path>/catalog --backend pi --evidence evidence.json
+   ```
+
+   The sidecar must be a JSON array of execution records; the report evaluates them
+   and never runs commands itself. On success the report is the only stdout output;
+   the retained stream lands in `.cortex/qa-streams/` for audit.
+4. **Known blockers (2026-10-19 walkthrough).** No backend completes the green run yet:
+   pi hits provider transport failures misreported as `normalization_failed` (#326);
+   claude streams from live Claude Code 2.1.303 are rejected on informational
+   `thinking_tokens` events (#327); opencode has no configurable route (#328). The
+   showcase closes only when a release binary completes steps 1–3 end to end and the
+   report comes back with per-role findings and minority findings preserved.
+
 ## Where to read more
 
 - [Architecture overview](architecture/overview.md) — the target product contract (authority).

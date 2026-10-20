@@ -63,6 +63,7 @@ func TestBuiltInPolicyAdmitsExactlyTheCertifiedVersions(t *testing.T) {
 		detected(runtimecompat.CertifiedPiVersion),
 		detected(runtimecompat.CertifiedOpenCodeVersion),
 		claudeDetected(runtimecompat.CertifiedClaudeCodeVersion),
+		hermesDetected(runtimecompat.CertifiedHermesVersion),
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +75,7 @@ func TestBuiltInPolicyAdmitsExactlyTheCertifiedVersions(t *testing.T) {
 	}
 
 	near, err := runtimecompat.BuiltInPolicy().Evaluate(reports(t,
-		detected("0.85.2"), detected("1.18.26"), claudeDetected("2.1.252"),
+		detected("0.85.2"), detected("1.18.26"), claudeDetected("2.1.252"), hermesDetected("0.4.3"),
 	))
 	if err != nil {
 		t.Fatal(err)

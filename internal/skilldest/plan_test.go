@@ -123,15 +123,15 @@ func pipeline(t *testing.T, runtime runtimematrix.RuntimeID, capabilities []capa
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessments := make([]projection.Assessment, 0, 3)
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		plan, err := skillprojection.Build(id, sources)
 		if err != nil {
 			t.Fatal(err)
 		}
 		assessments = append(assessments, plan.Assessment())
 	}
-	base, err := adapterplan.Build(snapshot.Fingerprint(), []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}})
+	base, err := adapterplan.Build(snapshot.Fingerprint(), []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown}})
 	if err != nil {
 		t.Fatal(err)
 	}

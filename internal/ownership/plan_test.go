@@ -43,6 +43,7 @@ func bundle(t *testing.T, ids ...string) artifact.Bundle {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)

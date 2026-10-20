@@ -20,6 +20,7 @@ type Inputs struct {
 	Home             string
 	PiCodingAgentDir string
 	ClaudeConfigDir  string
+	HermesProfile    string
 }
 
 // UninstallRoot binds one supported runtime to its canonical Cortex-owned user root.
@@ -113,6 +114,7 @@ func ResolveUninstallRoots(inputs Inputs) ([]UninstallRoot, error) {
 		runtimematrix.RuntimePi,
 		runtimematrix.RuntimeOpenCode,
 		runtimematrix.RuntimeClaudeCode,
+		runtimematrix.RuntimeHermes,
 	}
 	roots := make([]UninstallRoot, 0, len(runtimes))
 	for _, runtime := range runtimes {
@@ -166,8 +168,34 @@ func resolveRoot(runtime runtimematrix.RuntimeID, in Inputs) (string, bool) {
 			return "", false
 		}
 		return in.ClaudeConfigDir, true
+	case runtimematrix.RuntimeHermes:
+		base := filepath.Join(in.Home, ".hermes")
+		if in.HermesProfile == "" {
+			return base, true
+		}
+		if !validHermesProfile(in.HermesProfile) {
+			return "", false
+		}
+		return filepath.Join(base, "profiles", in.HermesProfile), true
 	}
 	return "", false
+}
+
+// validHermesProfile restricts a profile name to one safe path segment. The
+// default profile is the empty name and is handled by the caller.
+func validHermesProfile(profile string) bool {
+	if len(profile) == 0 || len(profile) > 64 || profile == "." || profile == ".." {
+		return false
+	}
+	if strings.ContainsAny(profile, "/\\") || strings.ContainsRune(profile, 0) || strings.Contains(profile, "~") {
+		return false
+	}
+	for _, c := range profile {
+		if c != '-' && c != '.' && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func validSymbolic(plan skilldest.Plan) bool {
@@ -195,6 +223,8 @@ func expectedRoot(runtime runtimematrix.RuntimeID) skilldest.RootKind {
 		return skilldest.RootKindOpenCodeUserConfig
 	case runtimematrix.RuntimeClaudeCode:
 		return skilldest.RootKindClaudeCodeUser
+	case runtimematrix.RuntimeHermes:
+		return skilldest.RootKindHermesProfile
 	}
 	return ""
 }

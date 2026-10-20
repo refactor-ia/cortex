@@ -9,10 +9,11 @@ import (
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
 )
 
-var runtimeOrder = [3]runtimematrix.RuntimeID{
+var runtimeOrder = [4]runtimematrix.RuntimeID{
 	runtimematrix.RuntimePi,
 	runtimematrix.RuntimeOpenCode,
 	runtimematrix.RuntimeClaudeCode,
+	runtimematrix.RuntimeHermes,
 }
 
 var normalizedVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$`)
@@ -32,7 +33,7 @@ type entry struct {
 
 // Policy is an immutable exact-version compatibility policy.
 type Policy struct {
-	entries [3]entry
+	entries [4]entry
 }
 
 // NewPolicy validates and detaches an explicit policy from its mutable input.
@@ -99,6 +100,7 @@ const (
 	CertifiedPiVersion         = "0.85.1"
 	CertifiedOpenCodeVersion   = "1.18.25"
 	CertifiedClaudeCodeVersion = "2.1.251"
+	CertifiedHermesVersion     = "0.4.2"
 )
 
 // BuiltInPolicy returns the production policy. Certification requires an explicit
@@ -108,6 +110,7 @@ func BuiltInPolicy() Policy {
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{CertifiedPiVersion}},
 		{ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{CertifiedOpenCodeVersion}},
 		{ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{CertifiedClaudeCodeVersion}},
+		{ID: runtimematrix.RuntimeHermes, CertifiedCompatible: []string{CertifiedHermesVersion}},
 	})
 	if err != nil {
 		panic(err)

@@ -658,7 +658,7 @@ func candidateRuntime(t *testing.T, home string, runtime runtimematrix.RuntimeID
 	must(t, err)
 	projected, err := skillprojection.Build(runtime, sources)
 	must(t, err)
-	observations := []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeOpenCode, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeClaudeCode, Compatibility: runtimematrix.CompatibilityUnknown}}
+	observations := []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeOpenCode, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeClaudeCode, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeHermes, Compatibility: runtimematrix.CompatibilityUnknown}}
 	for index := range observations {
 		if observations[index].ID == runtime {
 			observations[index] = runtimematrix.Observation{ID: runtime, Present: true, Version: "1", Compatibility: runtimematrix.Compatible}
@@ -973,9 +973,9 @@ func realCatalogCandidate(t *testing.T, home string, runtime runtimematrix.Runti
 	must(t, err)
 	projected, err := skillprojection.Build(runtime, sources)
 	must(t, err)
-	assessments := make([]projection.Assessment, 0, 3)
-	observations := make([]runtimematrix.Observation, 0, 3)
-	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	observations := make([]runtimematrix.Observation, 0, 4)
+	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		assessment, buildErr := skillprojection.Build(runtimeID, sources)
 		must(t, buildErr)
 		assessments = append(assessments, assessment.Assessment())

@@ -97,7 +97,7 @@ func validAssessment(a projection.Assessment) bool {
 		return false
 	}
 	switch a.RuntimeID() {
-	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes:
 	default:
 		return false
 	}
@@ -116,7 +116,7 @@ func validFinal(plan projection.Plan) bool {
 	results, targets := plan.Results(), plan.TransactionTargets()
 	localTarget, local := plan.LocalUpdateTarget()
 	admitted := plan.UncertifiedAdmitted()
-	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 	if len(results) != len(ids) {
 		return false
 	}

@@ -701,9 +701,9 @@ func makeActorAwareCandidate(t *testing.T) installplan.Plan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessments := make([]projection.Assessment, 0, 3)
-	observations := make([]runtimematrix.Observation, 0, 3)
-	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	observations := make([]runtimematrix.Observation, 0, 4)
+	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		assessment, err := skillprojection.Build(runtimeID, sources)
 		if err != nil {
 			t.Fatal(err)

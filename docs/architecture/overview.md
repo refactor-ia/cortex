@@ -49,7 +49,7 @@ This is a product and responsibility boundary, not a required technical or runti
 
 ## Runtime and installation contract
 
-Cortex targets Pi, OpenCode, and Claude Code with contract and function parity through generated adapters.
+Cortex targets Pi, OpenCode, Claude Code, and Hermes Agent with contract and function parity through generated adapters. Hermes installs skills only: its root is `~/.hermes` (default profile) or `~/.hermes/profiles/<profile>`, selected with `--hermes-profile <name>`, and the Pi actor projection does not apply because Hermes has no named subagents.
 
 | Condition | Required behavior |
 | --- | --- |
@@ -90,7 +90,7 @@ A family package contains its manifest, router, subskills, justified agents, ref
 | --- | --- |
 | Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. Delivery-practice guidance is advisory only: it performs no Git, GitHub, review, or release actions, grants no approvals, gates, or receipts, and never overrides harness consent. |
 | Execution | Preserve generic queue lifecycle, budgets, state, and evidence; remove SDD governance. |
-| Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. It installs to all three supported runtimes — Pi, OpenCode, and Claude Code — under the parity stated above, and Pi additionally receives the actor projection. |
+| Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. It installs to all supported runtimes — Pi, OpenCode, Claude Code, and Hermes Agent — under the parity stated above, and Pi additionally receives the actor projection. |
 | Services and personal | Postmark v1 is guidance only. Do not promise Coolify until it is implemented. Credentialed or personal capabilities are dormant until configured, with no preconfigured profiles or personal data. `voice` and `learn` remain neutral and dormant until configured. |
 | Memory integration | `kb-feeder` is proposal-first and requires approval before writing. Never absorb `cortex-brains` server, storage, embedding, backup, doctor, or memory-skill responsibilities. |
 

@@ -1,6 +1,6 @@
 # Cortex
 
-Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. Today that means eight capabilities on Pi, OpenCode, and Claude Code: six quality-assurance roles, one report-only QA guide, and one delivery-practice skill.
+Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. Today that means eight capabilities on Pi, OpenCode, Claude Code, and Hermes Agent: six quality-assurance roles, one report-only QA guide, and one delivery-practice skill. Hermes installs skills under the selected profile (`--hermes-profile <name>`, default `~/.hermes/skills/`).
 
 It writes only its own files, transactionally, and removes exactly what it wrote on uninstall. It never installs or replaces a runtime, never touches your configuration, and does nothing at all when you are not running a Cortex command.
 

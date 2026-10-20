@@ -463,6 +463,8 @@ func validPair(runtimeID runtimematrix.RuntimeID, rootKind skilldest.RootKind) b
 		return rootKind == skilldest.RootKindOpenCodeUserConfig
 	case runtimematrix.RuntimeClaudeCode:
 		return rootKind == skilldest.RootKindClaudeCodeUser
+	case runtimematrix.RuntimeHermes:
+		return rootKind == skilldest.RootKindHermesProfile
 	default:
 		return false
 	}

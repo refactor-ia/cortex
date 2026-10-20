@@ -215,6 +215,8 @@ func validUninstallRoot(root UninstallRoot) bool {
 		return root.rootKind == skilldest.RootKindOpenCodeUserConfig
 	case runtimematrix.RuntimeClaudeCode:
 		return root.rootKind == skilldest.RootKindClaudeCodeUser
+	case runtimematrix.RuntimeHermes:
+		return root.rootKind == skilldest.RootKindHermesProfile
 	default:
 		return false
 	}

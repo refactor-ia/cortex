@@ -70,7 +70,7 @@ in child issues and is out of scope here.
 - `uninstall` removes projections it owns and leaves user-owned or externally modified
   files untouched (blocking, with an explicit report, when shared actors prevent safe
   removal).
-- Runtime projection matrix: Pi, OpenCode, and Claude Code each receive the same
+- Runtime projection matrix: Pi, OpenCode, Claude Code, and Hermes Agent each receive the same
   effective policy; where a runtime cannot represent it exactly, the projection is
   disclosed as a translation, following the existing disclosure contract.
 

@@ -70,7 +70,7 @@ func TestSnapshotProjectsEmbeddedCapabilitiesToRuntimeDestinations(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 	assessments, projected := make([]projection.Assessment, 0, len(ids)), make([]skillprojection.Plan, 0, len(ids))
 	for _, id := range ids {
 		plan, err := skillprojection.Build(id, sources)
@@ -79,7 +79,7 @@ func TestSnapshotProjectsEmbeddedCapabilitiesToRuntimeDestinations(t *testing.T)
 		}
 		assessments, projected = append(assessments, plan.Assessment()), append(projected, plan)
 	}
-	base, err := adapterplan.Build(snapshot.Fingerprint(), []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}})
+	base, err := adapterplan.Build(snapshot.Fingerprint(), []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -246,7 +246,7 @@ func resolveWithBundle(t *testing.T, runtime runtimematrix.RuntimeID, home strin
 		t.Fatal(err)
 	}
 	assessments, observations := []projection.Assessment{}, []runtimematrix.Observation{}
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		value, err := skillprojection.Build(id, sources)
 		if err != nil {
 			t.Fatal(err)

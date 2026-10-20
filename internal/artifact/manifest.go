@@ -103,7 +103,7 @@ func DecodeManifest(data []byte) (Manifest, error) {
 
 func supportedRuntime(runtime runtimematrix.RuntimeID) bool {
 	switch runtime {
-	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes:
 		return true
 	default:
 		return false

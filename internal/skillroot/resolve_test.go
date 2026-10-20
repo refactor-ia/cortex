@@ -134,6 +134,7 @@ func TestResolveUninstallRoots(t *testing.T) {
 		{runtimematrix.RuntimePi, skilldest.RootKindPiUserAgent, piRoot},
 		{runtimematrix.RuntimeOpenCode, skilldest.RootKindOpenCodeUserConfig, filepath.Join(home, ".config", "opencode")},
 		{runtimematrix.RuntimeClaudeCode, skilldest.RootKindClaudeCodeUser, claudeRoot},
+		{runtimematrix.RuntimeHermes, skilldest.RootKindHermesProfile, filepath.Join(home, ".hermes")},
 	}
 	if len(roots) != len(want) {
 		t.Fatalf("ResolveUninstallRoots() returned %d roots, want %d", len(roots), len(want))
@@ -236,9 +237,9 @@ func binding(t *testing.T, runtime runtimematrix.RuntimeID, capabilities []capab
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessments := make([]projection.Assessment, 0, 3)
+	assessments := make([]projection.Assessment, 0, 4)
 	observations := []runtimematrix.Observation{}
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		value, err := skillprojection.Build(id, sources)
 		if err != nil {
 			t.Fatal(err)

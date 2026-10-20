@@ -171,13 +171,14 @@ func qaCapability(family catalog.CatalogFamilySnapshot, roleID string) (catalog.
 }
 
 // supportedQARuntime names the runtimes the quality-assurance family projects
-// to. It admits every runtime in runtimematrix because the family follows the
-// three-runtime parity stated in docs/architecture/overview.md:52: Cortex
-// targets Pi, OpenCode, and Claude Code with contract and function parity. The
-// helper stays as the single place that statement is encoded, so a future
-// runtime is admitted here deliberately rather than by silence.
+// to. It admits every runtime in runtimematrix: the family follows the runtime
+// parity stated in docs/architecture/overview.md. Hermes joins deliberately
+// here — the QA skills are catalog skills projected like any other capability,
+// while the six Pi actors (qaactor) remain Pi-only by contract. The helper
+// stays as the single place that statement is encoded, so a future runtime is
+// admitted here deliberately rather than by silence.
 func supportedQARuntime(runtime runtimematrix.RuntimeID) bool {
-	return runtime == runtimematrix.RuntimePi || runtime == runtimematrix.RuntimeOpenCode || runtime == runtimematrix.RuntimeClaudeCode
+	return runtime == runtimematrix.RuntimePi || runtime == runtimematrix.RuntimeOpenCode || runtime == runtimematrix.RuntimeClaudeCode || runtime == runtimematrix.RuntimeHermes
 }
 
 // QAFamilyProjected reports whether a snapshot carries a quality-assurance

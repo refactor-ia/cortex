@@ -21,6 +21,7 @@ const (
 	RootKindPiUserAgent        RootKind = "pi-user-agent"
 	RootKindOpenCodeUserConfig RootKind = "opencode-user-config"
 	RootKindClaudeCodeUser     RootKind = "claude-code-user"
+	RootKindHermesProfile      RootKind = "hermes-profile"
 )
 
 // Plan is an immutable, non-materializing destination plan.
@@ -157,6 +158,8 @@ func rootFor(runtime runtimematrix.RuntimeID) (RootKind, bool) {
 		return RootKindOpenCodeUserConfig, true
 	case runtimematrix.RuntimeClaudeCode:
 		return RootKindClaudeCodeUser, true
+	case runtimematrix.RuntimeHermes:
+		return RootKindHermesProfile, true
 	default:
 		return "", false
 	}

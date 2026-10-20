@@ -181,9 +181,9 @@ func actorAwareInputsAt(t *testing.T, root string, runtime runtimematrix.Runtime
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessments := make([]projection.Assessment, 0, 3)
-	observations := make([]runtimematrix.Observation, 0, 3)
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	observations := make([]runtimematrix.Observation, 0, 4)
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		candidate, err := skillprojection.Build(id, sources)
 		if err != nil {
 			t.Fatal(err)

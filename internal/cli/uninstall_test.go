@@ -22,7 +22,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 	t.Run("all roots absent are no-op", func(t *testing.T) {
 		roots := uninstallRoots(t)
 		code, stdout, stderr := runUninstallForTest(t, roots, nil)
-		if code != exitOK || stderr != "" || stdout != uninstallLines("not_installed", "not_installed", "not_installed") {
+		if code != exitOK || stderr != "" || stdout != uninstallLines("not_installed", "not_installed", "not_installed", "not_installed") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
 	})
@@ -33,7 +33,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, stdout, stderr := runUninstallForTest(t, roots, nil)
-		if code != exitOK || stderr != "" || stdout != uninstallLines("completed", "not_installed", "not_installed") {
+		if code != exitOK || stderr != "" || stdout != uninstallLines("completed", "not_installed", "not_installed", "not_installed") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
 		assertMissing(t, skill)
@@ -46,7 +46,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, stdout, stderr := runUninstallForTest(t, roots, nil)
-		if code != exitConflict || stderr != "" || stdout != uninstallLines("blocked", "conflict", "blocked") {
+		if code != exitConflict || stderr != "" || stdout != uninstallLines("blocked", "conflict", "blocked", "blocked") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
 		for i := range roots {
@@ -62,7 +62,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			calls := 0
 			deps.applyGroup = func(requests []uninstalltxn.GroupRequest, backupRoot, backupName string) error {
 				calls++
-				if len(requests) != 3 {
+				if len(requests) != 4 {
 					t.Fatalf("group requests = %d", len(requests))
 				}
 				for _, request := range requests {
@@ -79,7 +79,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 				}
 			})
 		})
-		if code != exitOK || stderr != "" || stdout != uninstallLines("completed", "completed", "completed") {
+		if code != exitOK || stderr != "" || stdout != uninstallLines("completed", "completed", "completed", "completed") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
 		for i := range roots {
@@ -104,7 +104,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 					return tc.err
 				}
 			})
-			if code != exitTransaction || stderr != "error="+tc.reason+"\n" || stdout != uninstallLines("failed", "failed", "failed") || strings.Contains(stdout, "rollback") {
+			if code != exitTransaction || stderr != "error="+tc.reason+"\n" || stdout != uninstallLines("failed", "failed", "failed", "failed") || strings.Contains(stdout, "rollback") {
 				t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 			}
 			if strings.Contains(stderr, "private transaction failure") {
@@ -217,7 +217,7 @@ func writeInstalled(t *testing.T, root skillroot.UninstallRoot, content string) 
 
 func uninstallLines(statuses ...string) string {
 	var output strings.Builder
-	for i, runtime := range []string{"pi", "opencode", "claude-code"} {
+	for i, runtime := range []string{"pi", "opencode", "claude-code", "hermes"} {
 		remove, conflict := 2, 0
 		if statuses[i] == "not_installed" {
 			remove = 0

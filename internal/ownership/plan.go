@@ -162,7 +162,7 @@ func validBundle(bundle artifact.Bundle) ([]artifact.BundledArtifact, bool) {
 }
 
 func supportedRuntime(id runtimematrix.RuntimeID) bool {
-	return id == runtimematrix.RuntimePi || id == runtimematrix.RuntimeOpenCode || id == runtimematrix.RuntimeClaudeCode
+	return id == runtimematrix.RuntimePi || id == runtimematrix.RuntimeOpenCode || id == runtimematrix.RuntimeClaudeCode || id == runtimematrix.RuntimeHermes
 }
 
 func validOwnership(value Ownership) bool {

@@ -27,7 +27,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillroot"
 )
 
-var updateRuntimeIDs = []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+var updateRuntimeIDs = []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 
 // updateFixture is a disposable CLI fixture: the production catalog, a patched
 // copy for change scenarios, three empty runtime roots, and unrelated user
@@ -308,6 +308,7 @@ func TestUpdateRefusalsLeaveFixturesUnchanged(t *testing.T) {
 				{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 			}, nil
 		},
 		resolveInputs: fixture.dependencies(runtimematrix.RuntimePi).resolveInputs,
@@ -328,6 +329,7 @@ func TestUpdateRefusalsLeaveFixturesUnchanged(t *testing.T) {
 				{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.Incompatible},
 				{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 			}, nil
 		},
 		resolveInputs: unknown.resolveInputs,
@@ -476,5 +478,18 @@ func TestUpdatePlanReportsModeDrift(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "status=planned") || strings.Contains(stdout, "status=conflict") {
 		t.Fatalf("stdout %q does not have status=planned or contains status=conflict", stdout)
+	}
+}
+
+func TestUpdateHermesProfileFlagResolvesNamedProfileRoot(t *testing.T) {
+	fixture := newUpdateFixture(t)
+	fixture.catalog, fixture.patched = must(filepath.Abs(fixture.catalog)), must(filepath.Abs(fixture.patched))
+	deps := fixture.dependencies(runtimematrix.RuntimeHermes)
+	// A named Hermes profile is a fresh root: without a prior install state the
+	// update must refuse, proving the flag changed the resolved root away from
+	// the default ~/.hermes skills root.
+	code, stdout, stderr := runUpdateCommand(t, deps, "update", "--runtime", "hermes", "--catalog", fixture.catalog, "--hermes-profile", "fleet")
+	if code != exitUnknown || !strings.Contains(stdout, "runtime_root_absent") || stderr != "" {
+		t.Fatalf("update with named profile = (%d, %q, %q)", code, stdout, stderr)
 	}
 }

@@ -66,7 +66,7 @@ anything.
 
 ## 5. Runtime projection
 
-Pi, OpenCode, and Claude Code receive the equivalent effective constitution from the
+Pi, OpenCode, Claude Code, and Hermes Agent receive the equivalent effective constitution from the
 single canonical document; where a runtime cannot represent it exactly, the projection
 is disclosed as a translation, following the existing disclosure contract. Externally
 edited projections are observed as user-owned drift (Preserve/Conflict, never silently
@@ -89,5 +89,5 @@ overwritten), reusing the marker-bound exact-readback contract.
 
 Tests must cover: present, absent, malformed, unsupported-version, mandatory-vs-
 recommendation precedence, conflict surfacing, amendment authorization, projection
-parity across the three runtimes, external-edit preservation, uninstall behavior, and
+parity across the supported runtimes, external-edit preservation, uninstall behavior, and
 `tests/test_community_policy.py` inventory updates for any new published file.

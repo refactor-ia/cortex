@@ -30,9 +30,9 @@ func actorAwarePiCandidate(t *testing.T) installplan.Plan {
 	t.Helper()
 	snapshot := value(catalog.BuildCatalogSnapshot(filepath.Join("..", "..", "catalog"), "catalog.json", catalog.AdmissionPolicy{}))
 	sources := value(skillrender.Render(snapshot))
-	assessments := make([]projection.Assessment, 0, 3)
-	observations := make([]runtimematrix.Observation, 0, 3)
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	observations := make([]runtimematrix.Observation, 0, 4)
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		projected := value(skillprojection.Build(id, sources))
 		assessments = append(assessments, projected.Assessment())
 		observations = append(observations, runtimematrix.Observation{ID: id, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible})
@@ -52,6 +52,7 @@ func actorAwareObservations() []runtimematrix.Observation {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 }
 
@@ -103,6 +104,7 @@ func TestPreflightLocalUpdateNarrowsToTheSelectedRuntime(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	if report, err := installcoord.Preflight(observations, []installcoord.Unit{{Plan: plan, Observation: observation}}); !errors.Is(err, installcoord.ErrInvalid) || report.Ready() {
 		t.Fatalf("default Preflight() = (%#v, %v), want an admitted runtime without a unit refused", report, err)
@@ -123,7 +125,7 @@ func TestPreflightAllCleanIsCanonicalAndReadOnly(t *testing.T) {
 		t.Fatalf("Preflight() = (%#v, %v), roots changed = %t", report, err, !reflect.DeepEqual(tree(t, plans), before))
 	}
 	statuses := report.Statuses()
-	if len(statuses) != 3 || statuses[0].RuntimeID != runtimematrix.RuntimePi || statuses[1].RuntimeID != runtimematrix.RuntimeOpenCode || statuses[2].RuntimeID != runtimematrix.RuntimeClaudeCode {
+	if len(statuses) != 4 || statuses[0].RuntimeID != runtimematrix.RuntimePi || statuses[1].RuntimeID != runtimematrix.RuntimeOpenCode || statuses[2].RuntimeID != runtimematrix.RuntimeClaudeCode || statuses[3].RuntimeID != runtimematrix.RuntimeHermes {
 		t.Fatalf("Statuses() = %#v", statuses)
 	}
 	for _, status := range statuses {
@@ -141,26 +143,28 @@ func TestPreflightReportsSkipsAndZeroCompatibleDenial(t *testing.T) {
 	plans := candidates(t, "one")
 	mixed := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "1", Compatibility: runtimematrix.Incompatible},
 	}
-	report, err := installcoord.Preflight(mixed, observationsFor(t, plans)[:1])
+	report, err := installcoord.Preflight(mixed, []installcoord.Unit{observationsFor(t, plans)[0], observationsFor(t, plans)[3]})
 	if err != nil || !report.Ready() {
 		t.Fatalf("Preflight() = (%#v, %v)", report, err)
 	}
 	got := report.Statuses()
-	for i, want := range []runtimematrix.Outcome{runtimematrix.OutcomePresentCompatible, runtimematrix.OutcomeKnownIncompatible, runtimematrix.OutcomeUnknownVersion} {
-		if got[i].Outcome != want || (i > 0 && len(got[i].Actions()) != 0) {
+	for i, want := range []runtimematrix.Outcome{runtimematrix.OutcomePresentCompatible, runtimematrix.OutcomeKnownIncompatible, runtimematrix.OutcomeUnknownVersion, runtimematrix.OutcomePresentUncertified} {
+		if got[i].Outcome != want || (i > 0 && i < 3 && len(got[i].Actions()) != 0) {
 			t.Fatalf("mixed status = %#v", got[i])
 		}
 	}
 	zero := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "1", Compatibility: runtimematrix.Incompatible},
 	}
 	report, err = installcoord.Preflight(zero, nil)
-	if err != nil || report.Ready() || len(report.Statuses()) != 3 {
+	if err != nil || report.Ready() || len(report.Statuses()) != 4 {
 		t.Fatalf("zero-compatible Preflight() = (%#v, %v)", report, err)
 	}
 }
@@ -205,6 +209,7 @@ func TestPreflightRejectsInvalidUnitSets(t *testing.T) {
 func compatible() []runtimematrix.Observation {
 	return []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 	}
@@ -242,7 +247,7 @@ func candidates(t *testing.T, version string) []installplan.Plan {
 	must(t, err)
 	base, err := adapterplan.Build(snapshot.Fingerprint(), compatible())
 	must(t, err)
-	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	ids := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 	projected := make([]skillprojection.Plan, len(ids))
 	assessments := make([]projection.Assessment, len(ids))
 	for i, id := range ids {

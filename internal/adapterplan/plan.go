@@ -42,7 +42,7 @@ func (plan Plan) UncertifiedAdmitted() []runtimematrix.RuntimeID {
 
 // Validate confirms that a plan retains the canonical adapter contract shape.
 func Validate(plan Plan) error {
-	if !validFingerprint(plan.SnapshotFingerprint) || plan.Results == nil || len(plan.Results) != 3 {
+	if !validFingerprint(plan.SnapshotFingerprint) || plan.Results == nil || len(plan.Results) != 4 {
 		return errors.New("adapter plan: invalid plan")
 	}
 
@@ -50,6 +50,7 @@ func Validate(plan Plan) error {
 		runtimematrix.RuntimePi,
 		runtimematrix.RuntimeOpenCode,
 		runtimematrix.RuntimeClaudeCode,
+		runtimematrix.RuntimeHermes,
 	}
 	targets := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
 	admitted := make([]runtimematrix.RuntimeID, 0, len(plan.Results))
@@ -189,7 +190,7 @@ func build(snapshotFingerprint string, matrix runtimematrix.Matrix, localTarget 
 
 func supportedLocalTarget(target runtimematrix.RuntimeID) bool {
 	switch target {
-	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes:
 		return true
 	default:
 		return false

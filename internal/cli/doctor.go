@@ -62,7 +62,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if len(args) == 0 || len(args) == 1 && (args[0] == "help" || args[0] == "--help") {
 		return writeHelp(stdout, stderr, rootHelp)
 	}
-	if len(args) != 1 && args[0] != "qa" && args[0] != "update" {
+	if len(args) != 1 && args[0] != "qa" && args[0] != "update" && args[0] != "install" {
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
@@ -79,9 +79,9 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 		if len(args) > 1 {
 			return runUpdate(ctx, args, stdout, stderr, runner)
 		}
-		return runInstall(ctx, stdout, stderr, runner, args[0], install)
+		return runInstall(ctx, stdout, stderr, runner, args[:1], install)
 	case "install":
-		return runInstall(ctx, stdout, stderr, runner, args[0], install)
+		return runInstall(ctx, stdout, stderr, runner, args, install)
 	case "uninstall":
 		return runUninstall(stdout, stderr, uninstall)
 	default:
@@ -405,7 +405,7 @@ func defaultUninstallDependencies() uninstallDependencies {
 
 func runUninstall(stdout, stderr io.Writer, deps uninstallDependencies) int {
 	roots, err := deps.resolveRoots()
-	if err != nil || len(roots) != 3 || roots[0].RuntimeID() != runtimematrix.RuntimePi ||
+	if err != nil || len(roots) != 4 || roots[0].RuntimeID() != runtimematrix.RuntimePi ||
 		roots[1].RuntimeID() != runtimematrix.RuntimeOpenCode || roots[2].RuntimeID() != runtimematrix.RuntimeClaudeCode {
 		writeError(stderr, "uninstall_root_resolution_failed")
 		return exitFailure

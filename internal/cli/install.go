@@ -54,7 +54,45 @@ func runWithInstallDependencies(ctx context.Context, args []string, stdout, stde
 	return runWithDependencies(ctx, args, stdout, stderr, runner, deps, defaultUninstallDependencies())
 }
 
-func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, operation string, deps installDependencies) int {
+// parseInstallArgs accepts at most one optional --hermes-profile <name> after
+// the install command; install takes no other flags.
+func parseInstallArgs(args []string) (string, bool) {
+	profile := ""
+	for index := 1; index < len(args); index++ {
+		if args[index] != "--hermes-profile" || profile != "" || index+1 >= len(args) {
+			return "", false
+		}
+		profile = args[index+1]
+		index++
+	}
+	return profile, true
+}
+
+// hermesProfileResolver resolves roots with one explicit Hermes profile name.
+// The profile only changes the Hermes root; every other runtime ignores it.
+func hermesProfileResolver(profile string, home func() (string, error)) func(skilldest.Plan) (skillroot.Plan, error) {
+	return func(symbolic skilldest.Plan) (skillroot.Plan, error) {
+		homeDir, err := home()
+		if err != nil {
+			return skillroot.Plan{}, err
+		}
+		return skillroot.Resolve(symbolic, skillroot.Inputs{Home: homeDir, PiCodingAgentDir: os.Getenv("PI_CODING_AGENT_DIR"), ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), HermesProfile: profile})
+	}
+}
+
+func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, args []string, deps installDependencies) int {
+	operation := "install"
+	if len(args) > 0 {
+		operation = args[0]
+	}
+	profile, ok := parseInstallArgs(args)
+	if !ok {
+		writeError(stderr, "invalid_command")
+		return exitUsage
+	}
+	if profile != "" {
+		deps.resolveRoot = hermesProfileResolver(profile, deps.home)
+	}
 	reports, err := probe(ctx, runner)
 	if err != nil {
 		writeError(stderr, "probe_failed")

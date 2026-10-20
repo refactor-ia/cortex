@@ -50,7 +50,7 @@ type runtimeSpec struct {
 	pi   bool
 }
 
-var runtimeSpecs = [3]runtimeSpec{{runtimematrix.RuntimePi, "pi", true}, {runtimematrix.RuntimeOpenCode, "opencode", false}, {runtimematrix.RuntimeClaudeCode, "claude", false}}
+var runtimeSpecs = [4]runtimeSpec{{runtimematrix.RuntimePi, "pi", true}, {runtimematrix.RuntimeOpenCode, "opencode", false}, {runtimematrix.RuntimeClaudeCode, "claude", false}, {runtimematrix.RuntimeHermes, "hermes", false}}
 
 func ProbeSystem(ctx context.Context) ([]Report, error) { return ProbeAll(ctx, systemRunner{}) }
 func ProbeAll(ctx context.Context, runner Runner) ([]Report, error) {

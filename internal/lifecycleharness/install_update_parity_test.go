@@ -245,6 +245,7 @@ func syntheticCompatibleObservations() []runtimematrix.Observation {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "synthetic", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "synthetic", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "synthetic", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 }
 

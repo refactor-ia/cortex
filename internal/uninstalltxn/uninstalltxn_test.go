@@ -308,7 +308,7 @@ func actorAwareCandidate(t *testing.T, home, installationID string) installplan.
 	projected, err := skillprojection.Build(runtimematrix.RuntimePi, sources)
 	must(t, err)
 	assessments, observations := []projection.Assessment{}, []runtimematrix.Observation{}
-	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for _, runtimeID := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		assessment, err := skillprojection.Build(runtimeID, sources)
 		must(t, err)
 		assessments = append(assessments, assessment.Assessment())

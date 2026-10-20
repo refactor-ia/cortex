@@ -38,7 +38,7 @@ func (f *fakeRunner) Run(ctx context.Context, path string, args, env []string) (
 	return v.execution, v.err
 }
 func ready() *fakeRunner {
-	return &fakeRunner{lookup: map[string]lookupResult{"pi": {"/bin/pi", nil}, "opencode": {"/bin/opencode", nil}, "claude": {"/bin/claude", nil}}, runs: map[string]fakeRun{"/bin/pi": {execution: Execution{Stdout: []byte("0.84.3\n")}}, "/bin/opencode": {execution: Execution{Stdout: []byte("1.18.21\r\n")}}, "/bin/claude": {execution: Execution{Stdout: []byte("2.1.243 (Claude Code)")}}}}
+	return &fakeRunner{lookup: map[string]lookupResult{"pi": {"/bin/pi", nil}, "opencode": {"/bin/opencode", nil}, "claude": {"/bin/claude", nil}, "hermes": {"/bin/hermes", nil}}, runs: map[string]fakeRun{"/bin/pi": {execution: Execution{Stdout: []byte("0.84.3\n")}}, "/bin/opencode": {execution: Execution{Stdout: []byte("1.18.21\r\n")}}, "/bin/claude": {execution: Execution{Stdout: []byte("2.1.243 (Claude Code)")}}, "/bin/hermes": {execution: Execution{Stdout: []byte("0.4.2\n")}}}}
 }
 func TestProbeAllObservedShapesRemainUnknown(t *testing.T) {
 	f := ready()
@@ -46,7 +46,7 @@ func TestProbeAllObservedShapesRemainUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeAll() error = %v", err)
 	}
-	wantVersions := []string{"0.84.3", "1.18.21", "2.1.243"}
+	wantVersions := []string{"0.84.3", "1.18.21", "2.1.243", "0.4.2"}
 	for i, report := range reports {
 		if report.Status() != VersionDetected || report.DetectedVersion() != wantVersions[i] {
 			t.Fatalf("report %d = %s/%q", i, report.Status(), report.DetectedVersion())
@@ -55,7 +55,7 @@ func TestProbeAllObservedShapesRemainUnknown(t *testing.T) {
 			t.Fatalf("call %d is not a bounded canonical version probe", i)
 		}
 	}
-	if len(f.calls) != 3 || f.calls[0].path != "/bin/pi" || f.calls[1].path != "/bin/opencode" || f.calls[2].path != "/bin/claude" {
+	if len(f.calls) != 4 || f.calls[0].path != "/bin/pi" || f.calls[1].path != "/bin/opencode" || f.calls[2].path != "/bin/claude" || f.calls[3].path != "/bin/hermes" {
 		t.Fatalf("calls = %#v", f.calls)
 	}
 	for _, key := range []string{"PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0"} {
@@ -144,7 +144,7 @@ func TestStrictVersionParsing(t *testing.T) {
 	}
 }
 func TestObservationsAreStrictDetachedAndCanonical(t *testing.T) {
-	reports := []Report{{id: runtimematrix.RuntimePi, status: Absent}, {id: runtimematrix.RuntimeOpenCode, status: UnrecognizedOutput}, {id: runtimematrix.RuntimeClaudeCode, status: TimedOut}}
+	reports := []Report{{id: runtimematrix.RuntimePi, status: Absent}, {id: runtimematrix.RuntimeOpenCode, status: UnrecognizedOutput}, {id: runtimematrix.RuntimeClaudeCode, status: TimedOut}, {id: runtimematrix.RuntimeHermes, status: CommandFailed}}
 	first, err := Observations(reports)
 	if err != nil {
 		t.Fatal(err)

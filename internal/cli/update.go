@@ -41,11 +41,18 @@ func defaultUpdateDependencies() updateDependencies {
 
 // systemRootInputs reads only the system home and documented runtime overrides.
 func systemRootInputs() (skillroot.Inputs, error) {
+	return systemRootInputsForProfile("")
+}
+
+// systemRootInputsForProfile reads the system home, the documented runtime
+// overrides, and one explicit Hermes profile name. An empty profile names the
+// default profile, so the resolved Hermes root stays ~/.hermes.
+func systemRootInputsForProfile(profile string) (skillroot.Inputs, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return skillroot.Inputs{}, err
 	}
-	return skillroot.Inputs{Home: home, PiCodingAgentDir: os.Getenv("PI_CODING_AGENT_DIR"), ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR")}, nil
+	return skillroot.Inputs{Home: home, PiCodingAgentDir: os.Getenv("PI_CODING_AGENT_DIR"), ClaudeConfigDir: os.Getenv("CLAUDE_CONFIG_DIR"), HermesProfile: profile}, nil
 }
 
 // runUpdate executes one explicit single-runtime update command: the default
@@ -55,7 +62,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer, run
 	return runWithUpdateDependencies(ctx, args, stdout, stderr, runner, defaultUpdateDependencies())
 }
 
-const updateHelp = "usage: cortex update --runtime <pi|opencode|claude-code> --catalog <dir> [--apply] [--adopt-guidance]\n\n" +
+const updateHelp = "usage: cortex update --runtime <pi|opencode|claude-code|hermes> --catalog <dir> [--apply] [--adopt-guidance] [--hermes-profile <name>]\n\n" +
 	"Default mode is a read-only plan; --apply is required to write.\n" +
 	"--adopt-guidance is Pi-only explicit adoption of verified legacy external guidance.\n" +
 	"Registered guidance updates need no repeated adoption; drift is always refused.\n" +
@@ -70,10 +77,13 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
-	runtimeID, catalogDir, apply, adoptGuidance, ok := parseUpdateArgs(args[1:])
+	runtimeID, catalogDir, apply, adoptGuidance, hermesProfile, ok := parseUpdateArgs(args[1:])
 	if !ok {
 		writeError(stderr, "invalid_command")
 		return exitUsage
+	}
+	if hermesProfile != "" {
+		deps.resolveInputs = func() (skillroot.Inputs, error) { return systemRootInputsForProfile(hermesProfile) }
 	}
 	reports, err := probe(ctx, runner)
 	if err != nil {
@@ -129,9 +139,10 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 }
 
 // parseUpdateArgs accepts exactly one --runtime and one --catalog plus an
-// optional --apply and Pi-only --adopt-guidance; there is no default runtime.
-func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool, bool) {
-	var runtimeID, catalogDir string
+// optional --apply, Pi-only --adopt-guidance, and Hermes-only --hermes-profile;
+// there is no default runtime.
+func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool, string, bool) {
+	var runtimeID, catalogDir, hermesProfile string
 	apply, adoptGuidance := false, false
 	for len(args) > 0 {
 		flag := args[0]
@@ -139,37 +150,42 @@ func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool
 		switch flag {
 		case "--runtime":
 			if runtimeID != "" || len(args) == 0 {
-				return "", "", false, false, false
+				return "", "", false, false, "", false
 			}
 			runtimeID, args = args[0], args[1:]
 		case "--catalog":
 			if catalogDir != "" || len(args) == 0 {
-				return "", "", false, false, false
+				return "", "", false, false, "", false
 			}
 			catalogDir, args = args[0], args[1:]
+		case "--hermes-profile":
+			if hermesProfile != "" || len(args) == 0 {
+				return "", "", false, false, "", false
+			}
+			hermesProfile, args = args[0], args[1:]
 		case "--apply":
 			if apply {
-				return "", "", false, false, false
+				return "", "", false, false, "", false
 			}
 			apply = true
 		case "--adopt-guidance":
 			if adoptGuidance {
-				return "", "", false, false, false
+				return "", "", false, false, "", false
 			}
 			adoptGuidance = true
 		default:
-			return "", "", false, false, false
+			return "", "", false, false, "", false
 		}
 	}
 	switch runtimematrix.RuntimeID(runtimeID) {
-	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes:
 	default:
-		return "", "", false, false, false
+		return "", "", false, false, "", false
 	}
 	if catalogDir == "" || (adoptGuidance && runtimematrix.RuntimeID(runtimeID) != runtimematrix.RuntimePi) {
-		return "", "", false, false, false
+		return "", "", false, false, "", false
 	}
-	return runtimematrix.RuntimeID(runtimeID), catalogDir, apply, adoptGuidance, true
+	return runtimematrix.RuntimeID(runtimeID), catalogDir, apply, adoptGuidance, hermesProfile, true
 }
 
 // buildUpdateCandidate builds the validated bundle-bound candidate for the

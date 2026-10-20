@@ -23,6 +23,7 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
 		{ID: runtimematrix.RuntimeOpenCode, CertifiedCompatible: []string{"2.3.4"}},
 		{ID: runtimematrix.RuntimeClaudeCode, CertifiedCompatible: []string{"3.4.5"}},
+		{ID: runtimematrix.RuntimeHermes},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +34,9 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roots) != 3 || roots[0].RuntimeID() != runtimematrix.RuntimePi ||
-		roots[1].RuntimeID() != runtimematrix.RuntimeOpenCode || roots[2].RuntimeID() != runtimematrix.RuntimeClaudeCode {
+	if len(roots) != 4 || roots[0].RuntimeID() != runtimematrix.RuntimePi ||
+		roots[1].RuntimeID() != runtimematrix.RuntimeOpenCode || roots[2].RuntimeID() != runtimematrix.RuntimeClaudeCode ||
+		roots[3].RuntimeID() != runtimematrix.RuntimeHermes {
 		t.Fatalf("uninstall roots = %#v", roots)
 	}
 	uninstall := defaultUninstallDependencies()
@@ -189,28 +191,32 @@ func TestCLILifecycleOfflineThreeRuntime(t *testing.T) {
 	readyQABackends(t)
 	const compatibleReport = "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=denied qa_backend=opencode qa_identity=version_only qa_probe_role=requirements-analyst qa_availability=ready\n" +
-		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" + doctorScopeNote
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=denied qa_backend=claude qa_identity=named qa_probe_role=requirements-analyst qa_availability=ready\n" +
+		"runtime=hermes presence=present compatibility=uncertified action=configure touch=denied\n" + doctorScopeNote
 	expect("doctor", exitOK, compatibleReport)
 	assertSentinels()
 	assertOwnedAbsent()
 
-	expect("install", exitOK, "operation=install status=completed touch=applied create=39 replace=0 remove=0 unchanged=0 preserve=0\n"+
+	expect("install", exitOK, "operation=install status=completed touch=applied create=50 replace=0 remove=0 unchanged=0 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
-		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n"+
+		"runtime=hermes presence=present compatibility=uncertified action=configure touch=applied\n")
 	assertSentinels()
 	assertInstalled()
 
-	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=39 preserve=0\n"+
+	expect("update", exitOK, "operation=update status=completed touch=applied create=0 replace=0 remove=0 unchanged=50 preserve=0 warning=uncertified_admission runtimes=1 certification=not_certified\n"+
 		"runtime=pi presence=present compatibility=compatible action=configure touch=applied\n"+
 		"runtime=opencode presence=present compatibility=compatible action=configure touch=applied\n"+
-		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n")
+		"runtime=claude-code presence=present compatibility=compatible action=configure touch=applied\n"+
+		"runtime=hermes presence=present compatibility=uncertified action=configure touch=applied\n")
 	assertSentinels()
 	assertUnchangedArtifacts()
 
 	expect("uninstall", exitOK, "runtime=pi uninstall=completed remove=17 absent=0 conflict=0\n"+
 		"runtime=opencode uninstall=completed remove=11 absent=0 conflict=0\n"+
-		"runtime=claude-code uninstall=completed remove=11 absent=0 conflict=0\n")
+		"runtime=claude-code uninstall=completed remove=11 absent=0 conflict=0\n"+
+		"runtime=hermes uninstall=completed remove=11 absent=0 conflict=0\n")
 	assertSentinels()
 	assertOwnedAbsent()
 

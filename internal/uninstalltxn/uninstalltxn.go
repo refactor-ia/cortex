@@ -208,7 +208,7 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 }
 
 func validateGroupRequests(requests []GroupRequest) error {
-	if len(requests) < 1 || len(requests) > 3 {
+	if len(requests) < 1 || len(requests) > 4 {
 		return ErrInvalid
 	}
 	last := -1
@@ -231,7 +231,7 @@ func validateGroupRequests(requests []GroupRequest) error {
 }
 
 func runtimeRank(id runtimematrix.RuntimeID) int {
-	for index, canonical := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for index, canonical := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		if id == canonical {
 			return index
 		}

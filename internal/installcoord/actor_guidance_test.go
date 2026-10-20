@@ -134,7 +134,7 @@ func TestPreflightActorGuidance(t *testing.T) {
 			if candidate.InstalledState().SchemaVersion() != 3 || !proof.Matches(candidate, o) || proof.Matches(canonical, o) {
 				t.Fatal("lost exact composed candidate/proof binding")
 			}
-			if len(statuses) != 3 || statuses[0].Outcome != wantOutcome || !statuses[0].Ready() || statuses[1].Ready() || statuses[2].Ready() || len(statuses[1].Actions()) != 0 || len(statuses[2].Actions()) != 0 {
+			if len(statuses) != 4 || statuses[0].Outcome != wantOutcome || !statuses[0].Ready() || statuses[1].Ready() || statuses[2].Ready() || statuses[3].Ready() || len(statuses[1].Actions()) != 0 || len(statuses[2].Actions()) != 0 || len(statuses[3].Actions()) != 0 {
 				t.Fatalf("local report: %#v", statuses)
 			}
 			wantState, wantActor := ownership.Replace, ownership.Unchanged

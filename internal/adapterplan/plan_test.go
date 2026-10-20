@@ -13,6 +13,7 @@ const fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 func TestBuildMixedOutcomes(t *testing.T) {
 	plan, err := Build(fingerprint, []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 	})
@@ -25,10 +26,11 @@ func TestBuildMixedOutcomes(t *testing.T) {
 			{ID: runtimematrix.RuntimePi, Outcome: runtimematrix.OutcomeAbsent, Action: runtimematrix.Warn},
 			{ID: runtimematrix.RuntimeOpenCode, Outcome: runtimematrix.OutcomeKnownIncompatible, Action: runtimematrix.Skip},
 			{ID: runtimematrix.RuntimeClaudeCode, Outcome: runtimematrix.OutcomePresentCompatible, Action: runtimematrix.Configure, IncludeInTransaction: true, TouchAllowed: true},
+			{ID: runtimematrix.RuntimeHermes, Outcome: runtimematrix.OutcomePresentUncertified, Action: runtimematrix.Configure, IncludeInTransaction: true, TouchAllowed: true},
 		},
-		TransactionTargets:  []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode},
+		TransactionTargets:  []runtimematrix.RuntimeID{runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes},
 		AllOrNothing:        true,
-		uncertifiedAdmitted: []runtimematrix.RuntimeID{},
+		uncertifiedAdmitted: []runtimematrix.RuntimeID{runtimematrix.RuntimeHermes},
 	}
 	if !reflect.DeepEqual(plan, want) {
 		t.Errorf("Build() = %#v, want %#v", plan, want)
@@ -44,6 +46,7 @@ func TestBuildAllCompatibleUsesOneOrderedTransaction(t *testing.T) {
 		runtimematrix.RuntimePi,
 		runtimematrix.RuntimeOpenCode,
 		runtimematrix.RuntimeClaudeCode,
+		runtimematrix.RuntimeHermes,
 	}
 	if !reflect.DeepEqual(plan.TransactionTargets, want) {
 		t.Errorf("TransactionTargets = %#v, want %#v", plan.TransactionTargets, want)
@@ -58,6 +61,7 @@ func TestBuildNoCompatibleIsReportOnly(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
@@ -88,6 +92,7 @@ func TestBuildLocalUpdateCarriesOnlyTheSelectedTarget(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	// The default plan admits both present runtimes; the local update must
 	// still narrow the transaction to the single selected target.
@@ -126,6 +131,7 @@ func TestUncertifiedAdmittedIsDetached(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}, runtimematrix.RuntimePi)
 	if err != nil {
 		t.Fatal(err)
@@ -141,11 +147,12 @@ func TestBuildAdmitsEveryPresentUncertifiedRuntimeByDefault(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	all := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 	if !reflect.DeepEqual(plan.UncertifiedAdmitted(), all) || !reflect.DeepEqual(plan.TransactionTargets, all) {
 		t.Fatalf("admission plan = %#v", plan)
 	}
@@ -162,6 +169,7 @@ func TestBuildLeavesIneligibleRuntimesUnadmitted(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +195,7 @@ func TestValidateRejectsTamperedAdmissionSetInBothDirections(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +280,7 @@ func TestBuildRejectsInvalidObservations(t *testing.T) {
 				{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 		{
@@ -279,6 +289,7 @@ func TestBuildRejectsInvalidObservations(t *testing.T) {
 				{ID: runtimematrix.RuntimePi, Present: false, Version: "/private/path", Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 	}
@@ -301,6 +312,7 @@ func TestBuildRejectsInvalidObservations(t *testing.T) {
 func TestBuildIsDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	observations := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Compatible},
 	}
@@ -309,7 +321,7 @@ func TestBuildIsDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() first error = %v", err)
 	}
-	second, err := Build(fingerprint, []runtimematrix.Observation{observations[1], observations[2], observations[0]})
+	second, err := Build(fingerprint, []runtimematrix.Observation{observations[1], observations[2], observations[0], observations[3]})
 	if err != nil {
 		t.Fatalf("Build() second error = %v", err)
 	}
@@ -346,12 +358,14 @@ func TestValidateAcceptsBuildOutputsWithoutMutation(t *testing.T) {
 			{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 			{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 			{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: runtimematrix.Compatible},
+			{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 		}},
 		{name: "all", observations: compatibleObservations()},
 		{name: "none", observations: []runtimematrix.Observation{
 			{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 			{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 			{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+			{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 		}},
 	}
 	for _, tt := range tests {
@@ -377,6 +391,7 @@ func TestValidateRejectsTamperedPlansWithoutLeaksOrMutation(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Incompatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	tests := []struct {
 		name string
@@ -464,5 +479,6 @@ func compatibleObservations() []runtimematrix.Observation {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1.0.0", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 }

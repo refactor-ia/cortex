@@ -10,9 +10,10 @@ const (
 	RuntimePi         RuntimeID = "pi"
 	RuntimeOpenCode   RuntimeID = "opencode"
 	RuntimeClaudeCode RuntimeID = "claude-code"
+	RuntimeHermes     RuntimeID = "hermes"
 )
 
-var runtimeOrder = []RuntimeID{RuntimePi, RuntimeOpenCode, RuntimeClaudeCode}
+var runtimeOrder = []RuntimeID{RuntimePi, RuntimeOpenCode, RuntimeClaudeCode, RuntimeHermes}
 
 // Compatibility records an adapter's known compatibility with an observed version.
 type Compatibility string

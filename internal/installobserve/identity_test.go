@@ -269,6 +269,7 @@ func TestObserveInstallationIDV3FeedsActualCandidateBuilder(t *testing.T) {
 			{ID: runtimematrix.RuntimePi, Present: true, Version: "fixture", Compatibility: runtimematrix.Compatible},
 			{ID: runtimematrix.RuntimeOpenCode, Compatibility: runtimematrix.CompatibilityUnknown},
 			{ID: runtimematrix.RuntimeClaudeCode, Compatibility: runtimematrix.CompatibilityUnknown},
+			{ID: runtimematrix.RuntimeHermes, Compatibility: runtimematrix.CompatibilityUnknown},
 		},
 		ResolveRoot: func(plan skilldest.Plan) (skillroot.Plan, error) {
 			return skillroot.Resolve(plan, skillroot.Inputs{Home: physicalTempDir(t), PiCodingAgentDir: composed.RootPath()})

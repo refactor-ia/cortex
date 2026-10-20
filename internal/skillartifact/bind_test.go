@@ -84,7 +84,7 @@ func TestBuildUncertifiedOutcomeRequiresProvenance(t *testing.T) {
 	piUnknown := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
-		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	base, err := adapterplan.BuildLocalUpdate(fingerprint, piUnknown, runtimematrix.RuntimePi)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestBuildUncertifiedOutcomeRequiresProvenance(t *testing.T) {
 	unidentifiedBase, err := adapterplan.Build(fingerprint, []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
-		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestBuildUncertifiedOutcomeRequiresProvenance(t *testing.T) {
 	openUnknown := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
-		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	otherBase, err := adapterplan.BuildLocalUpdate(fingerprint, openUnknown, runtimematrix.RuntimeOpenCode)
 	if err != nil {
@@ -207,8 +207,8 @@ func skillPipeline(t *testing.T, dormant, empty bool, runtime runtimematrix.Runt
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessments := make([]projection.Assessment, 0, 3)
-	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	assessments := make([]projection.Assessment, 0, 4)
+	for _, id := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		plan, err := skillprojection.Build(id, sources)
 		if err != nil {
 			t.Fatal(err)
@@ -226,7 +226,7 @@ func skillPipeline(t *testing.T, dormant, empty bool, runtime runtimematrix.Runt
 	return projected, final
 }
 func compatibleObservations() []runtimematrix.Observation {
-	return []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test-pi", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test-opencode", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test-claude", Compatibility: runtimematrix.Compatible}}
+	return []runtimematrix.Observation{{ID: runtimematrix.RuntimePi, Present: true, Version: "test-pi", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "test-opencode", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "test-claude", Compatibility: runtimematrix.Compatible}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown}}
 }
 func writeJSON(t *testing.T, root, path string, value any) {
 	t.Helper()
@@ -253,14 +253,14 @@ func TestBuildAdmitsEveryUncertifiedRuntimeByDefault(t *testing.T) {
 	allUncertified := []runtimematrix.Observation{
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "0.1.0", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: runtimematrix.CompatibilityUnknown},
-		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: runtimematrix.CompatibilityUnknown}, {ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	base, err := adapterplan.Build(fingerprint, allUncertified)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assessments := []projection.Assessment{projected.Assessment()}
-	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for _, runtime := range []runtimematrix.RuntimeID{runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		assessment, err := projection.NewAssessment(runtime, fingerprint, projection.Exact, "")
 		if err != nil {
 			t.Fatal(err)
@@ -274,8 +274,8 @@ func TestBuildAdmitsEveryUncertifiedRuntimeByDefault(t *testing.T) {
 	if target, local := final.LocalUpdateTarget(); local || target != "" {
 		t.Fatalf("admission plan carried local provenance (%q, %t)", target, local)
 	}
-	if got := final.UncertifiedAdmitted(); len(got) != 3 {
-		t.Fatalf("admitted = %#v, want all three runtimes", got)
+	if got := final.UncertifiedAdmitted(); len(got) != 4 {
+		t.Fatalf("admitted = %#v, want all four runtimes", got)
 	}
 	if binding, err := Build(projected, final); err != nil || !binding.HasArtifacts() {
 		t.Fatalf("admitted binding = (%#v, %v)", binding, err)

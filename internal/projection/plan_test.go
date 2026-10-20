@@ -15,11 +15,12 @@ func TestBuildPlanRefinesExactAndTranslatedTargetsInCanonicalOrder(t *testing.T)
 		projectionAssessment(t, runtimematrix.RuntimeClaudeCode, Exact, ""),
 		projectionAssessment(t, runtimematrix.RuntimeOpenCode, Translated, "equivalent OpenCode routing"),
 		projectionAssessment(t, runtimematrix.RuntimePi, Exact, ""),
+		projectionAssessment(t, runtimematrix.RuntimeHermes, Exact, ""),
 	})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
-	if got, want := plan.TransactionTargets(), []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}; !reflect.DeepEqual(got, want) {
+	if got, want := plan.TransactionTargets(), []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}; !reflect.DeepEqual(got, want) {
 		t.Errorf("TransactionTargets() = %#v, want %#v", got, want)
 	}
 	results := plan.Results()
@@ -37,6 +38,7 @@ func TestBuildPlanUnrepresentableSkipsWithoutChangingAdapterOutcome(t *testing.T
 		projectionAssessment(t, runtimematrix.RuntimePi, Exact, ""),
 		projectionAssessment(t, runtimematrix.RuntimeOpenCode, Unrepresentable, ""),
 		projectionAssessment(t, runtimematrix.RuntimeClaudeCode, Exact, ""),
+		projectionAssessment(t, runtimematrix.RuntimeHermes, Exact, ""),
 	})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
@@ -45,7 +47,7 @@ func TestBuildPlanUnrepresentableSkipsWithoutChangingAdapterOutcome(t *testing.T
 	if result.Outcome != runtimematrix.OutcomePresentCompatible || result.ProjectionResult != Unrepresentable || result.Action != runtimematrix.Skip || result.IncludeInTransaction || result.TouchAllowed {
 		t.Errorf("unrepresentable result = %#v", result)
 	}
-	if got, want := plan.TransactionTargets(), []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeClaudeCode}; !reflect.DeepEqual(got, want) {
+	if got, want := plan.TransactionTargets(), []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}; !reflect.DeepEqual(got, want) {
 		t.Errorf("TransactionTargets() = %#v, want %#v", got, want)
 	}
 }
@@ -60,6 +62,7 @@ func TestBuildPlanReportOnlyCases(t *testing.T) {
 			projectionAssessment(t, runtimematrix.RuntimePi, Unrepresentable, ""),
 			projectionAssessment(t, runtimematrix.RuntimeOpenCode, Unrepresentable, ""),
 			projectionAssessment(t, runtimematrix.RuntimeClaudeCode, Unrepresentable, ""),
+			projectionAssessment(t, runtimematrix.RuntimeHermes, Unrepresentable, ""),
 		}},
 		{"no compatible", projectionBase(t, noCompatibleProjectionObservations()), []Assessment{}},
 	}
@@ -72,7 +75,7 @@ func TestBuildPlanReportOnlyCases(t *testing.T) {
 			if targets := plan.TransactionTargets(); targets == nil || len(targets) != 0 || plan.AllOrNothing() || !plan.ReportOnly() {
 				t.Errorf("report-only plan targets/flags = %#v/%t/%t", targets, plan.AllOrNothing(), plan.ReportOnly())
 			}
-			if results := plan.Results(); results == nil || len(results) != 3 {
+			if results := plan.Results(); results == nil || len(results) != 4 {
 				t.Errorf("Results() = %#v, want three reports", results)
 			}
 		})
@@ -84,6 +87,7 @@ func TestBuildPlanPropagatesLocalTargetWithoutCertification(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	base, err := adapterplan.BuildLocalUpdate(testFingerprint, observations, runtimematrix.RuntimePi)
 	if err != nil {
@@ -105,13 +109,14 @@ func TestBuildPlanOrderInputsAndOutputsAreImmutable(t *testing.T) {
 		projectionAssessment(t, runtimematrix.RuntimeClaudeCode, Exact, ""),
 		projectionAssessment(t, runtimematrix.RuntimePi, Exact, ""),
 		projectionAssessment(t, runtimematrix.RuntimeOpenCode, Translated, "equivalent"),
+		projectionAssessment(t, runtimematrix.RuntimeHermes, Exact, ""),
 	}
 	originalAssessments := append([]Assessment(nil), assessments...)
 	first, err := BuildPlan(base, assessments)
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
-	second, err := BuildPlan(base, []Assessment{assessments[1], assessments[2], assessments[0]})
+	second, err := BuildPlan(base, []Assessment{assessments[1], assessments[2], assessments[0], assessments[3]})
 	if err != nil || !reflect.DeepEqual(first, second) {
 		t.Errorf("BuildPlan() order-independent output = %#v / %#v, error = %v", first, second, err)
 	}
@@ -130,6 +135,7 @@ func TestBuildPlanRejectsInvalidInputWithoutLeaks(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	pi := projectionAssessment(t, runtimematrix.RuntimePi, Exact, "")
 	wrongFingerprint := Assessment{runtimeID: runtimematrix.RuntimePi, snapshotFingerprint: strings.Repeat("b", 64), result: Exact}
@@ -197,6 +203,7 @@ func compatibleProjectionObservations() []runtimematrix.Observation {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "1", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2", Compatibility: runtimematrix.Compatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3", Compatibility: runtimematrix.Compatible},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 }
 
@@ -205,5 +212,6 @@ func noCompatibleProjectionObservations() []runtimematrix.Observation {
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2", Compatibility: runtimematrix.Incompatible},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 }

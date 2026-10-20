@@ -33,7 +33,7 @@ func (f fakeRunner) Run(_ context.Context, path string, _ []string, _ []string) 
 	return run.execution, run.err
 }
 
-func reports(t *testing.T, pi, openCode, claude fakeRun, absent ...string) []runtimeprobe.Report {
+func reports(t *testing.T, pi, openCode, claude, hermes fakeRun, absent ...string) []runtimeprobe.Report {
 	t.Helper()
 	lookup := map[string]error{}
 	for _, name := range absent {
@@ -45,6 +45,7 @@ func reports(t *testing.T, pi, openCode, claude fakeRun, absent ...string) []run
 			"/pi":       pi,
 			"/opencode": openCode,
 			"/claude":   claude,
+			"/hermes":   hermes,
 		},
 	})
 	if err != nil {
@@ -61,11 +62,16 @@ func claudeDetected(version string) fakeRun {
 	return fakeRun{execution: runtimeprobe.Execution{Stdout: []byte(version + " (Claude Code)")}}
 }
 
+func hermesDetected(version string) fakeRun {
+	return fakeRun{execution: runtimeprobe.Execution{Stdout: []byte(version + "\n")}}
+}
+
 func TestEvaluateUsesExactVersionsInCanonicalOrder(t *testing.T) {
 	policy, err := runtimecompat.NewPolicy([]runtimecompat.Entry{
 		{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
 		{ID: runtimematrix.RuntimeOpenCode, KnownIncompatible: []string{"2.3.4"}},
 		{ID: runtimematrix.RuntimeClaudeCode},
+		{ID: runtimematrix.RuntimeHermes},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,20 +84,22 @@ func TestEvaluateUsesExactVersionsInCanonicalOrder(t *testing.T) {
 	}{
 		{
 			name:    "exact compatible and incompatible entries",
-			reports: reports(t, detected("1.2.3"), detected("2.3.4"), claudeDetected("3.4.5")),
+			reports: reports(t, detected("1.2.3"), detected("2.3.4"), claudeDetected("3.4.5"), hermesDetected("0.4.2")),
 			want: []runtimematrix.Observation{
 				{ID: runtimematrix.RuntimePi, Present: true, Version: "1.2.3", Compatibility: runtimematrix.Compatible},
 				{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.3.4", Compatibility: runtimematrix.Incompatible},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.4.5", Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 		{
 			name:    "near versions do not match",
-			reports: reports(t, detected("1.2.4"), detected("2.3.5"), claudeDetected("3.4.6")),
+			reports: reports(t, detected("1.2.4"), detected("2.3.5"), claudeDetected("3.4.6"), hermesDetected("0.4.3")),
 			want: []runtimematrix.Observation{
 				{ID: runtimematrix.RuntimePi, Present: true, Version: "1.2.4", Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeOpenCode, Present: true, Version: "2.3.5", Compatibility: runtimematrix.CompatibilityUnknown},
 				{ID: runtimematrix.RuntimeClaudeCode, Present: true, Version: "3.4.6", Compatibility: runtimematrix.CompatibilityUnknown},
+				{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.3", Compatibility: runtimematrix.CompatibilityUnknown},
 			},
 		},
 	} {
@@ -113,6 +121,7 @@ func TestNewPolicyRejectsInvalidOrAliasedEntries(t *testing.T) {
 			{ID: runtimematrix.RuntimePi, CertifiedCompatible: []string{"1.2.3"}},
 			{ID: runtimematrix.RuntimeOpenCode, KnownIncompatible: []string{"2.3.4"}},
 			{ID: runtimematrix.RuntimeClaudeCode},
+			{ID: runtimematrix.RuntimeHermes},
 		}
 	}
 	for _, tt := range []struct {
@@ -141,7 +150,7 @@ func TestNewPolicyRejectsInvalidOrAliasedEntries(t *testing.T) {
 	}
 	entries[0].CertifiedCompatible[0] = "9.9.9"
 	entries[1].KnownIncompatible[0] = "9.9.9"
-	got, err := policy.Evaluate(reports(t, detected("1.2.3"), detected("2.3.4"), claudeDetected("3.4.5")))
+	got, err := policy.Evaluate(reports(t, detected("1.2.3"), detected("2.3.4"), claudeDetected("3.4.5"), hermesDetected("0.4.2")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +164,7 @@ func TestEvaluateKeepsAbsentAndProbeFailuresUnknown(t *testing.T) {
 		fakeRun{},
 		fakeRun{execution: runtimeprobe.Execution{ExitCode: 1}},
 		fakeRun{execution: runtimeprobe.Execution{Stdout: []byte("not a version")}},
+		fakeRun{execution: runtimeprobe.Execution{Stdout: []byte("0.4.2\n")}},
 		"pi",
 	))
 	if err != nil {
@@ -164,6 +174,7 @@ func TestEvaluateKeepsAbsentAndProbeFailuresUnknown(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.Compatible},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Evaluate() = %#v, want %#v", got, want)
@@ -172,7 +183,7 @@ func TestEvaluateKeepsAbsentAndProbeFailuresUnknown(t *testing.T) {
 
 func TestBuiltInPolicyDoesNotCertifyObservedCandidates(t *testing.T) {
 	got, err := runtimecompat.BuiltInPolicy().Evaluate(reports(t,
-		detected("0.84.3"), detected("1.18.21"), claudeDetected("2.1.243"),
+		detected("0.84.3"), detected("1.18.21"), claudeDetected("2.1.243"), hermesDetected("0.4.1"),
 	))
 	if err != nil {
 		t.Fatal(err)

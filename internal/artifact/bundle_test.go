@@ -47,16 +47,21 @@ func bundlePlan(t *testing.T, runtime runtimematrix.RuntimeID, result projection
 		{ID: runtimematrix.RuntimePi, Present: runtime == runtimematrix.RuntimePi, Version: versionFor(runtime == runtimematrix.RuntimePi), Compatibility: compatibilityFor(runtime == runtimematrix.RuntimePi)},
 		{ID: runtimematrix.RuntimeOpenCode, Present: runtime == runtimematrix.RuntimeOpenCode, Version: versionFor(runtime == runtimematrix.RuntimeOpenCode), Compatibility: compatibilityFor(runtime == runtimematrix.RuntimeOpenCode)},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: runtime == runtimematrix.RuntimeClaudeCode, Version: versionFor(runtime == runtimematrix.RuntimeClaudeCode), Compatibility: compatibilityFor(runtime == runtimematrix.RuntimeClaudeCode)},
+		{ID: runtimematrix.RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	base, err := adapterplan.Build(fingerprint, observations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assessment, err := projection.NewAssessment(runtime, fingerprint, result, disclosure)
-	if err != nil {
-		t.Fatal(err)
+	assessments := make([]projection.Assessment, 0, len(base.TransactionTargets))
+	for _, id := range base.TransactionTargets {
+		assessment, err := projection.NewAssessment(id, fingerprint, result, disclosure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assessments = append(assessments, assessment)
 	}
-	plan, err := projection.BuildPlan(base, []projection.Assessment{assessment})
+	plan, err := projection.BuildPlan(base, assessments)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +119,7 @@ func TestBindAcceptsOnlyAdmittedUncertifiedTargets(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Version: "9.9.9", Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	}
 	assessment, err := projection.NewAssessment(runtimematrix.RuntimePi, fingerprint, projection.Exact, "")
 	if err != nil {
@@ -136,6 +142,7 @@ func TestBindAcceptsOnlyAdmittedUncertifiedTargets(t *testing.T) {
 		{ID: runtimematrix.RuntimePi, Present: true, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeOpenCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 		{ID: runtimematrix.RuntimeClaudeCode, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
+		{ID: runtimematrix.RuntimeHermes, Present: false, Compatibility: runtimematrix.CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)

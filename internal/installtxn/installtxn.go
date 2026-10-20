@@ -670,7 +670,7 @@ func verifyAcceptedGroup(verified []installplan.Plan) error {
 	return nil
 }
 func validGroupRequests(requests []GroupRequest) bool {
-	if len(requests) < 1 || len(requests) > 3 {
+	if len(requests) < 1 || len(requests) > 4 {
 		return false
 	}
 	roots := make([]string, 0, len(requests))
@@ -702,7 +702,7 @@ func validGroupRequests(requests []GroupRequest) bool {
 }
 
 func runtimeRank(id runtimematrix.RuntimeID) int {
-	for index, canonical := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode} {
+	for index, canonical := range []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes} {
 		if id == canonical {
 			return index
 		}

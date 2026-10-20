@@ -197,3 +197,89 @@ func writeRenderFile(t *testing.T, root, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestRenderedFrontmatterMatchesHermesSkillSchema pins the emitted SKILL.md
+// frontmatter to the schema Hermes Agent documents for skills: the top-level
+// keys are exactly name, description, license and metadata, name is the
+// cortex-prefixed capability id, and metadata carries only the nested
+// cortex-* provenance keys. It parses the emitted bytes structurally rather
+// than re-deriving them from the input manifest, so a drift in key order,
+// key set or value shape fails here instead of at install time.
+func TestRenderedFrontmatterMatchesHermesSkillSchema(t *testing.T) {
+	snapshot := renderSnapshot(t, "body\n")
+	set, err := Render(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills := set.Skills()
+	if len(skills) == 0 {
+		t.Fatal("no rendered skills")
+	}
+	for _, skill := range skills {
+		lines := strings.Split(string(skill.Content()), "\n")
+		if len(lines) < 3 || lines[0] != "---" {
+			t.Fatalf("skill %s does not open with a frontmatter fence", skill.LogicalID())
+		}
+		end := -1
+		for index := 1; index < len(lines); index++ {
+			if lines[index] == "---" {
+				end = index
+				break
+			}
+		}
+		if end < 0 {
+			t.Fatalf("skill %s has no closing frontmatter fence", skill.LogicalID())
+		}
+		top := map[string]string{}
+		metadata := map[string]string{}
+		for _, line := range lines[1:end] {
+			if line == "" {
+				t.Fatalf("skill %s has a blank frontmatter line", skill.LogicalID())
+			}
+			if strings.HasPrefix(line, "  ") {
+				key, value, found := strings.Cut(strings.TrimSpace(line), ": ")
+				if !found || !strings.HasPrefix(key, "cortex-") {
+					t.Fatalf("skill %s metadata line %q is not a cortex-* scalar", skill.LogicalID(), line)
+				}
+				metadata[key] = value
+				continue
+			}
+			if strings.HasSuffix(line, ":") {
+				if _, exists := top[line[:len(line)-1]]; !exists {
+					top[line[:len(line)-1]] = ""
+				}
+				continue
+			}
+			key, value, found := strings.Cut(line, ": ")
+			if !found || strings.Contains(key, " ") {
+				t.Fatalf("skill %s frontmatter line %q is not a scalar key", skill.LogicalID(), line)
+			}
+			top[key] = value
+		}
+		for _, key := range []string{"name", "description", "license", "metadata"} {
+			if _, ok := top[key]; !ok {
+				t.Fatalf("skill %s frontmatter lacks %s", skill.LogicalID(), key)
+			}
+		}
+		if len(top) != 4 {
+			t.Fatalf("skill %s frontmatter has unexpected top-level keys: %v", skill.LogicalID(), top)
+		}
+		if top["name"] != "\"cortex-"+skill.CapabilityID()+"\"" {
+			t.Fatalf("skill %s name = %s, want quoted cortex-<capability>", skill.LogicalID(), top["name"])
+		}
+		for _, key := range []string{"description", "license"} {
+			var quoted string
+			if err := json.Unmarshal([]byte(top[key]), &quoted); err != nil || quoted == "" {
+				t.Fatalf("skill %s %s = %q is not a quoted scalar", skill.LogicalID(), key, top[key])
+			}
+		}
+		for _, key := range []string{"cortex-family", "cortex-activation", "cortex-provenance"} {
+			if _, ok := metadata[key]; !ok {
+				t.Fatalf("skill %s metadata lacks %s", skill.LogicalID(), key)
+			}
+		}
+		if len(metadata) != 3 {
+			t.Fatalf("skill %s metadata has unexpected keys: %v", skill.LogicalID(), metadata)
+		}
+	}
+}

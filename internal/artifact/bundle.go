@@ -121,7 +121,7 @@ func validBundlePlan(plan projection.Plan) bool {
 	results := plan.Results()
 	localTarget, local := plan.LocalUpdateTarget()
 	admitted := plan.UncertifiedAdmitted()
-	expected := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode}
+	expected := []runtimematrix.RuntimeID{runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes}
 	if len(results) != len(expected) {
 		return false
 	}

@@ -17,6 +17,7 @@ func TestDecide(t *testing.T) {
 			name: "mixed runtime states",
 			observations: []Observation{
 				{ID: RuntimeClaudeCode, Present: true, Version: "1.2.3", Compatibility: Compatible},
+				{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 				{ID: RuntimePi, Present: false, Compatibility: CompatibilityUnknown},
 				{ID: RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: Incompatible},
 			},
@@ -24,6 +25,7 @@ func TestDecide(t *testing.T) {
 				{ID: RuntimePi, Outcome: OutcomeAbsent, Action: Warn, IncludeInTransaction: false, TouchAllowed: false},
 				{ID: RuntimeOpenCode, Outcome: OutcomeKnownIncompatible, Action: Skip, IncludeInTransaction: false, TouchAllowed: false},
 				{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeHermes, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 			},
 			compatible: true,
 		},
@@ -33,11 +35,13 @@ func TestDecide(t *testing.T) {
 				{ID: RuntimePi, Present: true, Version: "1.0.0", Compatibility: Compatible},
 				{ID: RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: Compatible},
 				{ID: RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: Compatible},
+				{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 			},
 			want: []Decision{
 				{ID: RuntimePi, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 				{ID: RuntimeOpenCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 				{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeHermes, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 			},
 			compatible: true,
 		},
@@ -47,11 +51,13 @@ func TestDecide(t *testing.T) {
 				{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
 				{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: CompatibilityUnknown},
 				{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: CompatibilityUnknown},
+				{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 			},
 			want: []Decision{
 				{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 				{ID: RuntimeOpenCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 				{ID: RuntimeClaudeCode, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeHermes, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 			},
 			compatible: true,
 		},
@@ -61,11 +67,13 @@ func TestDecide(t *testing.T) {
 				{ID: RuntimePi, Present: true, Version: "0.1.0", Compatibility: CompatibilityUnknown},
 				{ID: RuntimeOpenCode, Present: true, Version: "0.2.0", Compatibility: Incompatible},
 				{ID: RuntimeClaudeCode, Present: true, Version: "0.3.0", Compatibility: Compatible},
+				{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 			},
 			want: []Decision{
 				{ID: RuntimePi, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 				{ID: RuntimeOpenCode, Outcome: OutcomeKnownIncompatible, Action: Skip, IncludeInTransaction: false, TouchAllowed: false},
 				{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+				{ID: RuntimeHermes, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 			},
 			compatible: true,
 		},
@@ -75,11 +83,13 @@ func TestDecide(t *testing.T) {
 				{ID: RuntimePi, Present: false, Compatibility: CompatibilityUnknown},
 				{ID: RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: Incompatible},
 				{ID: RuntimeClaudeCode, Present: true, Compatibility: CompatibilityUnknown},
+				{ID: RuntimeHermes, Present: false, Compatibility: CompatibilityUnknown},
 			},
 			want: []Decision{
 				{ID: RuntimePi, Outcome: OutcomeAbsent, Action: Warn, IncludeInTransaction: false, TouchAllowed: false},
 				{ID: RuntimeOpenCode, Outcome: OutcomeKnownIncompatible, Action: Skip, IncludeInTransaction: false, TouchAllowed: false},
 				{ID: RuntimeClaudeCode, Outcome: OutcomeUnknownVersion, Action: Warn, IncludeInTransaction: false, TouchAllowed: false},
+				{ID: RuntimeHermes, Outcome: OutcomeAbsent, Action: Warn, IncludeInTransaction: false, TouchAllowed: false},
 			},
 			compatible: false,
 		},
@@ -109,6 +119,7 @@ func TestDecide(t *testing.T) {
 func TestDecideIsIndependentOfObservationOrder(t *testing.T) {
 	observations := []Observation{
 		{ID: RuntimeClaudeCode, Present: true, Version: "3.0.0", Compatibility: Compatible},
+		{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 		{ID: RuntimePi, Present: false, Compatibility: CompatibilityUnknown},
 		{ID: RuntimeOpenCode, Present: true, Version: "2.0.0", Compatibility: Incompatible},
 	}
@@ -121,6 +132,7 @@ func TestDecideIsIndependentOfObservationOrder(t *testing.T) {
 		{ID: RuntimePi, Outcome: OutcomeAbsent, Action: Warn},
 		{ID: RuntimeOpenCode, Outcome: OutcomeKnownIncompatible, Action: Skip},
 		{ID: RuntimeClaudeCode, Outcome: OutcomePresentCompatible, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
+		{ID: RuntimeHermes, Outcome: OutcomePresentUncertified, Action: Configure, IncludeInTransaction: true, TouchAllowed: true},
 	}) {
 		t.Errorf("Decisions = %#v, want deterministic runtime order", got)
 	}
@@ -196,11 +208,12 @@ func TestDecideLocalUpdateAdmitsOnlyTheSelectedRuntime(t *testing.T) {
 		{ID: RuntimePi, Present: true, Version: "0.85.1", Compatibility: CompatibilityUnknown},
 		{ID: RuntimeOpenCode, Present: true, Version: "1.18.21", Compatibility: Incompatible},
 		{ID: RuntimeClaudeCode, Present: true, Version: "2.1.251", Compatibility: CompatibilityUnknown},
+		{ID: RuntimeHermes, Present: true, Version: "0.4.2", Compatibility: CompatibilityUnknown},
 	}
 	// The default decision admits both uncertified runtimes; the local update
 	// must still narrow the transaction to exactly one selected target.
 	base, err := Decide(observations)
-	if err != nil || len(transactionTargets(base)) != 2 {
+	if err != nil || len(transactionTargets(base)) != 3 {
 		t.Fatalf("default decision = (%#v, %v)", base, err)
 	}
 	local, err := DecideLocalUpdate(observations, RuntimePi)
@@ -228,6 +241,7 @@ func TestDecideLocalUpdateRefusesAnUnparseableSelectedVersion(t *testing.T) {
 		{ID: RuntimePi, Present: true, Compatibility: CompatibilityUnknown},
 		{ID: RuntimeOpenCode, Present: false, Compatibility: CompatibilityUnknown},
 		{ID: RuntimeClaudeCode, Present: false, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeHermes, Present: false, Compatibility: CompatibilityUnknown},
 	}, RuntimePi)
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +267,7 @@ func TestDecideRefusesPresentRuntimeWithoutAnIdentifiedVersion(t *testing.T) {
 		{ID: RuntimePi, Present: true, Compatibility: CompatibilityUnknown},
 		{ID: RuntimeOpenCode, Present: true, Compatibility: CompatibilityUnknown},
 		{ID: RuntimeClaudeCode, Present: true, Compatibility: CompatibilityUnknown},
+		{ID: RuntimeHermes, Present: true, Compatibility: CompatibilityUnknown},
 	})
 	if err != nil {
 		t.Fatal(err)

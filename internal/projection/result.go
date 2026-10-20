@@ -89,7 +89,7 @@ func validAssessment(assessment Assessment) bool {
 
 func supportedRuntime(runtimeID runtimematrix.RuntimeID) bool {
 	switch runtimeID {
-	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode:
+	case runtimematrix.RuntimePi, runtimematrix.RuntimeOpenCode, runtimematrix.RuntimeClaudeCode, runtimematrix.RuntimeHermes:
 		return true
 	default:
 		return false

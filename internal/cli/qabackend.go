@@ -106,10 +106,12 @@ func checkQAAssets(backend string) error {
 // qaAssetAvailabilityFromError maps an admission failure onto the doctor QA
 // availability token and its bounded diagnostic. Missing assets and mismatched
 // assets are two tokens; the diagnostic carries only stages and hex digests.
+// Any other check failure fails closed (issue #361): a failed check never
+// degrades to ready.
 func qaAssetAvailabilityFromError(err error) (string, string) {
 	var unavailable *installobserve.AdmissionUnavailableError
 	if !errors.As(err, &unavailable) {
-		return "", ""
+		return "assets_check_failed", " qa_assets_stage=check_failed"
 	}
 	switch unavailable.Stage {
 	case "install_state_missing", "install_state_unreadable", "skill_missing", "skill_unlisted", "actor_missing", "actor_unlisted":

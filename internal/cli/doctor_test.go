@@ -189,7 +189,7 @@ func TestQAAssetAvailabilityFromError(t *testing.T) {
 		{name: "missing skill is assets_missing", err: &installobserve.AdmissionUnavailableError{Stage: "skill_missing", Expected: "aa"}, token: "assets_missing", diagnostic: " qa_assets_stage=skill_missing expected=aa"},
 		{name: "foreign catalog is assets_mismatch with identity", err: &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=catalog_fingerprint expected=cc11 found=ff22"},
 		{name: "skill drift is assets_mismatch", err: &installobserve.AdmissionUnavailableError{Stage: "skill_mismatch", Expected: "aa", Found: "bb"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=skill_mismatch expected=aa found=bb"},
-		{name: "unrelated errors keep ready", err: errors.New("unrelated"), token: "", diagnostic: ""},
+		{name: "untyped check failure fails closed", err: errors.New("unrelated"), token: "assets_check_failed", diagnostic: " qa_assets_stage=check_failed"},
 	} {
 		token, diagnostic := qaAssetAvailabilityFromError(tc.err)
 		if token != tc.token || diagnostic != tc.diagnostic {
@@ -212,6 +212,14 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	}
 	if !strings.Contains(line, "qa_assets_stage=catalog_fingerprint expected=cc11 found=ff22") {
 		t.Fatalf("line = %q, want the asset diagnostic", line)
+	}
+	qaAssetCheck = func(_ string) error { return errors.New("snapshot unavailable") }
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	if !strings.Contains(line, "qa_availability=assets_check_failed") || strings.Contains(line, "qa_availability=ready") {
+		t.Fatalf("line = %q, want assets_check_failed availability on untyped check failure", line)
+	}
+	if !strings.Contains(line, "qa_assets_stage=check_failed") {
+		t.Fatalf("line = %q, want the fail-closed diagnostic", line)
 	}
 	qaAssetCheck = func(_ string) error { return nil }
 	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)

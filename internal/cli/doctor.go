@@ -754,6 +754,9 @@ func writeUninstallResult(stdout, stderr io.Writer, results []uninstallPreflight
 	for _, result := range results {
 		remove, absent, conflict := uninstallCounts(result.observation)
 		_, _ = fmt.Fprintf(&output, "runtime=%s uninstall=%s remove=%d absent=%d conflict=%d", result.root.RuntimeID(), result.status, remove, absent, conflict)
+		if paths := result.observation.ConflictPaths(); len(paths) > 0 {
+			_, _ = fmt.Fprintf(&output, " conflict_paths=%s", strings.Join(paths, ","))
+		}
 		if paths := result.observation.UnsupportedActorPaths(); len(paths) > 0 {
 			unsupported = true
 			_, _ = fmt.Fprintf(&output, " reason=unsupported_installation state=validated_canonical_v3 recorded_actor_paths=%s", strings.Join(paths, ","))

@@ -135,7 +135,11 @@ func runDirectoryInstall(stdout, stderr io.Writer, target string, deps installDe
 	group, err := deps.applyGroup(requests, home, backupName)
 	if err != nil {
 		reason, code := installFailureReason(err)
-		return writeInstallResult(stdout, stderr, "install", "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
+		status := "status=not_applied reason=" + reason + " touch=denied"
+		if paths := installConflictPaths(requests, err); paths != "" {
+			status += " conflict_paths=" + paths
+		}
+		return writeInstallResult(stdout, stderr, "install", status, "", results, false, installtxn.Counts{}, code)
 	}
 	return writeInstallResult(stdout, stderr, "install", "status=completed touch=applied", "", results, true, group.Counts(), exitOK)
 }
@@ -221,9 +225,44 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 	group, err := deps.applyGroup(requests, home, backupName)
 	if err != nil {
 		reason, code := installFailureReason(err)
-		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
+		status := "status=not_applied reason=" + reason + " touch=denied"
+		if paths := installConflictPaths(requests, err); paths != "" {
+			status += " conflict_paths=" + paths
+		}
+		return writeInstallResult(stdout, stderr, operation, status, "", results, false, installtxn.Counts{}, code)
 	}
 	return writeInstallResult(stdout, stderr, operation, "status=completed touch=applied", warning, results, true, group.Counts(), exitOK)
+}
+
+// installConflictPaths renders the conflicting logical assets as runtime-relative
+// paths for the operator diagnostic (issue #373). LogicalIDs without a file in
+// the composed requests map to their own identity, so the state artifact still
+// names itself. Output is deduplicated and sorted by the transaction layer.
+func installConflictPaths(requests []installtxn.GroupRequest, err error) string {
+	var conflict *installtxn.ConflictError
+	if !errors.As(err, &conflict) || len(conflict.LogicalIDs) == 0 {
+		return ""
+	}
+	relative := make(map[string]string)
+	for _, request := range requests {
+		for _, file := range request.Plan.Files() {
+			relative[file.LogicalID()] = file.RelativePath()
+		}
+	}
+	paths := make([]string, 0, len(conflict.LogicalIDs))
+	seen := make(map[string]bool, len(conflict.LogicalIDs))
+	for _, id := range conflict.LogicalIDs {
+		path, ok := relative[id]
+		if !ok {
+			continue
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return strings.Join(paths, ",")
 }
 
 // installFailureReason maps a grouped-transaction failure to the operator reason

@@ -217,6 +217,27 @@ func TestApplyGroupRejectsConflictBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestApplyGroupConflictErrorNamesConflictingLogicalIDs(t *testing.T) {
+	home := t.TempDir()
+	plans := groupCandidates(t, home, "one")
+	conflicted := plans[1].Files()[0]
+	must(t, os.MkdirAll(filepath.Dir(conflicted.AbsolutePath()), 0o700))
+	must(t, os.WriteFile(conflicted.AbsolutePath(), []byte("user"), 0o600))
+	_, err := applyGroupRequest(t, plans...)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("ApplyGroup() error = %v, want *ConflictError", err)
+	}
+	if len(conflict.LogicalIDs) != 1 || conflict.LogicalIDs[0] != conflicted.LogicalID() {
+		t.Fatalf("ConflictError.LogicalIDs = %v, want [%s]", conflict.LogicalIDs, conflicted.LogicalID())
+	}
+	for _, id := range conflict.LogicalIDs {
+		if id == "" {
+			t.Fatal("ConflictError carries an empty LogicalID")
+		}
+	}
+}
+
 func TestApplyGroupRejectsInjectedTransactionFailureAndInvalidGroups(t *testing.T) {
 	home := t.TempDir()
 	plans := groupCandidates(t, home, "one")

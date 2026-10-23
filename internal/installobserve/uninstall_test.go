@@ -88,6 +88,20 @@ func TestObserveUninstallClassifiesCanonicalPriorState(t *testing.T) {
 			if err != nil || got.Ready() != tc.ready || !reflect.DeepEqual(got.Records(), want) {
 				t.Fatalf("ObserveUninstall() = (%#v, %v)", got, err)
 			}
+			if !tc.ready {
+				var conflicting bool
+				for _, record := range want {
+					if record.Status == installobserve.UninstallConflict {
+						conflicting = true
+					}
+				}
+				if conflicting {
+					wantPaths := []string{candidate.Files()[0].RelativePath()}
+					if got := got.ConflictPaths(); !reflect.DeepEqual(got, wantPaths) {
+						t.Fatalf("ConflictPaths() = %v, want %v", got, wantPaths)
+					}
+				}
+			}
 			if tc.ready && len(want) > 0 {
 				candidates := make([]installobserve.UninstallRecord, 0, len(want))
 				for _, record := range want {

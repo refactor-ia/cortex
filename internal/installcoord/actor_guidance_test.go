@@ -189,6 +189,168 @@ func TestPreflightActorGuidance(t *testing.T) {
 	}
 }
 
+// TestPreflightActorGuidanceRefusalNamesCause pins the refusal evidence a caller
+// needs to name which asset failed verification and why (issue #373, S2): the
+// refusing gate, the captured drift of each mismatched asset, and the bounded
+// role/location shadow conflicts. It grants no authority: the report stays
+// unusable and the target is never touched.
+func TestPreflightActorGuidanceRefusalNamesCause(t *testing.T) {
+	actorFile := func(t *testing.T, canonical installplan.Plan, logicalID string) installplan.File {
+		t.Helper()
+		for _, file := range canonical.Files() {
+			if file.LogicalID() == logicalID {
+				return file
+			}
+		}
+		t.Fatalf("fixture has no %s asset", logicalID)
+		return installplan.File{}
+	}
+	for _, tc := range []struct {
+		name          string
+		stage         installcoord.ActorGuidanceRefusalStage
+		changed       bool
+		adopt         bool
+		prepare       func(t *testing.T, canonical installplan.Plan, cwd string)
+		want          []string
+		wantMode      bool
+		wantDriftMode bool
+	}{
+		{
+			// The fixture appends external guidance to every actor while the
+			// recorded state stays canonical: without adoption those six actor
+			// files are exactly what failed verification.
+			name:  "unadopted external guidance names every drifted actor",
+			stage: installcoord.ActorGuidanceRefusedEvidence,
+			want:  []string{"actors/adversarial-tester", "actors/evidence-auditor", "actors/exploratory-tester", "actors/requirements-analyst", "actors/test-designer", "actors/test-runner"},
+		},
+		{
+			name:  "skill content drift names only the conflicting skill",
+			stage: installcoord.ActorGuidanceRefusedConflict,
+			adopt: true,
+			prepare: func(t *testing.T, canonical installplan.Plan, cwd string) {
+				must(t, os.WriteFile(canonical.Files()[0].AbsolutePath(), []byte("user skill drift"), 0o600))
+			},
+			want: []string{"skills/adversarial-tester"},
+		},
+		{
+			name:    "actor mode drift names the observed and canonical mode",
+			stage:   installcoord.ActorGuidanceRefusedEvidence,
+			changed: true,
+			prepare: func(t *testing.T, canonical installplan.Plan, cwd string) {
+				must(t, os.Chmod(actorFile(t, canonical, "actors/adversarial-tester").AbsolutePath(), 0o640))
+			},
+			want:     []string{"actors/adversarial-tester"},
+			wantMode: true,
+			// A mode-only refusal reports mode drift as its cause and as the
+			// captured fact.
+			wantDriftMode: true,
+		},
+		{
+			// A conflicting asset can also carry mode drift. The conflict stays
+			// the cause, and the mode facts are reported with it instead of
+			// being dropped (issue #373, S2).
+			name:  "skill content drift also reports its mode drift",
+			stage: installcoord.ActorGuidanceRefusedConflict,
+			adopt: true,
+			prepare: func(t *testing.T, canonical installplan.Plan, cwd string) {
+				must(t, os.WriteFile(canonical.Files()[0].AbsolutePath(), []byte("user skill drift"), 0o640))
+				must(t, os.Chmod(canonical.Files()[0].AbsolutePath(), 0o640))
+			},
+			want:          []string{"skills/adversarial-tester"},
+			wantDriftMode: true,
+		},
+		{
+			name:  "shadowed role is a shadow refusal",
+			stage: installcoord.ActorGuidanceRefusedShadow,
+			adopt: true,
+			prepare: func(t *testing.T, canonical installplan.Plan, cwd string) {
+				write(t, cwd, ".pi/subagents/alias.md", "---\nname: cortex-test-designer\n---\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical, cwd := coordGuidanceFixture(t, tc.changed), coordPhysicalDir(t)
+			wanted := make(map[string]string, len(canonical.Files()))
+			for _, file := range canonical.Files() {
+				wanted[file.LogicalID()] = file.RelativePath()
+			}
+			if tc.prepare != nil {
+				tc.prepare(t, canonical, cwd)
+			}
+			unit := installcoord.Unit{Plan: canonical, Observation: value(installobserve.Observe(canonical, installobserve.DefaultOptions()))}
+			before := coordTree(t, canonical.RootPath())
+			got, err := installcoord.PreflightActorGuidance(actorAwareObservations(), unit, tc.adopt, cwd)
+			refusal := got.Refusal()
+			if err == nil || !refusal.Valid() || refusal.Stage() != tc.stage {
+				t.Fatalf("refusal = (err %v, stage %d), want stage %d", err, refusal.Stage(), tc.stage)
+			}
+			if got.Report().Ready() || len(got.Report().Statuses()) != 0 {
+				t.Fatal("refusal retained usable statuses")
+			}
+			var named []string
+			for _, asset := range refusal.Assets() {
+				if wanted[asset.LogicalID] != asset.RelativePath || asset.RelativePath == "" || filepath.IsAbs(asset.RelativePath) {
+					t.Fatalf("refusal asset = %#v, want its runtime-relative path", asset)
+				}
+				wantCause := installcoord.ActorGuidanceContentDrift
+				if tc.wantMode {
+					wantCause = installcoord.ActorGuidanceModeDrift
+					if asset.ObservedMode != 0o640 || asset.CanonicalMode != installplan.CanonicalFileMode {
+						t.Fatalf("mode drift asset = %#v, want observed 0640 canonical 0600", asset)
+					}
+				}
+				if asset.Cause != wantCause {
+					t.Fatalf("refusal asset = %#v, want cause %d", asset, wantCause)
+				}
+				if asset.ModeDrift != tc.wantDriftMode {
+					t.Fatalf("refusal asset = %#v, want ModeDrift %t", asset, tc.wantDriftMode)
+				}
+				named = append(named, asset.LogicalID)
+			}
+			if !reflect.DeepEqual(named, tc.want) {
+				t.Fatalf("refusal named %v, want %v", named, tc.want)
+			}
+			if tc.stage == installcoord.ActorGuidanceRefusedShadow {
+				conflicts := refusal.Shadows()
+				if len(conflicts) != 1 || conflicts[0].RoleID() != "test-designer" || conflicts[0].Location() != installobserve.ShadowLocationProjectSubagents {
+					t.Fatalf("shadow refusal = %#v, want the shadowed test-designer role", conflicts)
+				}
+			} else if len(refusal.Shadows()) != 0 {
+				t.Fatalf("verification refusal = %#v, want no shadow conflicts", refusal.Shadows())
+			}
+			if !reflect.DeepEqual(before, coordTree(t, canonical.RootPath())) {
+				t.Fatal("refusal changed target")
+			}
+		})
+	}
+}
+
+// TestPreflightActorGuidanceRefusalIsDetachedAndValidOnlyWhenRefused pins the
+// zero value contract: a successful preflight carries no refusal record, and a
+// returned record cannot be mutated back into the report.
+func TestPreflightActorGuidanceRefusalIsDetachedAndValidOnlyWhenRefused(t *testing.T) {
+	canonical, cwd := coordGuidanceFixture(t, false), coordPhysicalDir(t)
+	unit := installcoord.Unit{Plan: canonical, Observation: value(installobserve.Observe(canonical, installobserve.DefaultOptions()))}
+	ready, err := installcoord.PreflightActorGuidance(actorAwareObservations(), unit, true, cwd)
+	if err != nil || ready.Refusal().Valid() || len(ready.Refusal().Assets()) != 0 {
+		t.Fatalf("ready preflight = (err %v, refusal %#v)", err, ready.Refusal())
+	}
+	must(t, os.WriteFile(canonical.Files()[0].AbsolutePath(), []byte("user skill drift"), 0o600))
+	unit = installcoord.Unit{Plan: canonical, Observation: value(installobserve.Observe(canonical, installobserve.DefaultOptions()))}
+	refused, err := installcoord.PreflightActorGuidance(actorAwareObservations(), unit, true, cwd)
+	if err == nil {
+		t.Fatal("drifted guidance was accepted")
+	}
+	assets := refused.Refusal().Assets()
+	if len(assets) == 0 {
+		t.Fatal("conflict refusal lost its captured evidence")
+	}
+	assets[0].LogicalID = "tampered"
+	if refused.Refusal().Assets()[0].LogicalID == "tampered" {
+		t.Fatal("Refusal() exposed mutable state")
+	}
+}
+
 func TestPreflightActorGuidanceRefuses(t *testing.T) {
 	for _, name := range []string{"default adoption refusal", "zero unit", "zero observation", "wrong root", "wrong runtime", "missing runtime", "denied runtime", "composed unit", "skill drift", "shadow", "unsafe cwd", "symlink cwd", "unsafe root", "actor mode", "v3 tamper", "stale actor", "zero runtimes"} {
 		t.Run(name, func(t *testing.T) {

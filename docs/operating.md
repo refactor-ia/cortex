@@ -98,6 +98,15 @@ cortex update --runtime pi --catalog ./catalog --apply  # the plan, applied
 
 Default mode touches nothing — run the plan first, read it, then decide. `--apply` writes only inside that runtime's Cortex-owned root. On Pi, if legacy externally-modified guidance is detected, the plan asks for explicit consent with `--adopt-guidance`: that is a one-time adoption of external bytes (they are preserved, not overwritten), not a drift override, and drift is always refused.
 
+When a guidance preflight or apply re-check refuses, the plan prints `status=conflict reason=actor_guidance_unverified` (exit 3) followed by one `asset=` line per failing asset naming the failing file and the cause:
+
+```
+asset=skills/adversarial-tester path=skills/cortex-adversarial-tester/SKILL.md cause=content_drift action=conflict
+asset=skills/requirements-analyst path=skills/cortex-requirements-analyst/SKILL.md cause=mode_drift observed_mode=0640 canonical_mode=0600
+```
+
+`cause=content_drift` means the bytes differ from the recorded state; `cause=mode_drift` reports the observed versus canonical file mode. Shadow conflicts (externally authored files under Cortex-owned identities) report `cause=shadow_role` with the shadow location. Paths are runtime-relative.
+
 ## Running uninstall
 
 `cortex uninstall` removes only material verified as Cortex-owned, making a backup first. Per-runtime statuses:

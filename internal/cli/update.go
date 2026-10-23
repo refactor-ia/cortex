@@ -506,8 +506,7 @@ func updateActorGuidance(stdout, stderr io.Writer, canonical installplan.Plan, o
 	}
 	preflight, err := installcoord.PreflightActorGuidance(observations, installcoord.Unit{Plan: canonical, Observation: observation}, adopt, cwd)
 	if err != nil || !preflight.Report().Ready() {
-		_, _ = fmt.Fprintf(stdout, "%s\nstatus=conflict reason=actor_guidance_unverified\n", header)
-		return exitConflict
+		return writeActorGuidanceRefusal(stdout, header, canonical, preflight.Refusal())
 	}
 	proof := preflight.Proof() // Retain the exact immutable candidate and evidence.
 	if !apply {
@@ -534,4 +533,86 @@ func updateActorGuidance(stdout, stderr io.Writer, canonical installplan.Plan, o
 
 func nextUpdateBackupName() string {
 	return "install-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// writeActorGuidanceRefusal reports one refused actor-guidance update. The
+// stable status line, the opaque stderr contract, and exitConflict are
+// unchanged; the additive asset= diagnostics name each asset that failed
+// verification and why, so reason=actor_guidance_unverified is never the only
+// evidence the operator gets (issue #373, spec S2/S4/S5).
+func writeActorGuidanceRefusal(stdout io.Writer, header string, canonical installplan.Plan, refusal installcoord.ActorGuidanceRefusal) int {
+	output := strings.Builder{}
+	output.WriteString(header + "\n")
+	for _, line := range actorGuidanceRefusalAssets(canonical, refusal) {
+		output.WriteString(line + "\n")
+	}
+	output.WriteString("status=conflict reason=actor_guidance_unverified\n")
+	_, _ = io.WriteString(stdout, output.String())
+	return exitConflict
+}
+
+// actorGuidanceRefusalAssets renders one machine-readable diagnostic line per
+// asset that failed verification: content drift, mode drift with both modes, or
+// the bounded role/location that shadows a closed actor. A conflicting asset
+// that also drifted in mode keeps its content-drift cause and still reports the
+// mode facts. Paths stay runtime-relative (S5); the writer names nothing the
+// preflight did not capture.
+func actorGuidanceRefusalAssets(canonical installplan.Plan, refusal installcoord.ActorGuidanceRefusal) []string {
+	assets, shadows := refusal.Assets(), refusal.Shadows()
+	lines := make([]string, 0, len(assets)+len(shadows))
+	for _, asset := range assets {
+		line := actorGuidanceAsset(asset.LogicalID, asset.RelativePath)
+		if asset.Cause == installcoord.ActorGuidanceModeDrift {
+			lines = append(lines, line+" cause=mode_drift mode_drift=true"+actorGuidanceModes(asset))
+			continue
+		}
+		line += " cause=content_drift action=conflict"
+		if asset.ModeDrift {
+			line += " mode_drift=true" + actorGuidanceModes(asset)
+		}
+		lines = append(lines, line)
+	}
+	relative := make(map[string]string, len(canonical.Files()))
+	for _, file := range canonical.Files() {
+		relative[file.LogicalID()] = file.RelativePath()
+	}
+	for _, shadow := range shadows {
+		logicalID := "actors/" + string(shadow.RoleID())
+		lines = append(lines, actorGuidanceAsset(logicalID, relative[logicalID])+" cause=shadow_role shadow_location="+actorGuidanceShadowLocation(shadow.Location()))
+	}
+	return lines
+}
+
+// actorGuidanceModes renders the captured and canonical modes of one asset, in
+// the same shape the update operation lines already use.
+func actorGuidanceModes(asset installcoord.ActorGuidanceRefusalAsset) string {
+	return fmt.Sprintf(" observed_mode=%04o canonical_mode=%04o", asset.ObservedMode, asset.CanonicalMode)
+}
+
+// actorGuidanceAsset renders the `asset=<logical ID> path=<runtime-relative>`
+// prefix of one diagnostic line, omitting the path when the candidate carries no
+// file for that identity instead of inventing one.
+func actorGuidanceAsset(logicalID, path string) string {
+	if path != "" {
+		return fmt.Sprintf("asset=%s path=%s", logicalID, path)
+	}
+	return "asset=" + logicalID
+}
+
+// actorGuidanceShadowLocation names the bounded root a shadow conflict was
+// found in. The scan exposes no path, so the location stays a closed symbolic
+// name instead of an absolute one (S5).
+func actorGuidanceShadowLocation(location installobserve.ShadowLocation) string {
+	switch location {
+	case installobserve.ShadowLocationGlobalAgents:
+		return "global_agents"
+	case installobserve.ShadowLocationGlobalSubagents:
+		return "global_subagents"
+	case installobserve.ShadowLocationProjectAgents:
+		return "project_agents"
+	case installobserve.ShadowLocationProjectSubagents:
+		return "project_subagents"
+	default:
+		return "unknown"
+	}
 }

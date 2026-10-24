@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/refactor-ia/cortex/internal/atomicfile"
 	"github.com/refactor-ia/cortex/internal/safepath"
@@ -386,7 +385,7 @@ func rollbackRestartDirectories(sourceRoot string, plan restartPlan) error {
 			return errors.New("restart directory evidence is invalid")
 		}
 		info, err := os.Lstat(target)
-		if err != nil || !isRealDirectory(info) || !restartDirectoryMatchesAccepted(info, directory.after) {
+		if err != nil || !isRealDirectory(info) || !restartDirectoryMatchesAccepted(target, info, directory.after) {
 			return errors.New("restart directory changed")
 		}
 		if err := os.Remove(target); err != nil {
@@ -402,9 +401,9 @@ func rollbackRestartDirectories(sourceRoot string, plan restartPlan) error {
 	return nil
 }
 
-func restartDirectoryMatchesAccepted(info os.FileInfo, accepted AcceptedDirectory) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && stat.Ino != 0 && uint64(stat.Dev) == accepted.Device && uint64(stat.Ino) == accepted.Inode && uint32(info.Mode().Perm()) == accepted.Mode
+func restartDirectoryMatchesAccepted(target string, info os.FileInfo, accepted AcceptedDirectory) bool {
+	device, inode, ok := directoryIdentity(target, info)
+	return ok && device == accepted.Device && inode == accepted.Inode && uint32(info.Mode().Perm()) == accepted.Mode
 }
 
 func restartIsBefore(plan restartPlan, statuses []restartStatus) bool {
@@ -482,7 +481,7 @@ func classifyRestartDirectories(sourceRoot string, plan restartPlan) (restartPla
 		if err != nil || !isRealDirectory(info) || plan.snapshot.Manifest.Version == manifestV2 {
 			return restartPlan{}, errors.New("restart directory is unsafe")
 		}
-		if !restartDirectoryMatchesAccepted(info, directory.after) {
+		if !restartDirectoryMatchesAccepted(target, info, directory.after) {
 			return restartPlan{}, errors.New("restart directory drifted")
 		}
 		directory.status = exactAfter

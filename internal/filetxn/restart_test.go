@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -415,11 +414,11 @@ func restartDirectoryPlan(t *testing.T, root string, version int, paths []string
 		must(t, os.Mkdir(filepath.Join(root, value), 0o700))
 		info, err := os.Lstat(filepath.Join(root, value))
 		must(t, err)
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Ino == 0 {
+		device, inode, ok := directoryIdentity(filepath.Join(root, value), info)
+		if !ok {
 			t.Fatal("directory identity is unavailable")
 		}
-		accepted[index] = AcceptedDirectory{Path: value, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+		accepted[index] = AcceptedDirectory{Path: value, Device: device, Inode: inode, Mode: uint32(info.Mode().Perm())}
 	}
 	plan, err := planRestartEvidence(Snapshot{Manifest: Manifest{Version: version, AbsentDirectories: absent, AcceptedDirectories: accepted}}, nil)
 	must(t, err)
@@ -572,11 +571,11 @@ func acceptedRestartDirectories(t *testing.T, root string, absent []directoryEnt
 	for index, directory := range absent {
 		info, err := os.Lstat(filepath.Join(root, directory.Path))
 		must(t, err)
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Ino == 0 {
+		device, inode, ok := directoryIdentity(filepath.Join(root, directory.Path), info)
+		if !ok {
 			t.Fatal("directory identity is unavailable")
 		}
-		accepted[index] = AcceptedDirectory{Path: directory.Path, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+		accepted[index] = AcceptedDirectory{Path: directory.Path, Device: device, Inode: inode, Mode: uint32(info.Mode().Perm())}
 	}
 	return accepted
 }

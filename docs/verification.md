@@ -13,7 +13,7 @@ curl -fL -O https://github.com/refactor-ia/cortex/releases/download/v0.1.0-alpha
 shasum -a 256 -c --ignore-missing SHA256SUMS && tar xzf "$archive"
 ```
 
-On Linux, set `archive=cortex_v0.1.0-alpha.8_linux_amd64.tar.gz` and use `sha256sum -c --ignore-missing SHA256SUMS` instead of the macOS checksum line. macOS arm64 and Linux amd64 are the published targets; Windows is not supported and does not currently build.
+On Linux, set `archive=cortex_v0.1.0-alpha.8_linux_amd64.tar.gz` and use `sha256sum -c --ignore-missing SHA256SUMS` instead of the macOS checksum line. macOS arm64 and Linux amd64 are the published targets; Windows is not supported: it builds from source, but its filesystem transaction behavior is not yet verified, and directory identity on ReFS volumes is not guaranteed unique (see #389).
 
 ### Building from source
 

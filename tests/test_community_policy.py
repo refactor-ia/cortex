@@ -201,6 +201,11 @@ EXPECTED_FILES = {
         "internal/filetxn/directories.go",
         "internal/filetxn/directories_external_test.go",
         "internal/filetxn/directories_test.go",
+        "internal/filetxn/identity_other.go",
+        "internal/filetxn/identity_test.go",
+        "internal/filetxn/identity_unix.go",
+        "internal/filetxn/identity_windows.go",
+        "internal/filetxn/identity_windows_test.go",
         "internal/filetxn/restart.go",
         "internal/filetxn/restart_test.go",
         "internal/filetxn/snapshot.go",
@@ -460,36 +465,36 @@ class CommunityPolicyTests(unittest.TestCase):
                                 or path.is_symlink()
                         )
 
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
-                self.assertEqual(len(EXPECTED_FILES), 406)
-                self.assertEqual(len(actual_files), 406)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
+                self.assertEqual(len(EXPECTED_FILES), 411)
+                self.assertEqual(len(actual_files), 411)
                 self.assertEqual(actual_files, EXPECTED_FILES)
 
                 gitignore_entries = set(read_text(".gitignore").splitlines())

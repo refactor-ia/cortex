@@ -354,6 +354,11 @@ func replaceDirectoryWithDistinctIdentity(t *testing.T, root, name string) {
 	if !isRealDirectory(original) {
 		t.Fatalf("original is not a real directory: %s", name)
 	}
+	// Windows loads an Lstat identity lazily from the path on first
+	// comparison, so pin it before the rename.
+	if !os.SameFile(original, original) {
+		t.Fatalf("original directory identity is unavailable: %s", name)
+	}
 	retiredPath := filepath.Join(root, "."+name+"-retired")
 	t.Cleanup(func() {
 		if err := os.RemoveAll(retiredPath); err != nil {

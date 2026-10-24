@@ -255,11 +255,11 @@ func acceptCreatedDirectories(snapshot Snapshot, created []createdDirectory) (Sn
 		if err != nil || !isRealDirectory(info) || !os.SameFile(directory.createdInfo, info) || info.Mode().Perm() != directory.createdInfo.Mode().Perm() {
 			return Snapshot{}, fmt.Errorf("accepted directory changed: %s", directory.path)
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Ino == 0 {
+		device, inode, ok := directoryIdentity(directory.target, info)
+		if !ok {
 			return Snapshot{}, fmt.Errorf("accepted directory identity is unavailable: %s", directory.path)
 		}
-		accepted[index] = AcceptedDirectory{Path: absent.Path, Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Mode: uint32(info.Mode().Perm())}
+		accepted[index] = AcceptedDirectory{Path: absent.Path, Device: device, Inode: inode, Mode: uint32(info.Mode().Perm())}
 	}
 	snapshot.Manifest.Version = manifestV3
 	snapshot.Manifest.AcceptedDirectories = accepted

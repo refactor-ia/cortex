@@ -6,6 +6,23 @@ Thank you for helping improve Cortex. Contributions begin with a clear public pr
 
 Read the [Code of Conduct](CODE_OF_CONDUCT.md), [Security Policy](SECURITY.md), [Governance](GOVERNANCE.md), and [Support guide](SUPPORT.md). Report vulnerabilities privately under the Security Policy and conduct incidents confidentially under the Code of Conduct.
 
+## Who fixes bugs
+
+External contributors report problems; the maintainer team fixes them. You do not need to write a patch:
+
+- Found a bug? Open an issue with reproduction steps, your Cortex version, and relevant logs.
+- Have a failing test case that shows the bug? Paste it in the issue. The maintainers review it and, if adopted, adapt and commit it themselves.
+- Fixes and their tests are written and merged by the maintainer team. You keep credit in the issue for the report.
+
+## External contributions: issues only
+
+Pull requests from people outside the maintainer team are not accepted and are closed with a pointer to this policy. Collaboration happens through issues:
+
+- Bug reports, reproduction steps, and pasted test cases in issues.
+- Feature proposals and documentation problems via the [issue chooser](https://github.com/refactor-ia/cortex/issues/new/choose).
+
+Do not open a pull request to contribute a fix; open an issue instead and let the maintainer team implement it.
+
 ## Issue first
 
 Use the [issue chooser](https://github.com/refactor-ia/cortex/issues/new/choose) for bugs, scoped improvements, and documentation problems. Every pull request must reference the issue that explains its purpose:

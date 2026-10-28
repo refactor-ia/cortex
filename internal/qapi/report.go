@@ -609,6 +609,9 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 				if !validUpdate(event) {
 					return reject(reportStageMessage, reportReasonInvalidMessage)
 				}
+				// The shape detail an operator reads names this event, so the
+				// index advances before the accepted update continues (#286).
+				eventIndex++
 				continue
 			}
 			if kind != "message_end" || !exactFields(event, "type", "message") {
@@ -797,10 +800,11 @@ func reportText(event map[string]json.RawMessage) (string, bool, *ReportNormaliz
 	if !ok || role != "assistant" || json.Unmarshal(message["content"], &content) != nil {
 		return "", false, &ReportNormalizationError{Stage: reportStageMessage, Reason: reportReasonInvalidMessage}
 	}
-	// Reasoning models emit one leading thinking block before the report text
-	// when the route enables thinking; the thinking block is validated and
-	// discarded, never surfaced as report content.
-	if len(content) == 2 && thinkingContent(content[0]) {
+	// Reasoning models emit leading thinking blocks before the report text when
+	// the route enables thinking, and pi 1.4.0 emits a block that completes with
+	// empty text (issue #286). The thinking blocks are validated and discarded,
+	// never surfaced as report content, and exactly one text block must remain.
+	for len(content) > 1 && thinkingContent(content[0]) {
 		content = content[1:]
 	}
 	if len(content) != 1 {
@@ -824,7 +828,8 @@ func thinkingContent(raw json.RawMessage) bool {
 		return false
 	}
 	kind, ok := stringField(block, "type")
-	return ok && kind == "thinking" && stringFieldOK(block, "thinking")
+	_, thinkingOK := stringField(block, "thinking")
+	return ok && kind == "thinking" && thinkingOK
 }
 
 // validInitialSystem validates the source-derived fresh-prompt system shape:

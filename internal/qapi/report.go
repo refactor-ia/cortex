@@ -536,6 +536,9 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 	var kind string
 	var ok bool
 	var event map[string]json.RawMessage
+	var attemptFailure *ReportNormalizationError
+	retryAttempt, retryLimit := 0, 0
+	retryEnded, failed := false, false
 	reject := func(stage, reason string) (string, bool, *ReportNormalizationError) {
 		return "", false, &ReportNormalizationError{Stage: stage, Reason: reason, Detail: observedShape(eventIndex, kind, event)}
 	}
@@ -572,11 +575,11 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			// A fresh Pi prompt may begin with one system-message pair before
 			// the input echo. Keep it closed to the source-derived shape and
 			// reject repeats or late system messages as ordinary invalid input.
-			if !systemSeen && !echoSeen && validInitialSystem(event["message"]) {
+			if retryAttempt == 0 && !systemSeen && !echoSeen && validInitialSystem(event["message"]) {
 				systemSeen = true
 				systemStart = event["message"]
 				state = 8
-			} else if !echoSeen && validUserEcho(event["message"]) {
+			} else if retryAttempt == 0 && !echoSeen && validUserEcho(event["message"]) {
 				// runAgentLoop re-emits each input prompt as a matched
 				// message_start/message_end pair before assistant generation;
 				// accept at most one strictly validated initial prompt echo.
@@ -617,6 +620,16 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			if kind != "message_end" || !exactFields(event, "type", "message") {
 				return reject(reportStageEnvelope, reportReasonUnexpected)
 			}
+			if failure := piTerminalFailure(event); failure != nil {
+				if !validAssistant(event["message"], false) {
+					return reject(reportStageMessage, reportReasonInvalidMessage)
+				}
+				// Defer only a typed backend error. Its matched turn and agent
+				// envelopes must explicitly authorize Pi's own recovery sequence.
+				attemptFailure, failed, terminal = failure, true, event["message"]
+				state = 4
+				break
+			}
 			text, ok, diagnostic := reportText(event)
 			if !ok {
 				if failure := piTerminalFailure(event); failure != nil {
@@ -637,6 +650,17 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 			terminal = event["message"]
 			state = 4
 		case 4:
+			if kind == "auto_retry_end" && retryAttempt > 0 && !retryEnded && !failed && exactFields(event, "type", "success", "attempt") && bytes.Equal(event["success"], []byte("true")) && retryNumber(event, "attempt") == retryAttempt {
+				retryEnded = true
+				break
+			}
+			if failed {
+				if kind != "turn_end" || !exactFields(event, "type", "message", "toolResults") || !bytes.Equal(terminal, event["message"]) || !bytes.Equal(bytes.TrimSpace(event["toolResults"]), []byte("[]")) {
+					return "", false, attemptFailure
+				}
+				state = 5
+				break
+			}
 			turn, valid, diagnostic := reportText(event)
 			if kind != "turn_end" || !exactFields(event, "type", "message", "toolResults") {
 				return reject(reportStageEnvelope, reportReasonUnexpected)
@@ -678,10 +702,39 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 					return reject(reportStageMessage, reportReasonExtraMessages)
 				}
 			}
-			if !falseField(event, "willRetry") {
+			if failed {
+				if !bytes.Equal(event["willRetry"], []byte("true")) {
+					return "", false, attemptFailure
+				}
+				state = 10
+				break
+			}
+			if !falseField(event, "willRetry") || retryAttempt > 0 && !retryEnded {
 				return reject(reportStageMessage, reportReasonRetryFlag)
 			}
 			state = 6
+		case 10:
+			attempt, limit := retryNumber(event, "attempt"), retryNumber(event, "maxAttempts")
+			if kind != "auto_retry_start" || !exactFields(event, "type", "attempt", "maxAttempts", "delayMs", "errorMessage") || attempt != retryAttempt+1 || limit < attempt || limit > 3 || retryLimit != 0 && limit != retryLimit || retryNumber(event, "delayMs") < 0 || !stringFieldOK(event, "errorMessage") {
+				return reject(reportStageEnvelope, reportReasonUnexpected)
+			}
+			retryAttempt, retryLimit, retryEnded = attempt, limit, false
+			state = 11
+		case 11:
+			// Pi removes only the failed context entry before restarting. No
+			// message replacement, tools, or arbitrary session edits are admitted.
+			entry, valid := responseObject(event["entry"])
+			if kind != "entry_appended" || !exactFields(event, "type", "entry") || !valid || !exactFields(entry, "type", "id", "parentId", "targetId", "timestamp", "replacement") || stringFieldValue(entry["type"]) != "context_edit" || !stringFieldOK(entry, "id") || !stringFieldOK(entry, "timestamp") || !stringFieldOK(entry, "targetId") || !bytes.Equal(entry["parentId"], entry["targetId"]) || !bytes.Equal(entry["replacement"], []byte("null")) {
+				return reject(reportStageEnvelope, reportReasonUnexpected)
+			}
+			state = 12
+		case 12:
+			if kind != "agent_start" || !exactFields(event, "type") {
+				return reject(reportStageEnvelope, reportReasonUnexpected)
+			}
+			systemSeen, echoSeen, failed = false, false, false
+			systemStart, echoStart, terminal = nil, nil, nil
+			report, state = "", 1
 		case 6:
 			// pi 1.3.0 adds an aborted flag to agent_settled; an aborted run
 			// is never a report, so false stays required and true fails closed.
@@ -697,7 +750,19 @@ func parseReportStream(data []byte) (string, bool, *ReportNormalizationError) {
 	if state == 6 || state == 7 {
 		return report, true, nil
 	}
+	if attemptFailure != nil {
+		return "", false, attemptFailure
+	}
 	return "", false, &ReportNormalizationError{Stage: reportStageStream, Reason: reportReasonIncomplete}
+}
+
+// retryNumber accepts only nonnegative JSON integers, never null or strings.
+func retryNumber(event map[string]json.RawMessage, field string) int {
+	var value *int
+	if json.Unmarshal(event[field], &value) != nil || value == nil || *value < 0 {
+		return -1
+	}
+	return *value
 }
 
 // observedShape renders one bounded, sanitized shape descriptor for the

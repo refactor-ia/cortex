@@ -93,6 +93,48 @@ func reportStreamFixtureWithSystem(report, prompt string) []byte {
 	return bytes.Replace(stream, []byte(`"messages":[`), []byte(`"messages":[`+reportInitialSystemMessage+`,`), 1)
 }
 
+// retryReportFixture is synthetic: no provider response or private capture is embedded.
+func retryReportFixture() []byte {
+	failed := string(reportStreamFixture("partial fixture", "prompt fixture"))
+	failed = strings.ReplaceAll(failed, `"stopReason":"stop"`, `"stopReason":"error"`)
+	failed = strings.ReplaceAll(failed, `"willRetry":false`, `"willRetry":true`)
+	failed = strings.TrimSuffix(failed, "{\"type\":\"agent_settled\"}\n")
+	recovered := string(reportStreamFixture("Recovered fixture report", ""))
+	recovered = recovered[strings.Index(recovered, "{\"type\":\"agent_start\"}"):]
+	recovered = strings.Replace(recovered, `{"type":"turn_end"`, "{\"type\":\"auto_retry_end\",\"success\":true,\"attempt\":1}\n{\"type\":\"turn_end\"", 1)
+	return []byte(failed + "{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"synthetic transient error\"}\n" +
+		"{\"type\":\"entry_appended\",\"entry\":{\"type\":\"context_edit\",\"id\":\"edit\",\"parentId\":\"failed\",\"targetId\":\"failed\",\"timestamp\":\"1970-01-01T00:00:00Z\",\"replacement\":null}}\n" + recovered)
+}
+
+func TestParseReportStreamInternalRetry(t *testing.T) {
+	valid := retryReportFixture()
+	for _, tc := range []struct {
+		name    string
+		stream  []byte
+		success bool
+	}{
+		{"recovered internal attempt", valid, true},
+		{"ordinary report unchanged", reportStreamFixture("Recovered fixture report", ""), true},
+		{"retry end must succeed", bytes.Replace(valid, []byte(`"success":true`), []byte(`"success":false`), 1), false},
+		{"retry attempt must match", bytes.Replace(valid, []byte(`"success":true,"attempt":1`), []byte(`"success":true,"attempt":2`), 1), false},
+		{"retry start bounded", bytes.Replace(valid, []byte(`"maxAttempts":3`), []byte(`"maxAttempts":0`), 1), false},
+		{"failed attempt cannot contain tools", bytes.Replace(valid, []byte(`"toolResults":[]`), []byte(`"toolResults":[{}]`), 1), false},
+		{"context cannot replace a message", bytes.Replace(valid, []byte(`"replacement":null`), []byte(`"replacement":{}`), 1), false},
+		{"context target must match", bytes.Replace(valid, []byte(`"targetId":"failed"`), []byte(`"targetId":"other"`), 1), false},
+		{"final failure stays failure", bytes.ReplaceAll(valid, []byte(`"stopReason":"stop"`), []byte(`"stopReason":"error"`)), false},
+		{"retry exhaustion stays failure", bytes.Replace(valid, []byte(`"willRetry":true`), []byte(`"willRetry":false`), 1), false},
+		{"duplicate report rejected", append(append([]byte{}, valid...), reportStreamFixture("extra", "")...), false},
+		{"incomplete recovery rejected", valid[:bytes.Index(valid, []byte(`{"type":"auto_retry_end"`))], false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, ok, diagnostic := parseReportStream(tc.stream)
+			if ok != tc.success || (ok && (report != "Recovered fixture report" || diagnostic != nil)) || (!ok && (report != "" || diagnostic == nil)) {
+				t.Fatalf("report=%q ok=%v diagnostic=%#v", report, ok, diagnostic)
+			}
+		})
+	}
+}
+
 func TestReportCatalogFailureIsTypedBeforeAssetsOrRuntime(t *testing.T) {
 	root := t.TempDir()
 	request := ReportRequest{Role: qarole.RequirementsAnalyst, CatalogRoot: root}

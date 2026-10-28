@@ -66,17 +66,36 @@ func fakePi() int {
 	switch scenario, err := os.ReadFile("qa-report-scenario"); {
 	case err != nil:
 		return 2
-	case string(bytes.TrimSpace(scenario)) == "report":
+	case string(bytes.TrimSpace(scenario)) == "report" || string(bytes.TrimSpace(scenario)) == "retry-report":
 		qaRecordRoleEvidence()
+		retrying := string(bytes.TrimSpace(scenario)) == "retry-report"
+		if retrying {
+			f, err := os.OpenFile("qa-report-invocations", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				return 2
+			}
+			_, _ = f.WriteString("run\n")
+			_ = f.Close()
+			failed := `{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"error"}`
+			fmt.Print("{\"type\":\"agent_start\"}\n{\"type\":\"turn_start\"}\n")
+			fmt.Printf("{\"type\":\"message_start\",\"message\":%s}\n{\"type\":\"message_end\",\"message\":%s}\n{\"type\":\"turn_end\",\"message\":%s,\"toolResults\":[]}\n{\"type\":\"agent_end\",\"messages\":[%s],\"willRetry\":true}\n", failed, failed, failed, failed)
+			fmt.Print("{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"synthetic failure\"}\n{\"type\":\"entry_appended\",\"entry\":{\"type\":\"context_edit\",\"id\":\"edit\",\"parentId\":\"failed\",\"targetId\":\"failed\",\"timestamp\":\"fixture\",\"replacement\":null}}\n")
+		}
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": fixtureReport}},
 			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
 		})
-		fmt.Printf(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n" +
-			`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
+		if !retrying {
+			fmt.Print(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n")
+		}
+		fmt.Print(`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
 			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
-		fmt.Printf(`{"type":"message_end","message":%s}`+"\n"+`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message, message)
+		fmt.Printf(`{"type":"message_end","message":%s}`+"\n", message)
+		if retrying {
+			fmt.Print("{\"type\":\"auto_retry_end\",\"attempt\":1,\"success\":true}\n")
+		}
+		fmt.Printf(`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message)
 		fmt.Printf(`{"type":"agent_end","messages":[%s],"willRetry":false}`+"\n"+`{"type":"agent_settled"}`+"\n", message)
 		return 0
 	case string(bytes.TrimSpace(scenario)) == "blank":
@@ -236,6 +255,19 @@ func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "stage=catalog") {
 		t.Fatalf("stderr = %q, want stage=catalog", stderr.String())
+	}
+}
+
+func TestQARunAcceptsPiInternalRetryWithoutRelaunch(t *testing.T) {
+	args := reportFixture(t)
+	mustOK(os.WriteFile("qa-report-scenario", []byte("retry-report"), 0o600))
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	if code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if calls := string(must(os.ReadFile("qa-report-invocations"))); calls != "run\n" {
+		t.Fatalf("backend invocations=%q; want exactly one", calls)
 	}
 }
 

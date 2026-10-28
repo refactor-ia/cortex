@@ -194,6 +194,13 @@ run looks like, and where it currently stops:
    and never runs commands itself. On success the report is the only stdout output;
    the retained stream lands in `.cortex/qa-streams/` for audit.
 
+   Cortex does not launch retries or select fallback models. Pi may retry internally
+   within its single invocation. A recovered report is accepted only after matched
+   failed-attempt envelopes, an ordered retry notification (up to three attempts),
+   a deletion-only context edit, and a successful retry-end notification. Tools,
+   duplicate results, aborted runs, incomplete recovery and final backend failures
+   remain rejected; failed-attempt text is never returned as the report.
+
    **Evidence record schema:**
 
    `cortex qa run --evidence <file.json>` requires a top-level JSON array containing up to 8

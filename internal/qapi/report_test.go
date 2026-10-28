@@ -636,9 +636,9 @@ func livePiAssistantMessage(text string) string {
 		"content": []any{map[string]any{"type": "text", "text": text}},
 		"api":     "nan-api", "provider": "nan", "model": "glm5.3",
 		"stopReason": "stop", "timestamp": 0,
-		"usage":        map[string]any{"totalTokens": 0},
+		"usage":         map[string]any{"totalTokens": 0},
 		"thinkingLevel": "high",
-		"durationMs":   1234,
+		"durationMs":    1234,
 	})
 	if err != nil {
 		panic(err)
@@ -731,4 +731,132 @@ func TestParseReportStreamDiagnosticNamesTheObservedShape(t *testing.T) {
 	if strings.Contains(diagnostic.Detail, "SENSITIVE-FIXTURE-MARKER") || strings.Contains(diagnostic.Detail, "\n") {
 		t.Fatalf("detail leaks stream content or is not one line: %q", diagnostic.Detail)
 	}
+}
+
+// Issue #286: a pi 1.4.0 reasoning route completes one thinking block with an
+// empty content string and then emits the answer as a later block. Field names
+// follow a live pi 1.4.0 stream; every value here is synthetic, and no retained
+// stream content is reproduced. The update sequence mirrors the observation:
+// thinking block zero, a second thinking block that starts and ends without any
+// delta, then the text block.
+func pi140ReasoningStream(text string) []byte {
+	usage := `{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	update := func(event string) string {
+		return `{"type":"message_update","usage":` + usage + `,"assistantMessageEvent":` + event + `}`
+	}
+	quote := func(value string) string {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			panic(err)
+		}
+		return string(encoded)
+	}
+	thinking := func(content string) string {
+		return `{"type":"thinking","thinking":` + quote(content) + `,"thinkingSignature":"c2ln"}`
+	}
+	textBlock := `{"type":"text","text":` + quote(text) + `,"textSignature":"c2ln"}`
+	assistant := `{"role":"assistant","content":[` + thinking("Consider the requirement.") + `,` + thinking("") + `,` + textBlock + `],"api":"fixture-api","provider":"nan","model":"qwen3.6","usage":` + usage + `,"stopReason":"stop","timestamp":0,"responseId":"fixture","rawStopReason":"stop","durationMs":0,"thinkingLevel":"high"}`
+	start := `{"role":"assistant","content":[],"api":"fixture-api","provider":"nan","model":"qwen3.6","stopReason":"pending","timestamp":0,"usage":` + usage + `}`
+	user := reportUserMessage("fixture prompt")
+	lines := []string{
+		`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}`,
+		`{"type":"agent_start"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"message_start","message":` + reportInitialSystemMessage + `}`,
+		`{"type":"message_end","message":` + reportInitialSystemMessage + `}`,
+		`{"type":"message_start","message":` + user + `}`,
+		`{"type":"message_end","message":` + user + `}`,
+		`{"type":"message_start","message":` + start + `}`,
+		update(`{"type":"thinking_start","contentIndex":0}`),
+		update(`{"type":"thinking_delta","contentIndex":0,"delta":"Consider"}`),
+		update(`{"type":"thinking_end","contentIndex":0,"content":"Consider the requirement."}`),
+		update(`{"type":"thinking_start","contentIndex":1}`),
+		update(`{"type":"thinking_end","contentIndex":1,"content":""}`),
+		update(`{"type":"text_start","contentIndex":2}`),
+		update(`{"type":"text_delta","contentIndex":2,"delta":"Fixture"}`),
+		update(`{"type":"text_end","contentIndex":2,"content":` + quote(text) + `}`),
+		`{"type":"message_end","message":` + assistant + `}`,
+		`{"type":"turn_end","message":` + assistant + `,"toolResults":[]}`,
+		`{"type":"agent_end","messages":[` + reportInitialSystemMessage + `,` + user + `,` + assistant + `],"willRetry":false}`,
+		`{"type":"agent_settled","aborted":false}`,
+	}
+	var stream bytes.Buffer
+	for _, line := range lines {
+		stream.WriteString(line + "\n")
+	}
+	return stream.Bytes()
+}
+
+// rewriteAssistantContent applies one content-array rewrite to every event that
+// serializes the assistant message, so the three serializations stay identical.
+func rewriteAssistantContent(t *testing.T, stream []byte, rewrite func([]any) []any) []byte {
+	t.Helper()
+	lines := streamLines(t, stream)
+	for index, line := range lines {
+		var event map[string]any
+		if json.Unmarshal(line, &event) != nil {
+			t.Fatalf("decode event %d", index)
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, assistant := message["provider"]; !assistant {
+			continue
+		}
+		content, ok := message["content"].([]any)
+		if !ok || len(content) == 0 {
+			continue
+		}
+		message["content"] = rewrite(content)
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("encode event %d", index)
+		}
+		lines[index] = encoded
+	}
+	return joinStream(lines)
+}
+
+// Issue #286: a completed pi 1.4.0 reasoning stream was rejected as
+// invalid_message: the parser required a non-empty content string on every
+// completed thinking block and allowed at most one leading thinking block.
+func TestParseReportStreamReasoningBlocks(t *testing.T) {
+	const text = "Requirements analysis fixture report"
+	t.Run("a completed reasoning stream delivers only its text block", func(t *testing.T) {
+		report, ok, diagnostic := parseReportStream(pi140ReasoningStream(text))
+		if !ok || diagnostic != nil || report != text {
+			t.Fatalf("parseReportStream() = %q, %t, %#v; want the text block", report, ok, diagnostic)
+		}
+		if strings.Contains(report, "Consider the requirement.") {
+			t.Fatalf("reasoning block leaked into the report: %q", report)
+		}
+	})
+	t.Run("an unknown reasoning update kind is rejected", func(t *testing.T) {
+		stream := bytes.Replace(pi140ReasoningStream(text), []byte(`{"type":"thinking_end","contentIndex":1,"content":""}`), []byte(`{"type":"thinking_finish","contentIndex":1,"content":""}`), 1)
+		if _, ok, diagnostic := parseReportStream(stream); ok || diagnostic == nil || diagnostic.Stage != reportStageMessage {
+			t.Fatalf("parseReportStream() = %t, %#v; want a rejected update", ok, diagnostic)
+		}
+	})
+	t.Run("a completed update with a non-string content is rejected", func(t *testing.T) {
+		stream := bytes.Replace(pi140ReasoningStream(text), []byte(`{"type":"thinking_end","contentIndex":1,"content":""}`), []byte(`{"type":"thinking_end","contentIndex":1,"content":0}`), 1)
+		if _, ok, diagnostic := parseReportStream(stream); ok || diagnostic == nil || diagnostic.Stage != reportStageMessage {
+			t.Fatalf("parseReportStream() = %t, %#v; want a rejected update", ok, diagnostic)
+		}
+	})
+	t.Run("a thinking block after the text block is not a report", func(t *testing.T) {
+		stream := rewriteAssistantContent(t, pi140ReasoningStream(text), func(content []any) []any {
+			return append(content[1:], content[0])
+		})
+		if _, ok, diagnostic := parseReportStream(stream); ok || diagnostic == nil || diagnostic.Stage+"/"+diagnostic.Reason != reportStageMessage+"/"+reportReasonInvalidMessage {
+			t.Fatalf("parseReportStream() = %t, %#v; want invalid_message", ok, diagnostic)
+		}
+	})
+	t.Run("a rejected update names its own event index", func(t *testing.T) {
+		stream := bytes.Replace(pi140ReasoningStream(text), []byte(`{"type":"thinking_end","contentIndex":1,"content":""}`), []byte(`{"type":"thinking_finish","contentIndex":1,"content":""}`), 1)
+		_, _, diagnostic := parseReportStream(stream)
+		if diagnostic == nil || !strings.Contains(diagnostic.Detail, "event=12 ") {
+			t.Fatalf("detail %q does not name event 12", diagnostic)
+		}
+	})
 }

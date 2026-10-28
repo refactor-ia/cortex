@@ -241,3 +241,34 @@ func responseFixture(t *testing.T) []byte {
 	}
 	return data
 }
+
+// Issue #286: a reasoning route completes a thinking block with an empty
+// content string. The update envelope is still well formed, so the parser keeps
+// accepting it; every other shape stays closed.
+func TestResponseUpdateShape(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event string
+		want  bool
+	}{
+		{"completed thinking block", `{"type":"thinking_end","contentIndex":0,"content":"x"}`, true},
+		{"completed empty thinking block", `{"type":"thinking_end","contentIndex":1,"content":""}`, true},
+		{"completed empty text block", `{"type":"text_end","contentIndex":0,"content":""}`, true},
+		{"empty delta", `{"type":"text_delta","contentIndex":0,"delta":""}`, false},
+		{"unknown update kind", `{"type":"thinking_finish","contentIndex":0,"content":""}`, false},
+		{"non-string content", `{"type":"thinking_end","contentIndex":0,"content":0}`, false},
+		{"extra field", `{"type":"thinking_end","contentIndex":0,"content":"","extra":1}`, false},
+		{"missing content index", `{"type":"thinking_end","content":""}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := map[string]json.RawMessage{
+				"type":                  json.RawMessage(`"message_update"`),
+				"usage":                 json.RawMessage(`{"totalTokens":0}`),
+				"assistantMessageEvent": json.RawMessage(tc.event),
+			}
+			if got := validUpdate(event); got != tc.want {
+				t.Fatalf("validUpdate(%s) = %t, want %t", tc.event, got, tc.want)
+			}
+		})
+	}
+}

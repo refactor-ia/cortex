@@ -13,6 +13,16 @@ the harness workflow or its consent prompts.
 
 ## 0. Preflight (seconds)
 
+- Enter delivery for coordination of accepted work, not direct PR assessment.
+  Follow `cortex-maintainer-review` Integration Contract
+  for bounded consultations, evidence dependencies and evidence-linked handoffs,
+  including applied/proposed/denied actions and authorization limits.
+- Consult `cortex-maintainer-triage` only for missing
+  intake facts, without restarting its full workflow. Reuse current evidence and human feature decision;
+  unresolved triage remains unresolved, not implied acceptance. Triage owns
+  duplicate/report/version checks and triage labels/comments; this delivery
+  skill remains advisory and grants no additional execution authority.
+
 - Read the destination repository's contributor guidance, project instructions,
   PR template, CI and branch protection: derive its issue policy, size budget,
   pre-push checks, review and merge requirements, not this skill's defaults.
@@ -58,6 +68,11 @@ re-scoping with the operator when review load grows.
 
 ## 4. Review and PR
 
+- Use `cortex-maintainer-review` for solution
+  assessment before publication and the merge decision. Reuse evidence for the
+  exact candidate SHA and applicable execution context; refresh only missing or
+  invalidated conclusions. Its recommendation is not publication or merge consent.
+
 - Follow the repository's review requirements; tooling and consent remain the
   operator's, with no model or harness-specific prerequisite from this skill.
 - Consider committing only the change (no task or scratch files), following
@@ -89,8 +104,14 @@ feedback turnaround.
 Use the repository's merge requirements, permissions, required checks, reviews
 and sensitive-area ownership to determine readiness; this skill grants no
 approval or self-merge permission. Right before merging: repeat the race check,
-confirm issue state and intended scope, and check for conflicting base movement.
-The operator decides whether to proceed or seek another maintainer's review.
+confirm issue state and intended scope, check for conflicting base movement,
+and confirm applicable step 3 evidence still holds for the exact candidate and
+execution context. If the base or another evidence dependency changed, refresh
+only affected comparisons and checks, including local tests where applicable
+under repository policy. Distinguish justified non-applicability from unavailable
+required proof. Report missing required proof as unresolved readiness, not green;
+this advisory skill enforces no merge gate. The operator decides whether to
+proceed, accept a stated gap where policy permits, or seek maintainer review.
 
 ## Stacked PR chains
 
@@ -106,7 +127,7 @@ Landing a chain:
   repository's merge strategy. A squash or rebase merge may leave parent commits
   in the child: reconcile ancestry and inspect the child-only diff, not merely
   its target branch. Choose a repository-supported update with the operator
-  (no force push assumed), resolve conflicts and re-run checks before continuing.
+  (no force push assumed), resolve conflicts and refresh affected checks before continuing.
 - After the base changes, recompute derived values (catalog fingerprints,
   identities, generated counts and inventories) from the tests rather than
   blindly taking either side of a git conflict on a generated or derived file.
@@ -115,7 +136,8 @@ Landing a chain:
 
 Time from taking the issue to merge, split into active work and waiting (CI,
 bots, humans). Also PRs in flight. A slow merge caused by waiting is fixed by
-step 5, not by skipping checks.
+step 5, not by skipping applicable checks or hiding unresolved required proof
+from the readiness assessment in step 7.
 
 ---
 

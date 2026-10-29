@@ -1,10 +1,10 @@
 # Cortex
 
-Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. Today that means eight capabilities on Pi, OpenCode, and Claude Code: six quality-assurance roles, one report-only QA guide, and one delivery-practice skill.
+Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. The source catalog contains twelve capabilities for projection onto Pi, OpenCode, and Claude Code: six quality-assurance roles, one report-only QA guide, three maintainer skills, and two documentation guides.
 
 It writes only its own files, transactionally, and removes exactly what it wrote on uninstall. It never installs or replaces a runtime, never touches your configuration, and does nothing at all when you are not running a Cortex command.
 
-> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today. **Implementation is not complete:** one family of eleven carries capabilities, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
+> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today. **Implementation is not complete:** three families of eleven carry capabilities, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
 
 ## What you get
 
@@ -18,11 +18,17 @@ It writes only its own files, transactionally, and removes exactly what it wrote
 | `evidence-auditor` | Evaluates evidence sufficiency, attribution, and uncertainty. |
 | `qa-no-ci` | A report-only guide for running QA when a project has no CI. |
 | `maintainer-delivery` | An advisory checklist for taking an issue to merge; the operator decides and runs every step. |
+| `maintainer-triage` | Validates reports, versions and duplicates; tracks human feature decisions and applies authorized labels/comments. |
+| `maintainer-review` | Assesses solution fit, side effects, user experience, complexity and costs; recommendations are not merge permission. |
+| `guide-writing` | Produces actionable project documentation with verified steps and honest status. |
+| `odd-roadmap` | Maintains a result-oriented roadmap coordination index without taking over the development workflow. |
 
-The [architecture](docs/architecture/overview.md#bounded-maintainer-triage-actions)
-now permits authorized maintainer-triage labels/comments, without granting review
-or delivery authority. The separate triage/review catalog integration is pending;
-this boundary expansion does not claim those skills are distributed yet.
+Enter triage for intake, review for a direct diff/PR assessment, or delivery for
+accepted-work coordination. Reuse applicable evidence; these are not mandatory
+pipeline stages. Labels/comments require user authorization and repository policy
+under the [bounded triage contract](docs/architecture/overview.md#bounded-maintainer-triage-actions).
+Skill activation grants no permission and installs no GitHub event listener.
+Catalog projection is covered by isolated tests, not a release certification.
 
 On Pi, the six QA roles are also registered as agents, not just skills.
 
@@ -83,7 +89,7 @@ Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no life
 | --- | --- |
 | **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall`. |
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix. Not yet an end-to-end product. |
-| **Target only** | Full 11-family × 3-runtime parity, release certification, the remaining ten families' capabilities. |
+| **Target only** | Full 11-family × 3-runtime parity, release certification, the remaining eight families' capabilities. |
 
 Where it is going: one curated distribution projecting approved capabilities into compatible runtimes through generated adapters, across eleven curation families — reasoning, model intelligence, execution, quality assurance, web, mobile, PCSoft, services, personal, memory integration, and documentation. Families are internal curation boundaries, not user-selected packs. No delivery date is promised. User model profiles are not a Cortex capability: Gentle-Shell™ owns them.
 

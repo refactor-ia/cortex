@@ -15,7 +15,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/skillrender"
 )
 
-const builtInFingerprint = "22442a82c57eb4016af24df09a0a68c039d2228a5c6b843f53b1c8c8819213b2"
+const builtInFingerprint = "cb6c8289cc0d4d3fd043328550bd7a2ae2b363445a7a203bce96e46c033ed432"
 
 func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	snapshot, err := Snapshot()
@@ -29,12 +29,12 @@ func TestSnapshotLoadsEmbeddedCatalog(t *testing.T) {
 	if len(qualityAssurance.Capabilities()) != 7 {
 		t.Fatalf("quality-assurance capabilities = %d, want 7", len(qualityAssurance.Capabilities()))
 	}
-	if total := totalCapabilities(snapshot); total != 10 {
-		t.Fatalf("embedded capabilities = %d, want 10", total)
+	if total := totalCapabilities(snapshot); total != 12 {
+		t.Fatalf("embedded capabilities = %d, want 12", total)
 	}
 	reasoning := familyByID(t, snapshot, "reasoning")
-	if len(reasoning.Capabilities()) != 1 {
-		t.Fatalf("reasoning capabilities = %d, want 1", len(reasoning.Capabilities()))
+	if len(reasoning.Capabilities()) != 3 {
+		t.Fatalf("reasoning capabilities = %d, want 3", len(reasoning.Capabilities()))
 	}
 	documentation := familyByID(t, snapshot, "documentation")
 	if len(documentation.Capabilities()) != 2 {
@@ -108,7 +108,7 @@ func TestSnapshotProjectsEmbeddedCapabilitiesToRuntimeDestinations(t *testing.T)
 }
 
 // expectedDestinations is one skill per embedded capability: the seven
-// quality-assurance skills, the reasoning-family maintainer-delivery skill,
+// quality-assurance skills, the three reasoning-family maintainer skills,
 // and the two documentation-family skills, the only capabilities the
 // catalog carries.
 var expectedDestinations = []string{
@@ -117,6 +117,8 @@ var expectedDestinations = []string{
 	"skills/cortex-exploratory-tester/SKILL.md",
 	"skills/cortex-guide-writing/SKILL.md",
 	"skills/cortex-maintainer-delivery/SKILL.md",
+	"skills/cortex-maintainer-review/SKILL.md",
+	"skills/cortex-maintainer-triage/SKILL.md",
 	"skills/cortex-odd-roadmap/SKILL.md",
 	"skills/cortex-qa-no-ci/SKILL.md",
 	"skills/cortex-requirements-analyst/SKILL.md",

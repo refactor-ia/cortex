@@ -19,6 +19,11 @@ It writes only its own files, transactionally, and removes exactly what it wrote
 | `qa-no-ci` | A report-only guide for running QA when a project has no CI. |
 | `maintainer-delivery` | An advisory checklist for taking an issue to merge; the operator decides and runs every step. |
 
+The [architecture](docs/architecture/overview.md#bounded-maintainer-triage-actions)
+now permits authorized maintainer-triage labels/comments, without granting review
+or delivery authority. The separate triage/review catalog integration is pending;
+this boundary expansion does not claim those skills are distributed yet.
+
 On Pi, the six QA roles are also registered as agents, not just skills.
 
 ## Start in two minutes

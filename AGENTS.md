@@ -11,5 +11,5 @@ Architecture documentation is the authority for Cortex product boundaries. Keep 
 - Use conventional commits.
 - User configuration remains user-owned; Cortex must not take it over without explicit ownership.
 - For JavaScript or TypeScript tooling, use `pnpm` rather than `npm`.
-- Cortex has no Git, SDD, TDD, or review authority.
+- Cortex has no Git, SDD, TDD, or review authority. Maintainer triage may execute only explicitly authorized issue/PR labels and comments under the architecture's bounded contract; skill activation is not authorization.
 - `git-specialist` is permanently excluded from this repository.

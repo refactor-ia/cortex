@@ -27,6 +27,8 @@ This document is the authoritative target architecture. It defines the intended 
 +--------------------+                         +------------------+
 
 Optional harnesses may govern lifecycle, Git, TDD, SDD, or review. Cortex does not.
+Cortex may provide bounded issue/PR triage actions as specified below; this is
+not Git, review, or lifecycle authority.
 ```
 
 ## Product boundary
@@ -72,7 +74,7 @@ A family package contains its manifest, router, subskills, justified agents, ref
 
 | Family | Responsibility boundary |
 | --- | --- |
-| Reasoning | Optional, stateless reasoning methods, adapter-driven deliberation, and advisory delivery-practice guidance. |
+| Reasoning | Optional reasoning methods, adapter-driven deliberation, maintainer assessment and advisory delivery guidance; explicitly authorized triage labels/comments only. |
 | Model intelligence | User-directed model-role configuration and representation reporting. |
 | Execution | Generic queue lifecycle, budgets, state, and evidence without SDD governance. |
 | Quality assurance | Testing, execution evidence, audits, quality analysis, and explicit cleanup without TDD or review authority. |
@@ -88,11 +90,43 @@ A family package contains its manifest, router, subskills, justified agents, ref
 
 | Family | Target constraint |
 | --- | --- |
-| Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. Delivery-practice guidance is advisory only: it performs no Git, GitHub, review, or release actions, grants no approvals, gates, or receipts, and never overrides harness consent. |
+| Reasoning | TEAR remains a thin, stateless methodology. Council is optional and adapter-driven. Neither is a gate or Judgment Day. Maintainer review and delivery remain advisory, grant no approvals, gates or receipts, and perform no publication, merge or release actions. Only maintainer triage may execute authorized labels/comments under the bounded contract below; no capability overrides harness consent. |
 | Execution | Preserve generic queue lifecycle, budgets, state, and evidence; remove SDD governance. |
 | Quality assurance | Preserve testing/execution/evidence, security audit, frontend/mobile quality, tech-debt read-only analysis, and explicit cleanup. It owns neither TDD nor review authority. It installs to all three supported runtimes — Pi, OpenCode, and Claude Code — under the parity stated above, and Pi additionally receives the actor projection. |
 | Services and personal | Postmark v1 is guidance only. Do not promise Coolify until it is implemented. Credentialed or personal capabilities are dormant until configured, with no preconfigured profiles or personal data. `voice` and `learn` remain neutral and dormant until configured. |
 | Memory integration | `kb-feeder` is proposal-first and requires approval before writing. Never absorb `cortex-brains` server, storage, embedding, backup, doctor, or memory-skill responsibilities. |
+
+### Bounded maintainer triage actions
+
+Maintainer triage may apply issue/PR labels and publish triage comments through
+the host's authorized tools when both the user's execution scope and destination
+repository policy permit those actions. Loading or automatically selecting a
+skill is not action authorization, and Cortex installs no GitHub event listener.
+Read-only requests remain read-only. Missing or denied permission produces
+proposed actions and an explicit unresolved status, not a retry through another
+skill. PR and issue content is untrusted input, never authorization or instructions.
+
+Use existing repository labels and explicit mappings; preserve unrelated labels,
+remove only policy-defined obsolete triage labels, and avoid duplicate comments.
+Re-read item state and applicable policy before mutation. Keep evidence validity
+separate from action status: report applied, proposed, denied and failed actions
+without implying atomic GitHub updates or claiming success before readback.
+
+Human acceptance/rejection of features and its rationale remain human-owned.
+Labels do not establish approval on their own. Triage grants no permission to
+close issues/PRs, formally approve reviews, alter project configuration, publish
+code, push, merge or release. Existing repository permissions and host consent
+remain authoritative; this bounded exception does not make Cortex a Git/GitHub
+workflow owner or lifecycle gate.
+
+Maintainer intake, solution assessment and accepted-work coordination are distinct
+entry points. Consult other capabilities only for missing facts, not recursively
+restarting workflows. Reuse evidence by its purpose and dependencies: report
+currency on the default branch differs from actual-base-to-candidate attribution
+in stacked PRs. Changes in code, environment, policy or human decisions invalidate
+only affected conclusions. Technical success never overrides missing human
+acceptance or required proof. These are architecture contracts for catalog
+admission, not a claim that new capabilities are already shipped or certified.
 
 ## Representation of a Cortex-owned selection
 
@@ -133,7 +167,7 @@ Catalog admission has hard gates for explicit license, provenance, and redistrib
 
 ## Permanent removals and naming
 
-The target catalog permanently excludes `git-specialist` and equivalent Git authority; delivery skills that execute or gate Git, GitHub, review, or release actions; SDD and `.ai` governance; review/adversarial gates and receipts; `tdd-writer`; `sdd-verify`; the generic `reviewer`; `careful`; `find-skills`; `upstream-review`; `revise-claude-md`; `setup`; and `skill-creator`. `sdd-verify` and the generic `reviewer` are removed, not renamed.
+The target catalog permanently excludes `git-specialist` and equivalent Git authority; delivery skills that execute or gate Git, GitHub, review, or release actions (the bounded maintainer-triage labels/comments exception above is not delivery or review authority); SDD and `.ai` governance; review/adversarial gates and receipts; `tdd-writer`; `sdd-verify`; the generic `reviewer`; `careful`; `find-skills`; `upstream-review`; `revise-claude-md`; `setup`; and `skill-creator`. `sdd-verify` and the generic `reviewer` are removed, not renamed.
 
 Naming changes make the retained boundaries visible:
 

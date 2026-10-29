@@ -30,11 +30,6 @@ under the [bounded triage contract](docs/architecture/overview.md#bounded-mainta
 Skill activation grants no permission and installs no GitHub event listener.
 Catalog projection is covered by isolated tests, not a release certification.
 
-The [architecture](docs/architecture/overview.md#bounded-maintainer-triage-actions)
-now permits authorized maintainer-triage labels/comments, without granting review
-or delivery authority. The separate triage/review catalog integration is pending;
-this boundary expansion does not claim those skills are distributed yet.
-
 On Pi, the six QA roles are also registered as agents, not just skills.
 
 ## Start in two minutes

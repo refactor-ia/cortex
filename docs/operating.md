@@ -41,7 +41,7 @@ runtime=pi presence=present compatibility=compatible action=configure touch=deni
 | `action` | What install would do: `configure`, or a skip/refusal for incompatible or unidentifiable targets. |
 | `touch` | Always `denied` in doctor: doctor never writes. |
 
-**Exit code**: 0 means an install can proceed; a non-zero exit means uncertainty — read the report, do not retry blindly. If a runtime version cannot be identified at all, Cortex refuses to write to that runtime; report this to the user rather than editing configuration to force it.
+**Exit code**: 0 reports successful runtime/readiness probing, not verified asset ownership, successful model execution or certification. A later install/update can still refuse a conflict. A non-zero exit means uncertainty — read the report, do not retry blindly. If a runtime version cannot be identified at all, Cortex refuses to write to that runtime; report this to the user rather than editing configuration to force it.
 
 ## Running install
 
@@ -97,6 +97,34 @@ cortex update --runtime pi --catalog ./catalog --apply  # the plan, applied
 ```
 
 Default mode touches nothing — run the plan first, read it, then decide. `--apply` writes only inside that runtime's Cortex-owned root. On Pi, if legacy externally-modified guidance is detected, the plan asks for explicit consent with `--adopt-guidance`: that is a one-time adoption of external bytes (they are preserved, not overwritten), not a drift override, and drift is always refused.
+
+## Upgrade to alpha20
+
+Use the [published alpha20 archive and checksum procedure](verification.md#verify-an-archive) for the machine's platform. Keep the extracted binary, catalog and licenses together in a versioned directory. Do not replace user model routes or runtime configuration with release defaults.
+
+1. Run the extracted `./cortex --version` and check the exact release identity in [delivered evidence](verification.md#alpha20-delivered-evidence).
+2. Record the currently selected executable (`command -v cortex`) and its version. Back up that executable before replacement; stop if it is not the location you intended to manage. Do not change shell PATH or overwrite a different installation implicitly.
+3. For each present runtime, run the read-only plan with an **absolute** path to the newly extracted catalog:
+
+   ```bash
+   ./cortex update --runtime pi --catalog "$(pwd)/catalog"
+   # Only after an admitted plan:
+   ./cortex update --runtime pi --catalog "$(pwd)/catalog" --apply
+   ```
+
+   Repeat for `opencode` and `claude-code`. Per-runtime updates are separate transactions: success in one does not make the entire machine complete. For a first installation, use `install`, not `update`.
+4. Retain the reported Cortex transaction backup IDs. Read back the owned capability files through the ownership manifest; unrelated bare skill directories can coexist with Cortex-prefixed directories. Do not delete a duplicate-looking directory to make verification pass.
+5. Replace the intended executable atomically from the verified release, retaining its backup. Check the selected `cortex --version` again. `doctor` is a separate readiness probe, not proof that each update applied or that model calls work.
+
+### Pi guidance refusal and explicit adoption
+
+`status=conflict reason=actor_guidance_unverified` means the Pi update has not verified existing guidance ownership. That runtime is **not updated**, even if other runtimes or the executable succeeded. Do not delete guidance, alter ownership records, force an overwrite, or silently add `--adopt-guidance`.
+
+Where verified legacy external guidance is eligible, an owner may explicitly authorize conservative adoption using `--adopt-guidance` on the Pi plan and apply commands. Adoption preserves the external guidance; it does not authorize arbitrary drift or bypass other refusals. An agent must obtain that specific decision rather than infer it from a general installation request. If admission still fails, report the reason and leave Pi unchanged.
+
+### Partial failure and recovery
+
+Preserve command exit codes, output and the last completed transaction. A failed post-update verifier does not prove that the preceding update rolled back. Inspect the recorded ownership paths/hashes and backup IDs before continuing; do not blindly repeat already-applied work. Backups and a restored executable alone do not roll back capability files. Follow the applicable transaction recovery contract, and report a partial installation honestly when proof or authorization is unavailable.
 
 ## Running uninstall
 

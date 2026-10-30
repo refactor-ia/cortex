@@ -728,6 +728,30 @@ func TestQARunNamesThePreflightRefusalStage(t *testing.T) {
 	})
 }
 
+// TestQARunModelProbeEscapesTheRoutedPair pins the safety half of S4/S5: the
+// routed provider/model come from a caller-owned profile file, so they are
+// bounded and escaped before they reach the operator's terminal. The profile is
+// staged in the disposable catalog copy, never in the repository catalog.
+func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
+	args := reportFixture(t)
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			args[index+1] = catalogRoot
+		}
+	}
+	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
+	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
+	stderr, code := runQARefusal(t, args)
+	if code != exitFailure || strings.Contains(stderr, "\x1b") {
+		t.Fatalf("hostile routed pair = %d stderr %q, want escaped output", code, stderr)
+	}
+	if !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
+		t.Fatalf("stderr %q does not escape the routed model", stderr)
+	}
+}
+
 // TestQAReportNoteClaimsNoRoute pins #374 S5: the prerequisite note printed
 // with every non-catalog refusal no longer claims the placeholder "nan" route,
 // because a refusal often happens with a profile route already resolved (or

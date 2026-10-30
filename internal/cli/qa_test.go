@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +258,63 @@ func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	if !strings.Contains(stderr.String(), "stage=catalog") {
 		t.Fatalf("stderr = %q, want stage=catalog", stderr.String())
 	}
+}
+
+// TestQARunRefusesAShadowedActorBeforeLaunch pins the public half of #329 and
+// #374 S3/S4: a run whose selected actor is shadowed by a project file is
+// refused at the admission stage that refused, and the refusal names it instead
+// of reporting only that assets were unavailable. Nothing is launched, and the
+// disposable install tree and working directory are unchanged afterwards.
+func TestQARunRefusesAShadowedActorBeforeLaunch(t *testing.T) {
+	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	cwd := must(os.Getwd())
+	shadow := filepath.Join(cwd, ".pi", "agents", "other.md")
+	mustOK(os.MkdirAll(filepath.Dir(shadow), 0o700))
+	mustOK(os.WriteFile(shadow, []byte("---\nname: cortex-requirements-analyst\n---\n"), 0o600))
+	before := qaFixtureFingerprint(t, os.Getenv("HOME"), cwd)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := "error=actor_unavailable\n" + qaReportNote + "stage=actor_admission\nadmission_stage=actor_shadow_unverified\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("shadowed run = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	for _, artifact := range []string{"qa-report-frame", qaReportRoleEvidencePath, "qa-report-invocations"} {
+		if _, err := os.Stat(filepath.Join(cwd, artifact)); !os.IsNotExist(err) {
+			t.Fatalf("a shadowed actor wrote %q, want no launch", artifact)
+		}
+	}
+	if after := qaFixtureFingerprint(t, os.Getenv("HOME"), cwd); after != before {
+		t.Fatalf("a refused run changed the fixture tree:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// qaFixtureFingerprint summarizes the disposable roots one refusal may touch —
+// relative path, mode, size, and content digest per entry — so a test can prove
+// a refused run wrote nothing. It reads only the fixture roots it is given.
+func qaFixtureFingerprint(t *testing.T, roots ...string) string {
+	t.Helper()
+	lines := make([]string, 0, 64)
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			line := fmt.Sprintf("%s %s %d", path, info.Mode(), info.Size())
+			if info.Mode().IsRegular() {
+				line += fmt.Sprintf(" %x", sha256.Sum256(must(os.ReadFile(path))))
+			}
+			lines = append(lines, line)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
 }
 
 func TestQARunAcceptsPiInternalRetryWithoutRelaunch(t *testing.T) {
@@ -513,6 +572,15 @@ func qaCatalogArgument(args []string) string {
 // against, so any file already there is restored, never left mutated.
 func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
 	t.Helper()
+	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
+	qaProfileBodyFixture(t, catalogRoot, profile)
+}
+
+// qaProfileBodyFixture stages one exact profile body in the catalog root and
+// restores the previous state afterwards. A profile the test itself authored
+// is the only way to pin what a diagnostic does with caller-supplied text.
+func qaProfileBodyFixture(t *testing.T, catalogRoot, body string) {
+	t.Helper()
 	profileDirectory := filepath.Join(catalogRoot, "cortex")
 	mustOK(os.MkdirAll(profileDirectory, 0o700))
 	path := filepath.Join(profileDirectory, "qa-profiles.json")
@@ -525,8 +593,7 @@ func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) 
 		_ = os.Remove(path)
 		_ = os.Remove(profileDirectory)
 	})
-	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
-	mustOK(os.WriteFile(path, []byte(profile), 0o600))
+	mustOK(os.WriteFile(path, []byte(body), 0o600))
 }
 
 // profileReportFixture materializes the report fixture plus the two-profile
@@ -579,6 +646,111 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 			t.Fatal("a refused profile must not launch the backend")
 		}
 	})
+}
+
+// TestQARunNamesThePreflightRefusalStage pins #374 S4: each preflight refusal
+// says which question refused — route resolution, actor admission, model probe,
+// or evidence admission — using the stage vocabulary the pipeline already
+// distinguishes, and a post-launch outcome claims no preflight stage at all.
+func TestQARunNamesThePreflightRefusalStage(t *testing.T) {
+	t.Run("route resolution names no resolved route", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--profile", "no-such-profile"))
+		for _, want := range []string{"stage=route_resolution\n", "profile_valid_ids=fleet-default,qa-fleet"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("unknown --profile stderr %q does not name %q", stderr, want)
+			}
+		}
+		// A refused route resolution never claims a routed pair: none was
+		// resolved, so naming one would be a guess (S4/S5).
+		if code != exitFailure || strings.Contains(stderr, "route_provider=") || strings.Contains(stderr, "placeholder") {
+			t.Fatalf("unknown --profile = %d stderr %q, want no claimed route", code, stderr)
+		}
+	})
+	t.Run("model probe names the routed pair the profile resolved", func(t *testing.T) {
+		args := profileReportFixture(t)
+		mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--profile", "qa-fleet"))
+		for _, want := range []string{"stage=model_probe\n", "route_provider=openai-codex route_model=gpt-5.6-terra\n"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("model probe stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("model probe = %d stderr %q", code, stderr)
+		}
+	})
+	t.Run("an incomplete backend route is a route resolution refusal", func(t *testing.T) {
+		args := reportFixture(t)
+		catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+		mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+		for index, arg := range args {
+			if arg == "--catalog" && index+1 < len(args) {
+				args[index+1] = catalogRoot
+			}
+		}
+		// The profile routes this role on claude only, so a pi run is
+		// incomplete rather than unresolvable.
+		qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"claude":{"provider":"claude","model":"claude-fixture","effort":"medium"}}}}}}`)
+		stderr, code := runQARefusal(t, args)
+		for _, want := range []string{"error=route_incomplete\n", "stage=route_resolution\n", "route_missing_backend=pi remedy="} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("incomplete route stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("incomplete route = %d stderr %q", code, stderr)
+		}
+	})
+	t.Run("evidence admission is named before launch", func(t *testing.T) {
+		args := reportFixture(t)
+		mustOK(os.WriteFile("evidence.json", []byte(`{"schema":"custom"}`), 0o600))
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--evidence", "evidence.json"))
+		for _, want := range []string{"error=invalid_request\n", "stage=evidence_admission\n"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("evidence refusal stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("evidence refusal = %d stderr %q", code, stderr)
+		}
+		if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+			t.Fatal("a refused evidence sidecar must not launch the backend")
+		}
+	})
+	t.Run("a post-launch outcome claims no preflight stage", func(t *testing.T) {
+		args := reportFixture(t)
+		mustOK(os.WriteFile("qa-report-scenario", []byte("nonzero"), 0o600))
+		stderr, code := runQARefusal(t, args)
+		if code != exitFailure || strings.Contains(stderr, "stage=") {
+			t.Fatalf("post-launch failure = %d stderr %q, want no preflight stage", code, stderr)
+		}
+	})
+}
+
+// TestQAReportNoteClaimsNoRoute pins #374 S5: the prerequisite note printed
+// with every non-catalog refusal no longer claims the placeholder "nan" route,
+// because a refusal often happens with a profile route already resolved (or
+// with no route resolved at all).
+func TestQAReportNoteClaimsNoRoute(t *testing.T) {
+	for _, banned := range []string{"nan", "placeholder", "default route"} {
+		if strings.Contains(qaReportNote, banned) {
+			t.Fatalf("the prerequisite note still claims %q: %q", banned, qaReportNote)
+		}
+	}
+}
+
+// runQARefusal runs one public qa invocation that must be refused, and returns
+// its stderr and exit code. Success is a test bug: the callers assert on
+// refusals only.
+func runQARefusal(t *testing.T, args []string) (string, int) {
+	t.Helper()
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	if code == exitOK {
+		t.Fatalf("Run(%q) unexpectedly succeeded: stdout %q", args, stdout.String())
+	}
+	return stderr.String(), code
 }
 
 // TestQARunAcceptsTheDocumentedOptionalFlagsTogether pins the documented

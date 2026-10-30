@@ -189,7 +189,9 @@ user-owned profile file in the catalog root:
 
 Location: `<catalog-root>/cortex/qa-profiles.json` (mode 0600, regular file). The
 `defaultProfile` applies to every `qa run` without a `--profile` flag; pass
-`--profile <id>` to select another profile for one run. When the pinned model is
+`--profile <id>` to select another profile for one run. The three optional flags
+`--backend`, `--evidence` and `--profile` are independent: each may be supplied
+once, in any order, after the required flags. When the pinned model is
 absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
 

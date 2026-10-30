@@ -301,7 +301,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "run" && args[1] == "--help" {
 		return writeHelp(stdout, stderr, qaHelp)
 	}
-	if len(args) < 7 || len(args) > 11 || (len(args)-7)%2 != 0 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
+	// The three optional flags are at most one pair each: 7 required arguments
+	// plus 3 pairs. Nothing else may be appended.
+	if len(args) < 7 || len(args) > 13 || (len(args)-7)%2 != 0 || args[0] != "run" || args[1] != "--role" || args[3] != "--request" || args[4] == "" || args[5] != "--catalog" || args[6] == "" {
 		writeError(stderr, "invalid_arguments")
 		_, _ = io.WriteString(stderr, qaUsage)
 		return exitUsage
@@ -316,10 +318,16 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		seen[flag] = true
-		if flag == "--backend" {
+		// Each optional flag owns its own destination: --profile names a route
+		// profile id, which is not an evidence path, and neither one clobbers
+		// the other (#374 S6).
+		switch flag {
+		case "--backend":
 			backend = value
-		} else {
+		case "--evidence":
 			evidencePath = value
+		case "--profile":
+			profile = value
 		}
 	}
 	if _, known := qaroute.RuntimeFor(backend); !known {

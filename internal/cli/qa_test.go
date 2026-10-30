@@ -310,8 +310,49 @@ func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	}
 }
 
+// TestQASetupAndRunAgreeOnARelativeCatalog reproduces the issue #324 example
+// through the public CLI: setup and run both take the same non-absolute catalog
+// path from one directory, so the run must use the profile setup wrote there
+// instead of ignoring it. The catalog is a disposable copy.
+func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
+	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	cwd := must(os.Getwd())
+	if err := os.CopyFS(filepath.Join(cwd, "catalog"), os.DirFS(qaCatalogArgument(args))); err != nil {
+		t.Fatalf("disposable catalog copy = %v", err)
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "nan", "--model", "glm5.3", "--effort", "high"}
+	if code := Run(context.Background(), setup, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("relative qa setup exit = %d stderr = %q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	run := []string{"qa", "run", "--role", "requirements-analyst", "--request", "requirements.txt", "--catalog", "catalog"}
+	if code := Run(context.Background(), run, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("relative qa run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	for _, want := range []string{"route_profile qa-fleet", "route_model glm5.3", "route_backend pi"} {
+		if !bytes.Contains(frame, []byte(want)) {
+			t.Fatalf("relative catalog run ignored the profile setup wrote: frame lost %q", want)
+		}
+	}
+}
+
+// qaSetupCatalogFixture returns a disposable catalog root that already carries
+// catalog.json: `qa setup` refuses to create the tree (#324), so a fixture that
+// expects a written profile must look like a catalog `qa run` could load.
+func qaSetupCatalogFixture(t *testing.T) string {
+	t.Helper()
+	root := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.WriteFile(filepath.Join(root, "catalog.json"), []byte("{}\n"), 0o600))
+	return root
+}
+
 func TestQASetupWritesProfileForAllRoles(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })
@@ -349,8 +390,62 @@ func TestQASetupWritesProfileForAllRoles(t *testing.T) {
 	}
 }
 
+// refusingPi fails if anything asks it to resolve a runtime binary. qa setup
+// must validate the catalog root before it probes model availability (#324),
+// so a refusal at the catalog stage proves the probe never ran.
+type refusingPi struct{ calls int }
+
+func (resolver *refusingPi) Resolve(context.Context) (string, error) {
+	resolver.calls++
+	return "", fmt.Errorf("qa setup probed models before validating the catalog root")
+}
+
+// TestQASetupRefusesCatalogRootsQaRunCouldNotLoad pins the setup half of the
+// source-agreement rule (#324): setup writes the profile only into a catalog
+// root `qa run` can load, and it never creates the tree. A typo therefore fails
+// loudly instead of writing a profile no run would ever read.
+func TestQASetupRefusesCatalogRootsQaRunCouldNotLoad(t *testing.T) {
+	root := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.Mkdir(filepath.Join(root, "empty"), 0o700))
+	linked := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.WriteFile(filepath.Join(linked, "catalog.json"), []byte("{}\n"), 0o600))
+	mustOK(os.Symlink(linked, filepath.Join(root, "linked-catalog")))
+	t.Chdir(root)
+	for _, testCase := range []struct{ name, catalog, reason string }{
+		{name: "absent root", catalog: "typo-catalog", reason: "missing"},
+		{name: "directory without catalog.json", catalog: "empty", reason: "catalog_json_missing"},
+		{name: "symlinked root", catalog: "linked-catalog", reason: "unusable"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resolver := &refusingPi{}
+			original := qaPiResolver
+			qaPiResolver = resolver
+			t.Cleanup(func() { qaPiResolver = original })
+
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			args := []string{"qa", "setup", "--catalog", testCase.catalog, "--provider", "openai-codex", "--model", "gpt-5.6-terra"}
+			code := Run(context.Background(), args, stdout, stderr, nil)
+			want := "error=setup_failed\nstage=catalog expected=catalog root containing catalog.json catalog_reason=" + testCase.reason + " next_check=cortex qa --help\n"
+			if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("qa setup = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+			}
+			if resolver.calls != 0 {
+				t.Fatalf("qa setup resolved the runtime %d times before validating the catalog root", resolver.calls)
+			}
+			if _, err := os.Stat(filepath.Join(root, testCase.catalog, "cortex")); !os.IsNotExist(err) {
+				t.Fatalf("qa setup wrote a profile tree under %q after refusing the catalog root", testCase.catalog)
+			}
+			if testCase.reason == "missing" {
+				if _, err := os.Stat(filepath.Join(root, testCase.catalog)); !os.IsNotExist(err) {
+					t.Fatalf("qa setup created %q after refusing the catalog root", testCase.catalog)
+				}
+			}
+		})
+	}
+}
+
 func TestQASetupRefusesModelsTheRuntimeDoesNotHave(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })
@@ -1022,7 +1117,7 @@ func TestQARunRejectsUnknownAndEmptyRoles(t *testing.T) {
 // for other backends already present in the profile are preserved, and an
 // unadmitted backend token is a usage error.
 func TestQASetupWritesRoutesForTheRequestedBackend(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })

@@ -13,6 +13,7 @@ import (
 
 const profileDirectory = "cortex"
 const profileFilename = "qa-profiles.json"
+const profileCatalogFile = "catalog.json"
 
 type profileSource struct {
 	root, directory, file os.FileInfo
@@ -193,4 +194,32 @@ func ProfileSelection(root string) (string, []string, bool) {
 		return "", nil, false
 	}
 	return defaultID, ids, true
+}
+
+// ProfileCatalogRootError names why a catalog root cannot host the user-owned
+// route profile. Reason is one fixed token owned by this package.
+type ProfileCatalogRootError struct{ Reason string }
+
+func (err *ProfileCatalogRootError) Error() string {
+	return "catalog root is not usable: " + err.Reason
+}
+
+// ValidateProfileCatalogRoot reports whether root can be the catalog root qa
+// setup writes the route profile into (#324). It holds setup to the agreement
+// qa run depends on: the root must already exist, resolve without symlinks, and
+// carry catalog.json — the file qa run loads. Setup refuses instead of creating
+// the tree, because a typo would otherwise write a profile into a directory no
+// run ever reads.
+func ValidateProfileCatalogRoot(root string) error {
+	if !canonicalProfileRoot(root) {
+		if _, err := os.Lstat(root); os.IsNotExist(err) {
+			return &ProfileCatalogRootError{Reason: "missing"}
+		}
+		return &ProfileCatalogRootError{Reason: "unusable"}
+	}
+	info, err := os.Lstat(filepath.Join(root, profileCatalogFile))
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return &ProfileCatalogRootError{Reason: "catalog_json_missing"}
+	}
+	return nil
 }

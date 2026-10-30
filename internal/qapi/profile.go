@@ -139,3 +139,32 @@ func sameProfileInfo(before, after os.FileInfo) bool {
 func profileDirectoryOrFileInfo(info os.FileInfo) bool {
 	return profileDirectoryInfo(info) || profileFileInfo(info)
 }
+
+// ProfileSelection reports the defaultProfile id and every profile id the
+// user-owned profile below root defines, from the same single safe snapshot
+// read route resolution uses. It reports ok=false when no source is present or
+// when the source cannot be inspected or decoded safely, so a caller describes
+// a refusal without opening a second, weaker read path (#374 S6).
+//
+// The ids come from qaroute.ProfileIDs and the default from
+// qaroute.DefaultProfileID: the two existing decoders over one verified byte
+// snapshot, never a second profile representation.
+func ProfileSelection(root string) (string, []string, bool) {
+	source, ok := inspectProfileSource(root)
+	if !ok {
+		return "", nil, false
+	}
+	data, ok := source.read()
+	if !ok {
+		return "", nil, false
+	}
+	ids, ok := qaroute.ProfileIDs(data)
+	if !ok {
+		return "", nil, false
+	}
+	defaultID, ok := qaroute.DefaultProfileID(data)
+	if !ok {
+		return "", nil, false
+	}
+	return defaultID, ids, true
+}

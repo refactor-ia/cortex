@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"sort"
 	"unicode/utf8"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
@@ -149,4 +150,23 @@ func DefaultProfileID(data []byte) (string, bool) {
 		return "", false
 	}
 	return defaultID, true
+}
+
+// ProfileIDs lists the ids one profile snapshot defines, sorted, so a refusal
+// can enumerate what the file actually offers (#374 S6). It decodes through
+// decodeProfiles: one decoder and one validity rule, so every id this function
+// lists is an id Resolve accepts, and an id it omits is one Resolve refuses.
+// Bounds are decodeProfiles' own (snapshot size, at most 64 profiles, and the
+// profile-id pattern), so this adds no second representation of a profile.
+func ProfileIDs(data []byte) ([]string, bool) {
+	decoded, ok := decodeProfiles(data)
+	if !ok {
+		return nil, false
+	}
+	ids := make([]string, 0, len(decoded))
+	for id := range decoded {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, true
 }

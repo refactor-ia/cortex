@@ -1,6 +1,7 @@
 package installobserve_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -205,6 +206,97 @@ func TestAdmissionAssetsRejectInvalidExplicitBindingAndRoots(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := installobserve.ObserveAdmissionAssets(tc.root, tc.cwd, tc.expected); err == nil {
 				t.Fatal("ObserveAdmissionAssets() succeeded")
+			}
+		})
+	}
+}
+
+// TestObserveAdmissionAssetsNamesRefusalStageForOpaqueChecks pins the remaining
+// half of #329/#374 S3/S4. #329 asks that the four admission stages be
+// distinguishable — binding, shadow root, install state, fingerprint — and the
+// two digest-bearing ones were already typed; they are asserted here too so the
+// whole set is provable in one place. The rest of the table pins the refusals
+// that used to report only that assets were unavailable: a consumer can now tell
+// a caller binding from a noncanonical root, from an unproven guidance block,
+// and from a shadowed actor without inventing detail the check cannot prove.
+// Only the fixed bounded stage token travels; no path, file content, or provider
+// output does. The guidance and shadow checks fold several internal reasons into
+// one token each, so the expected token is deliberate coarse truth, not a
+// claimed sub-cause, and no stage promises a transient-versus-persistent verdict.
+func TestObserveAdmissionAssetsNamesRefusalStageForOpaqueChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		setup     func(t *testing.T) (string, string, installobserve.AdmissionBinding)
+		stage     string
+		stageOnly bool
+	}{
+		{name: "unadmitted caller binding", stage: "binding_invalid", stageOnly: true, setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			expected := fixture.expected
+			expected.ActorBindingSHA256 = strings.Repeat("z", 64)
+			return fixture.root, fixture.cwd, expected
+		}},
+		{name: "noncanonical install root", stage: "install_root_invalid", stageOnly: true, setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			return admissionSymlink(t, fixture.root), fixture.cwd, fixture.expected
+		}},
+		{name: "noncanonical current directory", stage: "current_directory_invalid", stageOnly: true, setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			return fixture.root, admissionSymlink(t, fixture.cwd), fixture.expected
+		}},
+		{name: "project shadow refuses the selected actor", stage: "actor_shadow_unverified", stageOnly: true, setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			writeAdmissionFile(t, filepath.Join(fixture.cwd, ".pi", "agents", "other.md"), []byte("---\nname: cortex-test-designer\n---\n"), 0o600)
+			return fixture.root, fixture.cwd, fixture.expected
+		}},
+		{name: "unproven actor guidance", stage: "actor_guidance_invalid", stageOnly: true, setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newGuidanceAdmissionFixture(t, true)
+			actor := bytes.Replace(fixture.effective, []byte("<!-- /gentle-ai:pi-codegraph -->"), []byte("<!-- /gentle-ai:pi-codegraph --"), 1)
+			if bytes.Equal(actor, fixture.effective) {
+				t.Fatal("fixture lacks the expected guidance marker")
+			}
+			// A matching ledger hash cannot bless structurally invalid guidance.
+			state := bytes.Replace(fixture.state, []byte(admissionHash(fixture.effective)), []byte(admissionHash(actor)), 1)
+			writeAdmissionFile(t, fixture.statePath, state, 0o600)
+			writeAdmissionFile(t, fixture.actorPath, actor, 0o600)
+			return fixture.root, fixture.cwd, fixture.expected
+		}},
+		{name: "install state is its own stage", stage: "install_state_missing", setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			mustRemove(t, fixture.statePath)
+			return fixture.root, fixture.cwd, fixture.expected
+		}},
+		{name: "catalog fingerprint is its own stage", stage: "catalog_fingerprint", setup: func(t *testing.T) (string, string, installobserve.AdmissionBinding) {
+			fixture := newAdmissionFixture(t)
+			state, err := os.ReadFile(fixture.statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state = []byte(strings.Replace(string(state), fixture.expected.CatalogFingerprint, strings.Repeat("f", 64), 1))
+			if err := os.WriteFile(fixture.statePath, state, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return fixture.root, fixture.cwd, fixture.expected
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, cwd, expected := tc.setup(t)
+			assets, err := installobserve.ObserveAdmissionAssets(root, cwd, expected)
+			if assets != (installobserve.AdmissionAssets{}) {
+				t.Fatal("refused admission leaked assets")
+			}
+			var unavailable *installobserve.AdmissionUnavailableError
+			if !errors.As(err, &unavailable) {
+				t.Fatalf("ObserveAdmissionAssets() error = %v, want AdmissionUnavailableError", err)
+			}
+			if unavailable.Stage != tc.stage {
+				t.Fatalf("Stage = %q, want %q", unavailable.Stage, tc.stage)
+			}
+			if tc.stageOnly && (unavailable.Expected != "" || unavailable.Found != "") {
+				t.Fatalf("refusal = %#v, want a stage-only refusal", unavailable)
+			}
+			if strings.Contains(unavailable.Error(), root) || strings.Contains(unavailable.Error(), cwd) {
+				t.Fatalf("error %q carries a fixture path", unavailable.Error())
 			}
 		})
 	}

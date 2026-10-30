@@ -210,6 +210,37 @@ a catalog under `/tmp/...` is refused until it is addressed through its canonica
 `/private/tmp/...` path (`cd` into it and use `pwd -P`).
 
 
+## Read an admission refusal
+
+`qa run` verifies the selected role's installed assets before it launches anything.
+Every refusal is typed and names the check that refused (#329, #374):
+
+- **binding** — `admission_stage=binding_invalid`: the role/backend/catalog binding
+  this run asked for is not one the binary admits.
+- **root** — `install_root_invalid` or `current_directory_invalid`: the install root
+  or the working directory is not a canonical absolute directory, so neither the
+  ledger read nor the shadow scan can be trusted.
+- **install state** — `install_state_missing`, `install_state_unreadable`,
+  `install_state_mode`, `install_state_invalid`: the `.cortex/install-state.json`
+  ledger is absent, unreadable, not 0600, or not a ledger this backend can admit.
+- **fingerprint** — `catalog_fingerprint`: the ledger was installed from a different
+  catalog; the expected and found fingerprints are printed.
+- **assets** — `skill_unlisted`, `skill_missing`, `skill_mode`, `skill_mismatch`,
+  `actor_unlisted`, `actor_contract`, `actor_missing`, `actor_mode`,
+  `actor_mismatch`: the selected skill or installed actor is not declared, absent,
+  or differs from the declared mode, digest, or actor contract version.
+- **guidance and shadow** — `actor_guidance_invalid`, `actor_shadow_unverified`: the
+  actor's registered guidance could not be proven against the catalog binding, or
+  the selected actor could not be proven unshadowed in the runtime and project
+  roots. Each of the two covers more than one internal reason, so it is reported as
+  one coarse stage instead of an invented sub-cause.
+
+Only stages and hex digests reach the diagnostic; no path, file content, or provider
+output does. A stage says which check refused: it does not claim the failure is
+transient or persistent, and it is not a remedy. Re-read the same assets and fix
+whichever one the stage names.
+
+
 ## Walk the QA fleet end to end
 
 The showcase path (#286): from a fresh directory, install from a release, configure a

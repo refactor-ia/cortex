@@ -201,6 +201,15 @@ profile file, an oversized or malformed file, or an unreadable `defaultProfile`
 all end in `profile_invalid` before anything is launched. Only a catalog with no
 `cortex/qa-profiles.json` file at all uses the placeholder `nan` route.
 
+Neither command accepts a catalog root reached through a symlink: every path
+component must be a real directory, and `qa setup` refuses to create a missing
+tree. This is a strict policy, not a bug to route around, because the profile and
+the shadow scan have to address the same bytes the run reads. On macOS that
+includes the system temporary directory: `/tmp` is a symlink to `/private/tmp`, so
+a catalog under `/tmp/...` is refused until it is addressed through its canonical
+`/private/tmp/...` path (`cd` into it and use `pwd -P`).
+
+
 ## Walk the QA fleet end to end
 
 The showcase path (#286): from a fresh directory, install from a release, configure a

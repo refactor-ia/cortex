@@ -4,16 +4,32 @@ This page carries the audit material referenced from the [root README](../README
 
 ## Verify an archive
 
-Each release archive contains `cortex`, `LICENSE`, `BUILDINFO.json` (source commit, tree, Go version, target, and binary SHA-256), and the matching `catalog/` tree. Verify before extracting; a checksum failure must stop extraction.
+Each alpha20 archive contains `cortex`, `LICENSE`, `LICENSE-CONTENT.md`, `BUILDINFO.json` (source commit, tree, Go version, target, and binary SHA-256), and the matching `catalog/` tree. The release also provides two standalone BUILDINFO files and `SHA256SUMS`.
+
+Run this Bash block in a new, empty directory. On Linux AMD64, change `PLATFORM` to `linux_amd64`. The subshell stops on failure; exactly one matching checksum entry is required before extraction. Checksums verify integrity against the downloaded manifest, not independent publisher authentication.
 
 ```bash
-archive=cortex_v0.1.0-alpha.8_darwin_arm64.tar.gz
-curl -fL -O "https://github.com/refactor-ia/cortex/releases/download/v0.1.0-alpha.8/$archive"
-curl -fL -O https://github.com/refactor-ia/cortex/releases/download/v0.1.0-alpha.8/SHA256SUMS
-shasum -a 256 -c --ignore-missing SHA256SUMS && tar xzf "$archive"
+(
+  set -eu
+  VERSION=v0.1.0-alpha.20
+  PLATFORM=darwin_arm64
+  archive="cortex-$VERSION-$PLATFORM.tar.gz"
+  base="https://github.com/refactor-ia/cortex/releases/download/$VERSION"
+  curl -fL --output "$archive" "$base/$archive"
+  curl -fL --output SHA256SUMS "$base/SHA256SUMS"
+  awk -v archive="$archive" '$2 == archive { print; n++ } END { if (n != 1) exit 1 }' \
+    SHA256SUMS > archive.sha256
+  case "$PLATFORM" in
+    darwin_arm64) shasum -a 256 -c archive.sha256 ;;
+    linux_amd64) sha256sum -c archive.sha256 ;;
+    *) printf 'Unsupported platform: %s\n' "$PLATFORM" >&2; exit 1 ;;
+  esac
+  tar xzf "$archive"
+  ./cortex --version
+)
 ```
 
-On Linux, set `archive=cortex_v0.1.0-alpha.8_linux_amd64.tar.gz` and use `sha256sum -c --ignore-missing SHA256SUMS` instead of the macOS checksum line. macOS arm64 and Linux amd64 are the published targets; Windows is not supported and does not currently build.
+Expected identity: `version=v0.1.0-alpha.20`, revision `d00bc17a305232d5fed9ed15407b372d902587c2`, `build_dirty=false`, and the catalog ID below. macOS ARM64 and Linux AMD64 are the published targets; Windows is not supported and does not currently build.
 
 ### Building from source
 
@@ -26,15 +42,33 @@ go build -o cortex ./cmd/cortex
 For a release-style source build, inject both identity fields into the binary (substitute the intended version and build commit):
 
 ```bash
-go build -ldflags="-X github.com/refactor-ia/cortex/internal/cli.buildVersion=v0.1.0-alpha.8 -X github.com/refactor-ia/cortex/internal/cli.buildRevision=0123456789abcdef" -o cortex ./cmd/cortex
+go build -ldflags="-X github.com/refactor-ia/cortex/internal/cli.buildVersion=v0.1.0-alpha.20 -X github.com/refactor-ia/cortex/internal/cli.buildRevision=0123456789abcdef" -o cortex ./cmd/cortex
 ./cortex --version
 ```
 
 `--version` reports `version`, `revision`, `build_dirty`, and `embedded_catalog` from the **running binary**. Each injected field overrides only its corresponding Go build-info field; without injection, Go module version and `vcs.revision` are used when embedded. Missing fields and the Go `(devel)` version report `unavailable`. `build_dirty` reflects Go's embedded `vcs.modified` setting (`true`, `false`, or `unavailable`), even with explicit release fields; it does not certify the injected revision. The catalog ID is resolved from the admitted embedded snapshot. A catalog in a source cache, checkout, or adjacent directory is not evidence about the active binary, and `--version` never reads one.
 
-## Runtime admission evidence
+## Alpha20 delivered evidence
 
-The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.
+[v0.1.0-alpha.20](https://github.com/refactor-ia/cortex/releases/tag/v0.1.0-alpha.20) is an **uncertified evaluation prerelease**, built from commit `d00bc17a305232d5fed9ed15407b372d902587c2`, tree `199642d0813a1158c6442019b0e75ad4cce73dc5`, with Go 1.27.1 and CGO disabled. The embedded catalog is `catalog.1.cb6c8289cc0d4d3fd043328550bd7a2ae2b363445a7a203bce96e46c033ed432`: twelve capabilities across reasoning, quality assurance and documentation.
+
+| Evidence | Observed scope |
+| --- | --- |
+| Source CI | Postmerge vet, full tests, race and repository policy checks passed at the release source. |
+| Release artifacts | Both archives' safe paths/types, binary hashes, BUILDINFO, licenses and 47 catalog files checked against clean source; independent read-only artifact review passed. All five published assets downloaded and compared byte-for-byte; tag resolves to the source commit. |
+| Packaged native lifecycle | Extracted macOS binary installed, previewed/applied updates, read back twelve skills and uninstalled in disposable state. Preview wrote nothing; a foreign sentinel survived cleanup. Published alpha19 to alpha20 upgrade increased ten skills to twelve. |
+| Real deployments after publication | Alpha20 binaries executed on macOS ARM64 and Linux AMD64. Two Linux deployments updated Pi, OpenCode and Claude Code, with twelve skills and all three maintainer sources read back per runtime. The macOS deployment updated OpenCode and Claude Code; Pi refused unverified external guidance and remained unchanged. |
+| Evidence boundary | Deployment execution was operator-observed; independent review inspected supplied remote results, not independent remote execution. Binary backups and Cortex transaction backups were recorded. These observations do not establish preservation of every unrelated filesystem byte. |
+
+The release initially carried Linux cross-build/header evidence only; Linux execution above was observed during subsequent deployment, not retroactively part of the prerelease audit. Packaging uses normalized archive metadata, but no independent reproducible rebuild was demonstrated.
+
+Two isolated local QA/update tests previously failed with the same errors on pristine main and both integration heads. That accepted baseline gap is not reported as a local full-suite pass; source CI passed. A deployment verifier also initially failed after a successful Pi update because an unrelated bare skill and the Cortex-prefixed skill coexisted. Recovery selected the ownership manifest's path and hash, continued without reapplying Pi, and verified the foreign skill unchanged during recovery. This was not a Cortex update failure.
+
+**Still unproven:** a complete live-model QA showcase from the published binary, the external review/triage pilot, full runtime-family parity and release certification. Installation, `doctor` exit 0, model-availability probes and source tests are not substitutes for real capability invocations. Beta requires the [bounded exit criteria](../ROADMAP.md#beta1-exit-criteria); full parity still requires the architecture's evidence below.
+
+## Historical runtime admission evidence
+
+This predates alpha20 and does not certify its runtime versions. The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.
 
 | Runtime | Exact version | Evidence records | Duration |
 | --- | --- | --- | --- |

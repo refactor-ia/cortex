@@ -4,7 +4,7 @@ Cortex puts a curated set of agent capabilities into the AI coding runtimes you 
 
 It writes only its own files, transactionally, and removes exactly what it wrote on uninstall. It never installs or replaces a runtime, never touches your configuration, and does nothing at all when you are not running a Cortex command.
 
-> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today. **Implementation is not complete:** three families of eleven carry capabilities, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
+> **Status — alpha20 is published for evaluation.** [v0.1.0-alpha.20](https://github.com/refactor-ia/cortex/releases/tag/v0.1.0-alpha.20) ships twelve capabilities across three of eleven families, including maintainer triage, review and delivery. Packaged lifecycle checks and real macOS/Linux deployments have passed within the [recorded scope](docs/verification.md#alpha20-delivered-evidence). Full runtime-family parity and release certification are not claimed. The next milestone is a bounded beta, not another content expansion; see [beta exit criteria](ROADMAP.md#beta1-exit-criteria).
 
 ## What you get
 
@@ -34,18 +34,7 @@ On Pi, the six QA roles are also registered as agents, not just skills.
 
 ## Start in two minutes
 
-Releases are prereleases, so GitHub's `releases/latest` URL does not resolve. Pin the version you want (check [releases](https://github.com/refactor-ia/cortex/releases) for the current one) and download the archive for your platform into an empty directory. Verify your platform's line before extracting (replace `darwin_arm64` with `linux_amd64` on Linux):
-
-```bash
-VERSION=v0.1.0-alpha.16
-curl -LO https://github.com/refactor-ia/cortex/releases/download/$VERSION/SHA256SUMS
-shasum -a 256 -c SHA256SUMS 2>/dev/null | grep "cortex-.*: OK"
-curl -LO https://github.com/refactor-ia/cortex/releases/download/$VERSION/cortex-$VERSION-darwin_arm64.tar.gz
-shasum -a 256 -c SHA256SUMS 2>/dev/null | grep "cortex-.*: OK"
-tar xzf cortex-$VERSION-darwin_arm64.tar.gz
-```
-
-The `OK` grep skips the other platform's file, which `shasum -c` reports as `FAILED open or read` on stdout because it has not been downloaded; it is not a checksum mismatch.
+Use the explicit prerelease tag, not GitHub's `releases/latest` endpoint. Download into a new directory and follow [Verify an archive](docs/verification.md#verify-an-archive) for macOS ARM64 or Linux AMD64. That procedure checks the exact archive filename and stops before extraction on any download or checksum failure.
 
 Then walk the lifecycle:
 
@@ -55,7 +44,7 @@ Then walk the lifecycle:
 ./cortex uninstall  # removes exactly what install wrote
 ```
 
-`doctor` exit code 0 means an install can proceed. The install output names what was created; running install again is an honest no-op. If you have Go, `go install github.com/refactor-ia/cortex/cmd/cortex@latest` installs the binary alone.
+`doctor` reports runtime discovery and backend readiness, not verified ownership, successful model calls or certification. A later install/update can still refuse an ownership conflict. The install output names what was created; running install again is an honest no-op. For an existing installation, use the [upgrade and recovery procedure](docs/operating.md#upgrade-to-alpha20). If you have Go, `go install github.com/refactor-ia/cortex/cmd/cortex@latest` installs the binary alone.
 
 ### Run a QA report
 
@@ -65,7 +54,7 @@ From the unpacked archive directory, with your own authenticated model route:
 
 ```bash
 printf 'R1: Every API response must complete within 100 ms.\nR2: Every API response must wait at least 500 ms before returning.\nIdentify the contradiction; do not edit files.\n' > request.txt
-./cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog --backend pi
+./cortex qa run --role requirements-analyst --request request.txt --catalog "$(pwd)/catalog" --backend pi
 ```
 
 The report should flag the two incompatible timing requirements. QA runs support Pi, Claude Code, and OpenCode headless backends (`--backend pi|claude|opencode`), and accept a bounded execution-evidence sidecar (`--evidence evidence.json`). It is report-only: it assesses the request and evidence you supply; it does not execute tests. Run it from a disposable directory.

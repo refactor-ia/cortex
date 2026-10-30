@@ -6,6 +6,8 @@ It writes only its own files, transactionally, and removes exactly what it wrote
 
 > **Status — alpha20 is published for evaluation.** [v0.1.0-alpha.20](https://github.com/refactor-ia/cortex/releases/tag/v0.1.0-alpha.20) ships twelve capabilities across three of eleven families, including maintainer triage, review and delivery. Packaged lifecycle checks and real macOS/Linux deployments have passed within the [recorded scope](docs/verification.md#alpha20-delivered-evidence). Full runtime-family parity and release certification are not claimed. The next milestone is a bounded beta, not another content expansion; see [beta exit criteria](ROADMAP.md#beta1-exit-criteria).
 
+The repository includes the target architecture and community foundation. Implementation is not complete: the published alpha is not a claim that the full target architecture is delivered.
+
 ## What you get
 
 | Capability | What it does |

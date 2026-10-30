@@ -399,6 +399,176 @@ func TestQARunEvidenceSidecar(t *testing.T) {
 	}
 }
 
+// qaCatalogArgument reads the catalog root out of one assembled qa run argv.
+func qaCatalogArgument(args []string) string {
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+// qaProfileFileFixture writes the user-owned route profile qa run reads: a
+// default profile and the qa-fleet profile `cortex qa setup` writes (#374),
+// each routing the role to a different model, so which profile a run selected
+// is observable in the framed input instead of inferred.
+//
+// The catalog root is the production catalog the admission binding compares
+// against, so any file already there is restored, never left mutated.
+func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
+	t.Helper()
+	profileDirectory := filepath.Join(catalogRoot, "cortex")
+	mustOK(os.MkdirAll(profileDirectory, 0o700))
+	path := filepath.Join(profileDirectory, "qa-profiles.json")
+	previous, previousErr := os.ReadFile(path)
+	t.Cleanup(func() {
+		if previousErr == nil {
+			_ = os.WriteFile(path, previous, 0o600)
+			return
+		}
+		_ = os.Remove(path)
+		_ = os.Remove(profileDirectory)
+	})
+	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
+	mustOK(os.WriteFile(path, []byte(profile), 0o600))
+}
+
+// profileReportFixture materializes the report fixture plus the two-profile
+// catalog the CLI resolves --profile against.
+func profileReportFixture(t *testing.T) []string {
+	t.Helper()
+	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	qaProfileFileFixture(t, qaCatalogArgument(args), qarole.RequirementsAnalyst)
+	return args
+}
+
+// TestQARunProfileFlagSelectsTheRequestedProfile pins the --profile contract
+// (#374 S6): the flag selects the named profile instead of the file's
+// defaultProfile, and an unknown id is refused instead of silently falling back
+// to the default route.
+func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
+	t.Run("an omitted flag keeps the default profile", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+			t.Fatalf("default profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		frame := must(os.ReadFile("qa-report-frame"))
+		for _, want := range []string{"route_profile fleet-default", "route_model qwen3.6"} {
+			if !bytes.Contains(frame, []byte(want)) {
+				t.Fatalf("frame does not carry %q: %q", want, frame)
+			}
+		}
+	})
+	t.Run("the flag selects a non-default profile", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(append([]string{}, args...), "--profile", "qa-fleet"), stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+			t.Fatalf("--profile qa-fleet = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		frame := must(os.ReadFile("qa-report-frame"))
+		for _, want := range []string{"route_profile qa-fleet", "route_model gpt-5.6-terra", "route_effort high"} {
+			if !bytes.Contains(frame, []byte(want)) {
+				t.Fatalf("frame does not carry %q: %q", want, frame)
+			}
+		}
+	})
+	t.Run("an unknown profile id is refused, never silently defaulted", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(append([]string{}, args...), "--profile", "no-such-profile"), stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "error=profile_invalid\n") {
+			t.Fatalf("unknown profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+			t.Fatal("a refused profile must not launch the backend")
+		}
+	})
+}
+
+// TestQARunAcceptsTheDocumentedOptionalFlagsTogether pins the documented
+// optional-flag surface (#374 S6): --backend, --evidence and --profile are
+// independent and combinable in any order after the required flags.
+func TestQARunAcceptsTheDocumentedOptionalFlagsTogether(t *testing.T) {
+	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]`
+	cases := []struct {
+		name         string
+		options      []string
+		withEvidence bool
+	}{
+		{name: "profile alone", options: []string{"--profile", "qa-fleet"}},
+		{name: "profile then evidence", options: []string{"--profile", "qa-fleet", "--evidence", "evidence.json"}, withEvidence: true},
+		{name: "evidence then profile", options: []string{"--evidence", "evidence.json", "--profile", "qa-fleet"}, withEvidence: true},
+		{name: "all three flags", options: []string{"--backend", "pi", "--profile", "qa-fleet", "--evidence", "evidence.json"}, withEvidence: true},
+		{name: "all three flags reversed", options: []string{"--evidence", "evidence.json", "--profile", "qa-fleet", "--backend", "pi"}, withEvidence: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			args := profileReportFixture(t)
+			mustOK(os.WriteFile("evidence.json", []byte(evidence), 0o600))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), append(append([]string{}, args...), tt.options...), stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+				t.Fatalf("%s = %d stdout %q stderr %q", tt.name, code, stdout.String(), stderr.String())
+			}
+			frame := must(os.ReadFile("qa-report-frame"))
+			wants := []string{"route_profile qa-fleet", "route_model gpt-5.6-terra", "route_backend pi"}
+			if tt.withEvidence {
+				wants = append(wants, evidence)
+			}
+			for _, want := range wants {
+				if !bytes.Contains(frame, []byte(want)) {
+					t.Fatalf("%s lost %q from the frame: %q", tt.name, want, frame)
+				}
+			}
+		})
+	}
+}
+
+// TestQARunRejectsDuplicateAndUnknownOptionalFlags pins the rejection half of
+// the optional-flag surface: duplicates, unknown flags, empty values, more than
+// three option pairs, and reordered required flags stay exact usage failures,
+// with no backend launch and no route-profile mutation.
+func TestQARunRejectsDuplicateAndUnknownOptionalFlags(t *testing.T) {
+	const evidenceName = "evidence.json"
+	cases := []struct {
+		name    string
+		options []string
+	}{
+		{name: "duplicate profile", options: []string{"--profile", "qa-fleet", "--profile", "fleet-default"}},
+		{name: "duplicate evidence", options: []string{"--evidence", evidenceName, "--evidence", evidenceName}},
+		{name: "duplicate backend", options: []string{"--backend", "pi", "--backend", "pi"}},
+		{name: "unknown optional flag", options: []string{"--route", "qa-fleet"}},
+		{name: "empty profile value", options: []string{"--profile", ""}},
+		{name: "more pairs than optional flags", options: []string{"--profile", "qa-fleet", "--evidence", evidenceName, "--backend", "pi", "--evidence", evidenceName}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			args := profileReportFixture(t)
+			mustOK(os.WriteFile(evidenceName, []byte(`[{"id":"selected-test"}]`), 0o600))
+			profilePath := filepath.Join(qaCatalogArgument(args), "cortex", "qa-profiles.json")
+			before := must(os.ReadFile(profilePath))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), append(append([]string{}, args...), tt.options...), stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 || stderr.String() != "error=invalid_arguments\n"+qaUsage {
+				t.Fatalf("%s = %d stdout %q stderr %q", tt.name, code, stdout.String(), stderr.String())
+			}
+			if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+				t.Fatalf("%s launched the backend", tt.name)
+			}
+			if after := must(os.ReadFile(profilePath)); !bytes.Equal(before, after) {
+				t.Fatalf("%s mutated the route profile", tt.name)
+			}
+		})
+	}
+	t.Run("required flags keep their order", func(t *testing.T) {
+		args := profileReportFixture(t)
+		reordered := []string{"qa", "run", "--request", "requirements.txt", "--role", string(qarole.RequirementsAnalyst), "--catalog", qaCatalogArgument(args)}
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), reordered, stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 || stderr.String() != "error=invalid_arguments\n"+qaUsage {
+			t.Fatalf("reordered required flags = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+	})
+}
+
 func TestQARunRejectsEvidenceInputs(t *testing.T) {
 	args := reportFixture(t)
 	for _, data := range []string{"", "malformed", `[] []`, strings.Repeat(" ", qapi.MaxEvidenceBytes+1)} {

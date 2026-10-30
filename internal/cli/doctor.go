@@ -248,33 +248,33 @@ const (
 		"cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog\n" +
 		"Optional evidence sidecar (--evidence evidence.json): a JSON array of execution records\n" +
 		"(up to 8 records, <= 48 KiB total; custom top-level shapes like {\"schema\":...} are rejected).\n" +
-		"Record fields:\n" +
-		"  - id (string, required): unique record identifier, trimmed, non-empty\n" +
-		"  - command (string, optional): executed command invocation\n" +
-		"  - exit_code (integer, optional): process exit code\n" +
-		"  - output_tail (string, optional): tail of command output (<= 4096 bytes)\n" +
-		"  - provenance (string, optional): origin or fixture source\n" +
-		"  - truncated (boolean, optional): true if output was truncated\n" +
+		"Record fields: id (required); command, exit_code, output_tail (<= 4096 bytes), provenance, truncated.\n" +
 		"Example:\n" +
 		`[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]` + "\n" +
 		"Schema reference: docs/operating.md\n" +
+		"Optional --profile <id> selects a route profile; without it the file's defaultProfile applies.\n" +
+		"A refused preflight names its stage: route_resolution, actor_admission, model_probe or\n" +
+		"evidence_admission; a refused profile also lists profile_valid_ids from the profile file.\n" +
 		"To audit a code diff, prefix every diff line with '>' (blockquote): quoted lines are content,\n" +
 		"so frame directives stay rejected while the quoted diff passes validation (issue #305).\n"
 	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n" +
 		"install [--target-dir <dir>]: configure every compatible present runtime, or project the\ncatalog as plain SKILL.md files into an existing directory (Agent Skills layout)\n" +
 		"doctor [--target-dir <dir>]: probe runtimes, or report one directory target\n" +
 		"uninstall [--target-dir <dir>]: remove owned files from every runtime root, or from <dir>\n\n" + qaHelp
-	// qaReportNote surfaces runtime prerequisites on non-catalog failures.
-	// The default route provider is the policy placeholder "nan"; Cortex applies
-	// no model fallback and owns no automatic configuration.
+	// qaReportNote surfaces runtime prerequisites on non-catalog failures. It
+	// names no route: a refusal happens with a profile route resolved, with a
+	// placeholder route, or with no route resolved at all, so claiming one here
+	// was wrong for every failure it accompanied (#374 S5). The stage line and
+	// the routed pair are printed where the pipeline actually knows them.
 	//
 	// It names the three backends rather than one runtime, and pins no version
 	// on any of them: the route policy admits all three, and decision A of the
 	// backend port removed the exact version pin from every binding, so a note
 	// that still demanded "Pi 0.85.1" named a prerequisite that no longer
 	// exists and hid two that do. `cortex doctor` is named because it is the
-	// command that answers, per runtime, which of them can actually run.
-	qaReportNote = "note=prerequisites: one of the pi, claude or opencode runtimes with a usable backend and installed cortex assets; run cortex doctor for per-runtime backend availability; the default route provider is the policy placeholder \"nan\" and cortex applies no model fallback\n"
+	// command that answers, per runtime, which of them can actually run — for
+	// the embedded catalog and the policy default route only.
+	qaReportNote = "note=prerequisites: one of the pi, claude or opencode runtimes with a usable backend and installed cortex assets; run cortex doctor for per-runtime backend availability; cortex applies no model fallback and owns no automatic configuration\n"
 )
 
 func writeHelp(stdout, stderr io.Writer, help string) int {
@@ -384,6 +384,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitFailure
 		}
 		failure := qaFailure(stderr, string(code))
+		if stage := qaRefusalStage(string(code), err); stage != "" {
+			_, _ = fmt.Fprintf(stderr, "stage=%s\n", stage)
+		}
 		var evidenceErr *qapi.EvidenceValidationError
 		if errors.As(err, &evidenceErr) {
 			if evidenceErr.Field != "" {
@@ -413,6 +416,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		if code == "route_incomplete" {
 			_, _ = fmt.Fprintf(stderr, "route_missing_backend=%s remedy=cortex qa setup --catalog %s --backend %s --provider <p> --model <m>\n", backend, catalogRoot, backend)
+		}
+		if code == qaadmission.CodeProfileInvalid {
+			_, _ = io.WriteString(stderr, qaProfileDiagnostic(profile, catalogRoot))
 		}
 		if code == qaadmission.CodeNormalizationFailed {
 			var diagnostic *qapi.ReportNormalizationError
@@ -455,6 +461,44 @@ func qaFailure(stderr io.Writer, code string) int {
 	return exitFailure
 }
 
+// The four preflight questions a `qa run` refusal can answer (#374 S4). This
+// is a fixed vocabulary and not a new set of gates: each token names the
+// pipeline step whose existing error or code refused the run, and nothing
+// else. evidence_admission covers the evidence sidecar validation, which runs
+// before the route; route_resolution covers every qaroute failure code;
+// actor_admission covers the typed installed-asset refusal; model_probe covers
+// the backend availability verdict. Post-launch outcomes (execution, stream,
+// normalization) are not preflight questions and print no stage line.
+const (
+	qaStageRouteResolution   = "route_resolution"
+	qaStageActorAdmission    = "actor_admission"
+	qaStageModelProbe        = "model_probe"
+	qaStageEvidenceAdmission = "evidence_admission"
+)
+
+// qaRefusalStage classifies one refused report run by the existing error and
+// code it already carries. It never guesses a root cause: when no preflight
+// step refused, it reports no stage at all.
+func qaRefusalStage(code string, err error) string {
+	var evidence *qapi.EvidenceValidationError
+	if errors.As(err, &evidence) {
+		return qaStageEvidenceAdmission
+	}
+	var unavailable *qapi.BackendUnavailableError
+	if errors.As(err, &unavailable) {
+		return qaStageModelProbe
+	}
+	var admission *installobserve.AdmissionUnavailableError
+	if errors.As(err, &admission) {
+		return qaStageActorAdmission
+	}
+	switch code {
+	case "profile_invalid", "route_incomplete", "route_disallowed", "non_nan_route":
+		return qaStageRouteResolution
+	}
+	return ""
+}
+
 // qaModelUnavailableNote names the problem behind a refused routed pair and
 // its actual remedy (issue #339): qa runs probe pi with --no-extensions, so a
 // provider registered only by a Pi extension is invisible to qa forever, and
@@ -476,6 +520,44 @@ func qaAuthNotReadyNote() string {
 func qaRouteSetupNote(catalogRoot string) string {
 	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`
 	return fmt.Sprintf("route_setup=%s/cortex/qa-profiles.json example=%s\n", catalogRoot, example)
+}
+
+// qaProfileDiagnostic names the profile a refused run selected and what the
+// catalog's profile source actually offers (#374 S6), so an unknown id leads to
+// the file instead of a guess. It reads the same safe snapshot the route policy
+// reads — never a second, weaker path — and every caller-supplied token is
+// bounded and escaped for the operator's terminal. The valid ids are the ones
+// the route policy itself accepts, so a refusal enumerates what the operator
+// can actually select.
+func qaProfileDiagnostic(selected, catalogRoot string) string {
+	fields := make([]string, 0, 5)
+	if selected != "" {
+		fields = append(fields, "profile_selected="+sanitizeProfileToken(selected))
+	}
+	if defaultID, ids, ok := qapi.ProfileSelection(catalogRoot); ok {
+		fields = append(fields, "profile_source=readable", "profile_default="+defaultID)
+		fields = append(fields, "profile_valid_ids="+strings.Join(ids, ","))
+	} else {
+		fields = append(fields, "profile_source=unusable")
+	}
+	fields = append(fields, "route_setup="+filepath.Join(catalogRoot, "cortex", "qa-profiles.json"))
+	return strings.Join(fields, " ") + "\n"
+}
+
+// sanitizeProfileToken bounds one caller-supplied profile id for a diagnostic
+// line: admitted ids are lowercase words joined by dashes, so anything else is
+// replaced rather than echoed.
+func sanitizeProfileToken(selected string) string {
+	if len(selected) == 0 || len(selected) > 64 {
+		return "<redacted>"
+	}
+	for _, character := range selected {
+		allowed := character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-'
+		if !allowed {
+			return "<redacted>"
+		}
+	}
+	return selected
 }
 
 // qaAdmissionDiagnostic renders one bounded diagnostic line for admission

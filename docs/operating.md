@@ -199,7 +199,12 @@ A profile source that exists but cannot be read safely is refused, never silentl
 replaced: a catalog root reached through a symlink, a symlinked or non-regular
 profile file, an oversized or malformed file, or an unreadable `defaultProfile`
 all end in `profile_invalid` before anything is launched. Only a catalog with no
-`cortex/qa-profiles.json` file at all uses the placeholder `nan` route.
+`cortex/qa-profiles.json` file at all uses the placeholder `nan` route. A refused
+`profile_invalid` prints `profile_selected` (when `--profile` was passed), the
+source's `profile_default` and `profile_valid_ids` once the file is readable, and
+the `route_setup` path to edit, so an unknown id points at the file instead of
+guessing. `profile_valid_ids` is the sorted set the route policy itself accepts,
+read through the same decoder the run uses.
 
 Neither command accepts a catalog root reached through a symlink: every path
 component must be a real directory, and `qa setup` refuses to create a missing
@@ -209,6 +214,27 @@ includes the system temporary directory: `/tmp` is a symlink to `/private/tmp`, 
 a catalog under `/tmp/...` is refused until it is addressed through its canonical
 `/private/tmp/...` path (`cd` into it and use `pwd -P`).
 
+## Read a qa run refusal
+
+A `qa run` refusal names the preflight question that refused it (#374), using one
+fixed vocabulary and no guessed cause:
+
+- `stage=route_resolution` — the route could not be resolved: an unknown or
+  unusable `--profile`, a backend route the profile does not carry, or a route the
+  policy does not admit. Nothing is launched and no provider is claimed, because
+  none was resolved.
+- `stage=actor_admission` — the installed assets of the selected role were refused;
+  the following `admission_stage` names the check.
+- `stage=model_probe` — the backend's own availability probe answered that the
+  routed pair is unusable. `route_provider` and `route_model` name the pair that was
+  actually routed (nothing else), escaped for the terminal, and `model_unavailable`
+  or `auth_not_ready` prints its own remedy.
+- `stage=evidence_admission` — the supplied evidence sidecar was refused before
+  launch, with the `evidence_field` and `evidence_reason` that refused it.
+
+The vocabulary is preflight-only. A post-launch outcome (execution, timeout,
+stream, normalization) prints no stage, because no preflight question refused it.
+The `note=prerequisites` line names runtimes only and never claims a route.
 
 ## Read an admission refusal
 

@@ -153,3 +153,55 @@ func writeProfile(t *testing.T, root string, data []byte) {
 		t.Fatal(err)
 	}
 }
+
+// TestProfileSelectionReportsTheSameSnapshotResolutionReads pins the S6 (#374)
+// listing seam: the default id and the sorted admitted ids come from the one
+// safe snapshot read the route policy uses, so a refusal enumerates ids the
+// policy itself accepts instead of a second, weaker representation.
+func TestProfileSelectionReportsTheSameSnapshotResolutionReads(t *testing.T) {
+	root := testProfileRoot(t)
+	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"fleet":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`))
+	defaultID, ids, ok := ProfileSelection(root)
+	if !ok || defaultID != "fleet" {
+		t.Fatalf("ProfileSelection() = (%q, %q, %v), want the file's defaultProfile", defaultID, ids, ok)
+	}
+	if len(ids) != 2 || ids[0] != "fleet" || ids[1] != "qa-fleet" {
+		t.Fatalf("ProfileSelection() ids = %q, want [fleet qa-fleet]", ids)
+	}
+	// An absent or unsafe source has no selection at all: a caller reports the
+	// refusal instead of listing ids from a file it could not verify.
+	for name, setup := range map[string]func(t *testing.T, root string){
+		"absent": func(t *testing.T, root string) {},
+		"symlink": func(t *testing.T, root string) {
+			mustSymlink(t, filepath.Join(testProfileRoot(t), "elsewhere.json"), stagedProfilePath(t, root))
+		},
+		"malformed": func(t *testing.T, root string) {
+			writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := testProfileRoot(t)
+			setup(t, root)
+			if defaultID, ids, ok := ProfileSelection(root); ok || defaultID != "" || ids != nil {
+				t.Fatalf("ProfileSelection() = (%q, %q, %v), want no selection", defaultID, ids, ok)
+			}
+		})
+	}
+}
+
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stagedProfilePath creates the profile directory of root and returns the file
+// path inside it, without writing a file there.
+func stagedProfilePath(t *testing.T, root string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(profilePath(root)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return profilePath(root)
+}

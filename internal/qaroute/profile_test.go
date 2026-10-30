@@ -83,3 +83,36 @@ func TestResolvePerBackendRoutes(t *testing.T) {
 		t.Fatalf("unadmitted backend key failure = %q, want profile_invalid", failure.Code)
 	}
 }
+
+// TestProfileIDsListsSortedAdmittedIDs pins the enumeration a refusal uses to
+// name what a profile file actually offers (#374 S6): the ids come from the one
+// existing decoder, so an id this function lists is an id Resolve accepts, and
+// the order is sorted rather than the file's or Go's map order.
+func TestProfileIDsListsSortedAdmittedIDs(t *testing.T) {
+	body := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}},"alpha":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"deepseek-v4-flash","effort":"low"}}}}}}`)
+	ids, ok := ProfileIDs(body)
+	if !ok {
+		t.Fatal("ProfileIDs rejected a snapshot the route policy accepts")
+	}
+	want := []string{"alpha", "fleet", "qa-fleet"}
+	if len(ids) != len(want) {
+		t.Fatalf("ProfileIDs() = %q, want %q", ids, want)
+	}
+	for index, id := range want {
+		if ids[index] != id {
+			t.Fatalf("ProfileIDs() = %q, want %q", ids, want)
+		}
+		if _, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: id}, Snapshot{Present: true, Bytes: body}); failure.Code != "" {
+			t.Fatalf("ProfileIDs listed %q but Resolve refused it: %q", id, failure.Code)
+		}
+	}
+	for name, invalid := range map[string][]byte{
+		"malformed":      []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`),
+		"default absent": []byte(`{"schemaVersion":1,"defaultProfile":"missing","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`),
+		"not an object":  []byte(`[]`),
+	} {
+		if ids, ok := ProfileIDs(invalid); ok || ids != nil {
+			t.Fatalf("%s: ProfileIDs() = (%q, %v), want no enumeration", name, ids, ok)
+		}
+	}
+}

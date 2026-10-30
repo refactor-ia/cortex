@@ -195,6 +195,12 @@ once, in any order, after the required flags. When the pinned model is
 absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
 
+A profile source that exists but cannot be read safely is refused, never silently
+replaced: a catalog root reached through a symlink, a symlinked or non-regular
+profile file, an oversized or malformed file, or an unreadable `defaultProfile`
+all end in `profile_invalid` before anything is launched. Only a catalog with no
+`cortex/qa-profiles.json` file at all uses the placeholder `nan` route.
+
 ## Walk the QA fleet end to end
 
 The showcase path (#286): from a fresh directory, install from a release, configure a

@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/installobserve"
+	"github.com/refactor-ia/cortex/internal/qaadmission"
+	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/runtimecompat"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 	"github.com/refactor-ia/cortex/internal/runtimeprobe"
@@ -79,12 +81,15 @@ func stubQABackendProbe(t *testing.T, answers map[string]string) {
 	originalAssetCheck := qaAssetCheck
 	qaAssetCheck = func(_ string) error { return nil }
 	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
-	qaBackendProbe = func(_ context.Context, backend string) string {
+	qaBackendProbe = func(_ context.Context, backend string) qapi.AvailabilityVerdict {
 		answer, known := answers[backend]
 		if !known {
 			t.Fatalf("doctor probed an unexpected backend: %q", backend)
 		}
-		return answer
+		if answer == qaAvailabilityReady {
+			return qapi.AvailabilityVerdict{Available: true}
+		}
+		return qapi.AvailabilityVerdict{Code: qaadmission.Code(answer)}
 	}
 	t.Cleanup(func() { qaBackendProbe = original })
 }
@@ -189,6 +194,10 @@ func TestQAAssetAvailabilityFromError(t *testing.T) {
 		{name: "missing skill is assets_missing", err: &installobserve.AdmissionUnavailableError{Stage: "skill_missing", Expected: "aa"}, token: "assets_missing", diagnostic: " qa_assets_stage=skill_missing expected=aa"},
 		{name: "foreign catalog is assets_mismatch with identity", err: &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=catalog_fingerprint expected=cc11 found=ff22"},
 		{name: "skill drift is assets_mismatch", err: &installobserve.AdmissionUnavailableError{Stage: "skill_mismatch", Expected: "aa", Found: "bb"}, token: "assets_mismatch", diagnostic: " qa_assets_stage=skill_mismatch expected=aa found=bb"},
+		{name: "unadmitted binding is unverifiable, not a digest mismatch", err: &installobserve.AdmissionUnavailableError{Stage: "binding_invalid"}, token: "assets_unverifiable", diagnostic: " qa_assets_stage=binding_invalid"},
+		{name: "non-canonical root is unverifiable", err: &installobserve.AdmissionUnavailableError{Stage: "current_directory_invalid"}, token: "assets_unverifiable", diagnostic: " qa_assets_stage=current_directory_invalid"},
+		{name: "unproven actor guidance is unverifiable", err: &installobserve.AdmissionUnavailableError{Stage: "actor_guidance_invalid"}, token: "assets_unverifiable", diagnostic: " qa_assets_stage=actor_guidance_invalid"},
+		{name: "unproven shadow scan is unverifiable, not a catalog mismatch", err: &installobserve.AdmissionUnavailableError{Stage: "actor_shadow_unverified"}, token: "assets_unverifiable", diagnostic: " qa_assets_stage=actor_shadow_unverified"},
 		{name: "untyped check failure fails closed", err: errors.New("unrelated"), token: "assets_check_failed", diagnostic: " qa_assets_stage=check_failed"},
 	} {
 		token, diagnostic := qaAssetAvailabilityFromError(tc.err)
@@ -202,7 +211,9 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	originalProbe := qaBackendProbe
 	originalCheck := qaAssetCheck
 	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
-	qaBackendProbe = func(_ context.Context, _ string) string { return qaAvailabilityReady }
+	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
+		return qapi.AvailabilityVerdict{Available: true}
+	}
 	qaAssetCheck = func(_ string) error {
 		return &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}
 	}
@@ -225,6 +236,40 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
 	if !strings.Contains(line, "qa_availability=ready") || strings.Contains(line, "qa_assets_stage") {
 		t.Fatalf("line = %q, want plain ready when assets match", line)
+	}
+}
+
+// TestDoctorNamesTheProbedRouteAndItsScope pins #374 S7: doctor probes the
+// binary's embedded catalog and the policy default route, so the line names the
+// routed pair its verdict answered about (which doctor used to discard) and the
+// note discloses that scope instead of implying a caller catalog or `--profile`
+// route was evaluated.
+func TestDoctorNamesTheProbedRouteAndItsScope(t *testing.T) {
+	originalProbe := qaBackendProbe
+	originalCheck := qaAssetCheck
+	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
+	qaAssetCheck = func(_ string) error { return nil }
+	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
+		return qapi.AvailabilityVerdict{Code: qaadmission.CodeModelUnavailable, Provider: "nan", Model: "glm5.3"}
+	}
+	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	for _, want := range []string{"qa_availability=model_unavailable", "qa_route_provider=nan qa_route_model=glm5.3"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want it to name %q", line, want)
+		}
+	}
+	// A ready verdict names no pair, so the line must not invent one.
+	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
+		return qapi.AvailabilityVerdict{Available: true}
+	}
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	if strings.Contains(line, "qa_route_provider") || strings.Contains(line, "qa_route_model") {
+		t.Fatalf("line = %q, want no claimed route pair for a ready verdict", line)
+	}
+	for _, want := range []string{"qa_route_scope=embedded_default_route", "never a caller catalog", "--profile"} {
+		if !strings.Contains(doctorScopeNote, want) {
+			t.Fatalf("doctor note = %q, want it to disclose %q", doctorScopeNote, want)
+		}
 	}
 }
 
@@ -300,9 +345,9 @@ func TestDoctorDoesNotProbeAbsentRuntimes(t *testing.T) {
 	originalAssetCheck := qaAssetCheck
 	qaAssetCheck = func(_ string) error { return nil }
 	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
-	qaBackendProbe = func(_ context.Context, backend string) string {
+	qaBackendProbe = func(_ context.Context, backend string) qapi.AvailabilityVerdict {
 		probed = append(probed, backend)
-		return "ready"
+		return qapi.AvailabilityVerdict{Available: true}
 	}
 	t.Cleanup(func() { qaBackendProbe = original })
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}

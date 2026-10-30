@@ -648,6 +648,86 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 	})
 }
 
+// TestQARunWithoutAProfileUsesTheDocumentedPlaceholder keeps the legitimate
+// default: with no profile source at all, the policy placeholder still routes
+// the run (issue #298).
+func TestQARunWithoutAProfileUsesTheDocumentedPlaceholder(t *testing.T) {
+	args := reportFixture(t)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("placeholder run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	for _, want := range []string{"route_profile role-default", "route_model qwen3.6"} {
+		if !bytes.Contains(frame, []byte(want)) {
+			t.Fatalf("frame does not carry the placeholder %q: %q", want, frame)
+		}
+	}
+}
+
+// TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack pins the other
+// half of #324: a profile source that exists but cannot be read safely is a
+// named refusal, never a silent placeholder route and never a launch.
+func TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		install func(t *testing.T, path string)
+	}{
+		{name: "symlinked profile file", install: func(t *testing.T, path string) {
+			mustOK(os.Symlink(path+".elsewhere", path))
+		}},
+		{name: "malformed profile file", install: func(t *testing.T, path string) {
+			mustOK(os.WriteFile(path, []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`), 0o600))
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			args := roleReportFixture(t, qarole.RequirementsAnalyst)
+			// Stage the profile in a disposable copy: the repository catalog
+			// must never be mutated by a test that plants an unsafe file.
+			catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+			mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+			for index, arg := range args {
+				if arg == "--catalog" && index+1 < len(args) {
+					args[index+1] = catalogRoot
+				}
+			}
+			profileDirectory := filepath.Join(catalogRoot, "cortex")
+			mustOK(os.MkdirAll(profileDirectory, 0o700))
+			testCase.install(t, filepath.Join(profileDirectory, "qa-profiles.json"))
+
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			code := Run(context.Background(), args, stdout, stderr, nil)
+			want := "error=profile_invalid\n" + qaReportNote + "stage=route_resolution\nprofile_source=unusable route_setup=" + filepath.Join(catalogRoot, "cortex", "qa-profiles.json") + "\n"
+			if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("unusable default profile = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+			}
+			if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+				t.Fatal("a refused default profile must not launch the backend")
+			}
+		})
+	}
+}
+
+// TestQARunProfileRefusalNamesTheSelectedProfile pins the refusal half of S6
+// (#374): an unknown --profile id names the selection, what the profile source
+// actually offers, and the file to edit, without echoing anything unbounded.
+func TestQARunProfileRefusalNamesTheSelectedProfile(t *testing.T) {
+	args := profileReportFixture(t)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), append(append([]string{}, args...), "--profile", "no-such-profile"), stdout, stderr, nil)
+	want := "error=profile_invalid\n" + qaReportNote + "stage=route_resolution\nprofile_selected=no-such-profile profile_source=readable profile_default=fleet-default profile_valid_ids=fleet-default,qa-fleet route_setup=" + filepath.Join(qaCatalogArgument(args), "cortex", "qa-profiles.json") + "\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("unknown --profile = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	// A hostile id is never echoed: the diagnostic is bounded to the profile-id
+	// character set and carries no escape or control bytes.
+	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	code = Run(context.Background(), append(append([]string{}, args...), "--profile", "../\x1b[2Jevil"), stdout, stderr, nil)
+	if code != exitFailure || strings.Contains(stderr.String(), "\x1b") || !strings.Contains(stderr.String(), "profile_selected=<redacted> ") {
+		t.Fatalf("hostile --profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
 // TestQARunNamesThePreflightRefusalStage pins #374 S4: each preflight refusal
 // says which question refused — route resolution, actor admission, model probe,
 // or evidence admission — using the stage vocabulary the pipeline already

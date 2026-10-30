@@ -638,7 +638,14 @@ func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, p
 // The note is separate from the per-runtime records: their machine-readable
 // fields and order stay intact, while the scope and safe next check remain
 // visible even if every probed backend reports ready.
-const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_probe_role only (not_probed means no probe); it does not check asset ownership or install/update conflicts; for a separate read-only ownership plan run cortex update --runtime pi --catalog ./catalog\n"
+//
+// It states the route scope explicitly (#374 S7). Doctor resolves the policy
+// default route against the binary's embedded catalog: it reads no caller
+// catalog and no `--profile` route, so a maintainer must not read its answer as
+// an evaluation of either. The availability lines name the routed pair only
+// when the probe's verdict carried one, which is why the scope belongs here
+// rather than guessed per line.
+const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_probe_role only (not_probed means no probe); qa_route_scope=embedded_default_route means doctor probes the binary's embedded catalog and the policy default route, never a caller catalog or a --profile route; it does not check asset ownership or install/update conflicts; for a separate read-only ownership plan run cortex update --runtime pi --catalog ./catalog\n"
 
 // doctorReport extends the shared per-runtime line with what doctor alone is
 // asked for: whether that runtime's QA backend could actually run a report.

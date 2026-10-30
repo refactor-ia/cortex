@@ -52,15 +52,21 @@ func TestProfileRouteUsesOneOriginalSnapshot(t *testing.T) {
 	}
 }
 
-func TestProfileRouteRejectsInvalidSources(t *testing.T) {
-	valid := []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}}}}`)
-	for _, tc := range []struct {
-		name  string
-		setup func(t *testing.T, root string)
-	}{
-		{"missing", func(t *testing.T, root string) {}},
+const validProfileSnapshot = `{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}}}}`
+
+// profileSourceCase is one profile source that exists but cannot be inspected
+// safely. An explicit --profile selection and a default run must refuse the
+// same shapes, so both tests below share one table (#324).
+type profileSourceCase struct {
+	name  string
+	setup func(t *testing.T, root string)
+}
+
+func unusableProfileSources(valid []byte) []profileSourceCase {
+	return []profileSourceCase{
 		{"symlink root", func(t *testing.T, root string) {
 			target := testProfileRoot(t)
+			writeProfile(t, target, valid)
 			if err := os.Remove(root); err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +76,8 @@ func TestProfileRouteRejectsInvalidSources(t *testing.T) {
 		}},
 		{"symlink parent", func(t *testing.T, root string) {
 			target := t.TempDir()
-			if err := os.Symlink(target, filepath.Join(root, "cortex")); err != nil {
+			writeProfile(t, target, valid)
+			if err := os.Symlink(filepath.Join(target, profileDirectory), filepath.Join(root, profileDirectory)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -105,13 +112,64 @@ func TestProfileRouteRejectsInvalidSources(t *testing.T) {
 			writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{}},"balanced":{"routes":{}}}}`))
 		}},
 		{"trailing", func(t *testing.T, root string) { writeProfile(t, root, append(valid, []byte(" {}")...)) }},
-	} {
+		{"default profile id not admitted", func(t *testing.T, root string) {
+			writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`))
+		}},
+	}
+}
+
+func TestProfileRouteRejectsInvalidSources(t *testing.T) {
+	valid := []byte(validProfileSnapshot)
+	cases := append([]profileSourceCase{{"missing", func(t *testing.T, root string) {}}}, unusableProfileSources(valid)...)
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := testProfileRoot(t)
 			tc.setup(t, root)
 			got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.TestRunner, Backend: "pi", Profile: "balanced"})
 			if failure.Code != "profile_invalid" || got.PolicyVersion != "" {
 				t.Fatalf("resolveProfileRoute() = (%+v, %q), want profile_invalid", got, failure.Code)
+			}
+		})
+	}
+}
+
+// TestProfileRouteRejectsUnusableDefaultProfile pins the fail-closed half of
+// the default-profile rule (#324): a profile source that exists but cannot be
+// read safely is a refusal, never a silent fallback to the policy placeholder.
+func TestProfileRouteRejectsUnusableDefaultProfile(t *testing.T) {
+	for _, tc := range unusableProfileSources([]byte(validProfileSnapshot)) {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testProfileRoot(t)
+			tc.setup(t, root)
+			got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.TestRunner, Backend: "pi"})
+			if failure.Code != "profile_invalid" || got.PolicyVersion != "" {
+				t.Fatalf("resolveProfileRoute() = (%+v, %q), want profile_invalid instead of the placeholder fallback", got, failure.Code)
+			}
+		})
+	}
+}
+
+// TestProfileRouteDefaultPlaceholderRequiresAnAbsentSource keeps the
+// legitimate half: with no profile source at all, the policy placeholder still
+// applies (issue #298).
+func TestProfileRouteDefaultPlaceholderRequiresAnAbsentSource(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, root string)
+	}{
+		{"no profile directory", func(t *testing.T, root string) {}},
+		{"profile directory without a file", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, profileDirectory), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testProfileRoot(t)
+			tc.setup(t, root)
+			got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.TestRunner, Backend: "pi"})
+			if failure.Code != "" || got.ProfileID != "role-default" || got.Model != "qwen3.6" {
+				t.Fatalf("resolveProfileRoute() = (%+v, %q), want the placeholder route", got, failure.Code)
 			}
 		})
 	}

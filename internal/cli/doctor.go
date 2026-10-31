@@ -405,7 +405,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "%s\n", err.Error())
 		}
 		if unavailable := (*qapi.BackendUnavailableError)(nil); errors.As(err, &unavailable) {
-			_, _ = fmt.Fprintf(stderr, "route_provider=%s route_model=%s\n", unavailable.Provider, unavailable.Model)
+			_, _ = fmt.Fprintf(stderr, "route_provider=%s route_model=%s\n", sanitizeRouteIdentity(unavailable.Provider), sanitizeRouteIdentity(unavailable.Model))
 		}
 		if code == qaadmission.CodeModelUnavailable {
 			_, _ = io.WriteString(stderr, qaModelUnavailableNote())
@@ -451,6 +451,30 @@ func sanitizeDiagnosticField(field string) string {
 			continue
 		}
 		b.WriteByte('?')
+	}
+	return b.String()
+}
+
+// sanitizeRouteIdentity renders one routed provider or model token for a
+// terminal diagnostic. Unlike a field label these are values an operator must
+// be able to compare with the runtime's model table, so they are escaped
+// rather than flattened: printable ASCII passes through, and every other byte
+// becomes \xNN. A profile is a caller-owned file, so this is what keeps an
+// escape sequence in a provider or model name out of the operator's terminal
+// (#374 S5). The length bound is the same one qaroute applies.
+func sanitizeRouteIdentity(value string) string {
+	if value == "" || len(value) > 128 {
+		return "<redacted>"
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character >= 0x20 && character < 0x7f && character != '\\' {
+			b.WriteByte(character)
+			continue
+		}
+		_, _ = fmt.Fprintf(&b, "\\x%02x", character)
 	}
 	return b.String()
 }

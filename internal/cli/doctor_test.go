@@ -637,3 +637,23 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 		})
 	}
 }
+
+// TestSanitizeRouteIdentityBoundsAndEscapes pins the bound and the escaping the
+// routed-pair diagnostic relies on: a provider or model comes from a caller-owned
+// profile, so every byte outside printable ASCII is escaped and an over-long
+// value is withheld instead of printed.
+func TestSanitizeRouteIdentityBoundsAndEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, value, want string }{
+		{name: "plain ids pass through", value: "openai-codex/gpt-5.6-terra", want: "openai-codex/gpt-5.6-terra"},
+		{name: "escape sequence is escaped", value: "evil\x1b[2Jmodel", want: `evil\x1b[2Jmodel`},
+		{name: "newline cannot break the line", value: "a\nb", want: `a\x0ab`},
+		{name: "backslash is escaped so it cannot forge an escape", value: `a\x1bb`, want: `a\x5cx1bb`},
+		{name: "non-ascii bytes are escaped", value: "mödel", want: `m\xc3\xb6del`},
+		{name: "empty is withheld", value: "", want: "<redacted>"},
+		{name: "over-long is withheld", value: strings.Repeat("a", 129), want: "<redacted>"},
+	} {
+		if got := sanitizeRouteIdentity(tc.value); got != tc.want {
+			t.Fatalf("%s: sanitizeRouteIdentity(%q) = %q, want %q", tc.name, tc.value, got, tc.want)
+		}
+	}
+}

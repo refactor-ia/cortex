@@ -266,6 +266,12 @@ output does. A stage says which check refused: it does not claim the failure is
 transient or persistent, and it is not a remedy. Re-read the same assets and fix
 whichever one the stage names.
 
+`cortex doctor` reports the same refusals for its probe role: an asset check that
+cannot conclude — `binding_invalid`, `install_root_invalid`,
+`current_directory_invalid`, `actor_guidance_invalid`, `actor_shadow_unverified` —
+is reported as `qa_availability=assets_unverifiable` with the same `qa_assets_stage`,
+rather than as a digest mismatch that was never observed. A foreign catalog keeps
+naming both fingerprints (`assets_mismatch` with `expected` and `found`).
 
 ## Walk the QA fleet end to end
 
@@ -277,13 +283,20 @@ run looks like, and where it currently stops:
    from an empty directory. Expect `status=completed`, per-runtime lines, and the
    `warning=uncertified_admission` disclosure. Verify readiness with `cortex doctor`:
    every runtime reports `qa_availability` for the probe role only — it is a model
-   availability probe, not an admission guarantee.
+   availability probe, not an admission guarantee. `qa_route_scope=embedded_default_route`
+   states what was probed: the binary's embedded catalog and the policy default route.
+   Doctor reads no caller catalog and no `--profile` route, names the routed pair only
+   when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run
-   `cortex qa setup --catalog <abs-path>/catalog --provider <p> --model <m>`. Use an
-   **absolute** catalog path: `qa run` only reads the route profile from a canonical
-   absolute root (#324). `qa setup` writes `<catalog>/cortex/qa-profiles.json` with one
-   route per fleet role, pi-backend scoped (#328).
+   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m>`. Relative and
+   absolute roots are both accepted: the command resolves the path before it writes,
+   so `qa setup --catalog catalog` and `qa run --catalog catalog` from the same
+   directory address the same file (#324). The root must already exist and contain
+   `catalog.json`; `qa setup` validates it before probing models and refuses to create
+   the tree, so a typo fails instead of writing a profile no run reads. `qa setup`
+   writes `<catalog>/cortex/qa-profiles.json` with one route per fleet role,
+   pi-backend scoped (#328).
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh

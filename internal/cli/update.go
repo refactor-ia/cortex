@@ -77,7 +77,9 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 		writeError(stderr, "invalid_command")
 		return exitUsage
 	}
-	if targetDir != "" {
+	// The runtime mode always carries a runtime ID, so its absence means the
+	// directory mode, including an empty --target-dir value.
+	if runtimeID == "" {
 		return runDirectoryUpdate(stdout, stderr, targetDir, catalogDir, apply)
 	}
 	reports, err := probe(ctx, runner)
@@ -138,21 +140,21 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 // default runtime or target. The two selection modes are mutually exclusive.
 func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool, string, bool) {
 	var runtimeID, catalogDir, targetDir string
-	apply, adoptGuidance := false, false
+	apply, adoptGuidance, targetSet := false, false, false
 	for len(args) > 0 {
 		flag := args[0]
 		args = args[1:]
 		switch flag {
 		case "--runtime":
-			if runtimeID != "" || targetDir != "" || len(args) == 0 {
+			if runtimeID != "" || targetSet || len(args) == 0 {
 				return "", "", false, false, "", false
 			}
 			runtimeID, args = args[0], args[1:]
 		case "--target-dir":
-			if targetDir != "" || runtimeID != "" || len(args) == 0 {
+			if targetSet || runtimeID != "" || len(args) == 0 {
 				return "", "", false, false, "", false
 			}
-			targetDir, args = args[0], args[1:]
+			targetDir, args, targetSet = args[0], args[1:], true
 		case "--catalog":
 			if catalogDir != "" || len(args) == 0 {
 				return "", "", false, false, "", false
@@ -172,7 +174,9 @@ func parseUpdateArgs(args []string) (runtimematrix.RuntimeID, string, bool, bool
 			return "", "", false, false, "", false
 		}
 	}
-	if targetDir != "" {
+	// A given --target-dir selects the directory mode even when its value is
+	// empty, so the target check refuses it rather than the runtime mode.
+	if targetSet {
 		if catalogDir == "" || adoptGuidance {
 			return "", "", false, false, "", false
 		}
@@ -235,6 +239,10 @@ func buildUpdateCandidate(runtimeID runtimematrix.RuntimeID, catalogDir string, 
 // resolved into the caller-owned root, and readiness is revalidated through
 // installcoord.PreflightDirectoryTarget before any write.
 func runDirectoryUpdate(stdout, stderr io.Writer, targetDir, catalogDir string, apply bool) int {
+	if !validTargetDir(targetDir) {
+		writeError(stderr, "invalid_target")
+		return exitUsage
+	}
 	decision := runtimematrix.DirectoryTargetMatrix().Decisions[0]
 	info, err := os.Stat(targetDir)
 	if err != nil || !info.IsDir() {

@@ -97,23 +97,29 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 // directory has no host to probe, and its presence, writability, and prior
 // ownership are the whole answer to whether an install into it can proceed.
 func runDoctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy, resolveRoots func() ([]skillroot.UninstallRoot, error)) int {
-	targetDir := ""
+	targetDir, targetSet := "", false
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "--target-dir":
-			if targetDir != "" || index+1 >= len(args) {
+			if targetSet || index+1 >= len(args) {
 				writeError(stderr, "invalid_command")
 				return exitUsage
 			}
-			targetDir = args[index+1]
+			targetDir, targetSet = args[index+1], true
 			index++
 		default:
 			writeError(stderr, "invalid_command")
 			return exitUsage
 		}
 	}
-	if targetDir == "" {
+	// A given --target-dir is validated even when empty: an unset shell
+	// variable must not silently turn into the host runtime report.
+	if !targetSet {
 		return runDoctor(ctx, stdout, stderr, runner, policy, resolveRoots)
+	}
+	if !validTargetDir(targetDir) {
+		writeError(stderr, "invalid_target")
+		return exitUsage
 	}
 	return runDoctorDirectoryTarget(stdout, targetDir)
 }
@@ -688,22 +694,24 @@ func defaultUninstallDependencies() uninstallDependencies {
 // scan: exactly the directory the caller installed into is inspected, and
 // only the files its ownership records name are removed.
 func runUninstallCommand(args []string, stdout, stderr io.Writer, deps uninstallDependencies) int {
-	targetDir := ""
+	targetDir, targetSet := "", false
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "--target-dir":
-			if targetDir != "" || index+1 >= len(args) {
+			if targetSet || index+1 >= len(args) {
 				writeError(stderr, "invalid_command")
 				return exitUsage
 			}
-			targetDir = args[index+1]
+			targetDir, targetSet = args[index+1], true
 			index++
 		default:
 			writeError(stderr, "invalid_command")
 			return exitUsage
 		}
 	}
-	if targetDir == "" {
+	// A given --target-dir is validated even when empty: an unset shell
+	// variable must never fall through to the all-roots uninstall.
+	if !targetSet {
 		return runUninstall(stdout, stderr, deps)
 	}
 	return runDirectoryUninstall(targetDir, stdout, stderr, deps)
@@ -712,6 +720,10 @@ func runUninstallCommand(args []string, stdout, stderr io.Writer, deps uninstall
 // runDirectoryUninstall removes exactly the Cortex-owned files of one
 // previously installed directory target and never touches foreign files.
 func runDirectoryUninstall(targetDir string, stdout, stderr io.Writer, deps uninstallDependencies) int {
+	if !validTargetDir(targetDir) {
+		writeError(stderr, "invalid_target")
+		return exitUsage
+	}
 	root, err := skillroot.NewUninstallRoot(runtimematrix.RuntimeDirectory, skilldest.RootKindDirectory, targetDir)
 	if err != nil {
 		writeError(stderr, "invalid_target")

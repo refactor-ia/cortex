@@ -96,6 +96,13 @@ func parseTargetDir(args []string) (string, bool, error) {
 	return "", false, nil
 }
 
+// validTargetDir is the one path check shared by every command that consumes
+// --target-dir (issue #372): a target must be absolute and clean, so a relative
+// path never resolves against the caller's working directory.
+func validTargetDir(target string) bool {
+	return filepath.IsAbs(target) && target == filepath.Clean(target)
+}
+
 // runDirectoryInstall projects the catalog into the caller-owned directory.
 // The backup root stays under the user home like every other install: backups
 // are a Cortex ownership artifact, and writing them inside the target would
@@ -105,7 +112,7 @@ func runDirectoryInstall(stdout, stderr io.Writer, target string, deps installDe
 	// malformed target shares the one explicit invalid_target diagnostic
 	// (issue #367): a relative path that exists on disk would otherwise pass
 	// the stat check below and surface as install_composition_failed.
-	if !filepath.IsAbs(target) || target != filepath.Clean(target) {
+	if !validTargetDir(target) {
 		writeError(stderr, "invalid_target")
 		return exitUsage
 	}

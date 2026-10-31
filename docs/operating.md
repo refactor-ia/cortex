@@ -62,7 +62,7 @@ operation=install status=completed touch=applied create=33 replace=0 remove=0 un
 `cortex install --target-dir <dir>` projects the catalog as plain `SKILL.md` files into an
 existing directory, with the same transactional guarantees as a runtime install: manifest,
 ownership, backup, rollback, and readback. There is no host to probe, so there is no version
-certification step; the path must already exist and be a directory.
+certification step; the path must be absolute and clean, already exist, and be a directory.
 
 The output follows the [Agent Skills](https://agentskills.io/) specification: each capability
 lands at `skills/cortex-<name>/SKILL.md` with `name`, `description`, `license`, and
@@ -72,13 +72,20 @@ the same way as self-contained skills; a directory target never runs `qa run` ba
 adds no QA route.
 
 ```bash
-cortex install --target-dir ./agent-skills
+cortex install --target-dir "$PWD/agent-skills"
 
 operation=install status=completed touch=applied create=33 ...
 runtime=directory presence=present compatibility=compatible action=configure touch=applied
 ```
 
 - `error=invalid_target` (exit 64) — the path is missing, relative, or not a directory.
+  Doctor, update, and uninstall refuse an empty, relative, or unclean `--target-dir` (a
+  trailing separator counts as unclean: pass `/path/dir`, not `/path/dir/`) with the
+  same error before reading or writing anything; an empty value never falls back to the
+  runtime mode. A malformed command line is still refused first as `invalid_command` (for
+  example `update --target-dir <dir>` without `--catalog`). A missing absolute target keeps each command's own answer (doctor reports
+  `presence=absent`, update refuses with `reason=target_absent`), and uninstall also
+  refuses a filesystem root.
 - Update and uninstall work on the recorded ownership:
   `cortex update --target-dir <dir> --catalog ./catalog [--apply]` (a target with no prior
   state is refused with `reason=not_installed` instead of becoming a first install), and

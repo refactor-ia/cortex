@@ -44,6 +44,8 @@ The next bounded milestone is **v0.1.0-beta.1**. Freeze the current capability s
 
 A private machine being offline is not a beta gate. The supported beta matrix may be narrower than the target architecture, but exclusions must be explicit, not described as parity. Full eleven-family by three-runtime certification retains the architecture's separate evidence requirement; a beta label does not satisfy it.
 
+An evaluation alpha may use the architecture's [bounded prerelease contract](docs/architecture/overview.md#evaluation-alpha): declare exact platforms, runtime versions and capabilities, pass structural checks, isolated install/readback and a real invocation for every claimed supported combination, and disclose exclusions and unavailable or incompatible cases. It remains uncertified; it does not complete the beta criteria or the full-certification matrix merely by being published. Record its observed scope in [verification evidence](docs/verification.md#evaluation-alpha-evidence-scope).
+
 Current evidence and limitations: [alpha20 delivered evidence](docs/verification.md#alpha20-delivered-evidence).
 
 ## Tracks

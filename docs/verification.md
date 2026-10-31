@@ -66,6 +66,16 @@ Two isolated local QA/update tests previously failed with the same errors on pri
 
 **Still unproven:** a complete live-model QA showcase from the published binary, the external review/triage pilot, full runtime-family parity and release certification. Installation, `doctor` exit 0, model-availability probes and source tests are not substitutes for real capability invocations. Beta requires the [bounded exit criteria](../ROADMAP.md#beta1-exit-criteria); full parity still requires the architecture's evidence below.
 
+## Evaluation-alpha evidence scope
+
+The [architecture release contract](architecture/overview.md#build-parity-and-release-gates) permits an uncertified evaluation-alpha prerelease with a declared, bounded verification matrix. It does not certify the full eleven-family by three-runtime target. This section defines how to record that evidence; it does not assert that a new alpha has passed or been published, and it does not retroactively add evidence to alpha20.
+
+Declare the matrix before verification. For every claimed supported platform/runtime-version/capability combination, record structural conformance, isolated install and readback, and at least one real capability invocation. Bind each result to the source revision and archive/binary identity, with its command, exit status and bounded redacted outcome. Keep credentials, private prompts, user configuration and host-identifying paths out of the evidence.
+
+List other combinations explicitly as experimental or excluded, including empty families, and record absent-runtime, unknown-version and known-incompatible-adapter results. Unknown versions remain no-write; incompatibility skips only the affected adapter. Missing or failed required evidence blocks publication for the declared matrix. Preserve failures if the matrix is revised, declare the revised scope, and complete its gates before publication.
+
+The existing full-matrix smoke planner remains a certification planner, not an executor for this bounded matrix. Installation, availability probes and source tests do not replace real capability invocations. Release notes must distinguish verified evaluation scope from excluded scope and must not describe either as full parity or certification.
+
 ## Historical runtime admission evidence
 
 This predates alpha20 and does not certify its runtime versions. The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.
@@ -76,7 +86,7 @@ This predates alpha20 and does not certify its runtime versions. The following i
 | OpenCode | 1.18.25 | source `07f8979cf4969f0bb977d401e3792bd5d754e963`; command `6062b37fc943e60d1828a27ed69ed738b8572b1a27bacd068f8a679de19f2f8a`; config `61e3b70f80acc12049f71307760e500778f288b30dc0ee9d42c3cb43b091f3e0`; `skill_tool_completed=true` | 5000 ms |
 | Claude Code | 2.1.251 | source `f68758e784287cff78599c24db8632a13890c206`; command `0cba56fe517827ac8169a49cd36291d13875d06883be4729654fa34183aa8133`; schema `f7374878f385a402aa47362c62c882bdafba7abafac4d266ab81047448a5d46b`; auth `subscription_oauth_token` | 2342 ms |
 
-This is verified-version evidence, not full 11×3 runtime-family parity and not release certification. A future parity claim requires structural conformance, isolated installation and readback, and at least one real smoke invocation for every family and runtime: 11 families across 3 runtimes, for at least 33 invocations. Release evidence must also cover absent runtimes, unidentified versions, and known-incompatible adapters.
+This is verified-version evidence, not full 11×3 runtime-family parity and not release certification. A future parity claim requires structural conformance, isolated installation and readback, and at least one real smoke invocation for every family and runtime: 11 families across 3 runtimes, for at least 33 invocations. Release evidence must also cover absent runtimes, unidentified versions, and known-incompatible adapters. A bounded evaluation-alpha matrix does not satisfy this full-certification requirement.
 
 ## Reporting results
 

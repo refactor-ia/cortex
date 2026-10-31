@@ -154,14 +154,29 @@ Cortex makes no unverified provider-support claim for any runtime.
 
 ## Build, parity, and release gates
 
-Build and release generate runtime artifacts from catalog/family manifests; the installer only materializes those artifacts. A release requires:
+Build and release generate runtime artifacts from catalog/family manifests; the installer only materializes those artifacts. Evaluation-alpha publication and full certification have distinct evidence scopes. Neither is automatic release authorization; release decisions remain with maintainers under repository governance.
+
+### Evaluation alpha
+
+An evaluation alpha may be published only as an **uncertified prerelease**, after all gates for its declared matrix pass:
+
+- Declare the exact platforms, runtime versions, and capabilities included in the evaluation matrix before verification. Every claimed supported combination requires structural conformance of manifests and generated projections, isolated install and readback verification, and at least one real capability invocation.
+- Bind results to the source revision and release artifact identity. Record the runtime version, command, exit status, and bounded redacted outcome without credentials. Source tests, availability probes, and successful installation alone do not substitute for a real invocation.
+- Explicitly list combinations outside the verified matrix as experimental or excluded, including families without invocable capability content. Record explicit results for absent runtimes, unknown versions, and known-incompatible adapters; an unavailable combination is not a passing smoke.
+- Missing or failed required evidence blocks publication for the declared matrix. Do not relabel a failed claimed combination as verified or omit its failure from the record. Any revised matrix must be declared and verified before publication.
+
+An evaluation alpha does not establish full runtime-family parity, certification, or delivery of the target architecture. This bounded evidence contract does not change runtime admission or require new catalog content. It does not redefine the full-matrix smoke planner as an evaluation-matrix executor.
+
+### Full certification
+
+Full certification and any full runtime-family parity claim require:
 
 - Structural conformance of manifests and generated projections.
 - Isolated install and readback verification.
 - At least one real runtime smoke invocation for every family and runtime: 11 families x 3 runtimes, at least 33 invocations.
 - Explicit results for absent runtimes, unknown versions, and known-incompatible adapters.
 
-Identified uncertified versions are admitted with disclosure; certification records which versions were verified end to end rather than gating admission. Unknown versions warn and are never written to. Known-incompatible versions skip only the affected adapter. A parity claim is not published before these gates pass.
+Identified uncertified versions are admitted with disclosure; certification records which versions were verified end to end rather than gating admission. Unknown versions warn and are never written to. Known-incompatible versions skip only the affected adapter. A parity claim is not published before the full-certification gates pass. An evaluation-alpha label or a narrower verified matrix does not satisfy them.
 
 Catalog admission has hard gates for explicit license, provenance, and redistribution permission. Proposed catalog capabilities SHOULD be evaluated against the current official, supported Gentle-AI™ product surface, and material overlap SHOULD be avoided; outcomes are governed by the `Gentle-AI™ functional precedence` subsection. Project code uses a permissive license. Cortex-owned content and knowledge use CC BY-SA. Third-party or imported material requires an explicit compatible redistribution license and proven provenance; otherwise it remains out of the catalog.
 

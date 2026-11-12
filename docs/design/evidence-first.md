@@ -93,6 +93,18 @@ Claim: "the budget is saved".
 | Without restart | Create a budget, then read it back. | The budget is returned. | Does not rule out that it only lives in memory. | Incomplete evidence |
 | With restart | Create a budget, restart the app, read it back. | The budget is returned after the restart. | Does not prove behavior under concurrent writes. | Verified |
 | Broken storage | Create a budget, restart the app, read it back. | Not found after the restart. | None needed; the claim is contradicted. | Refuted |
+| Concurrent writes | None: no test writes the same budget from two sessions. | Nothing ran. | Nothing about concurrent writes is known. | No evidence |
+
+A delivery for the same change, with all six parts:
+
+| Part | Example |
+| --- | --- |
+| Changed | Budgets are now stored in the database instead of in memory. |
+| Tested how | `pnpm test budgets/persistence`: 4 passed, exit 0, including create, restart and read back. Observed by: the agent that made the change. |
+| Not tested | Concurrent writes to the same budget; migration of budgets created before this change. |
+| Side effects | The budget list endpoint shares the storage module. `pnpm test budgets/list` ran against the previous and the new version with identical output and exit 0. |
+| Failed or not done | The import-from-CSV path was not migrated; it still writes to memory and is tracked as a follow-up. No check failed. |
+| Warnings | Budgets created before this change are lost on the first restart unless the migration runs first. |
 
 ## 7. Anti-patterns
 

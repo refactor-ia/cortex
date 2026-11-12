@@ -135,7 +135,11 @@ func runDirectoryInstall(stdout, stderr io.Writer, target string, deps installDe
 	group, err := deps.applyGroup(requests, home, backupName)
 	if err != nil {
 		reason, code := installFailureReason(err)
-		return writeInstallResult(stdout, stderr, "install", "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
+		status := "status=not_applied reason=" + reason + " touch=denied"
+		if paths := installConflictPaths(requests, err); paths != "" {
+			status += " conflict_paths=" + paths
+		}
+		return writeInstallResult(stdout, stderr, "install", status, "", results, false, installtxn.Counts{}, code)
 	}
 	return writeInstallResult(stdout, stderr, "install", "status=completed touch=applied", "", results, true, group.Counts(), exitOK)
 }
@@ -221,9 +225,52 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 	group, err := deps.applyGroup(requests, home, backupName)
 	if err != nil {
 		reason, code := installFailureReason(err)
-		return writeInstallResult(stdout, stderr, operation, "status=not_applied reason="+reason+" touch=denied", "", results, false, installtxn.Counts{}, code)
+		status := "status=not_applied reason=" + reason + " touch=denied"
+		if paths := installConflictPaths(requests, err); paths != "" {
+			status += " conflict_paths=" + paths
+		}
+		return writeInstallResult(stdout, stderr, operation, status, "", results, false, installtxn.Counts{}, code)
 	}
 	return writeInstallResult(stdout, stderr, operation, "status=completed touch=applied", warning, results, true, group.Counts(), exitOK)
+}
+
+// installConflictPaths renders the conflicting logical assets as runtime-relative
+// paths for the operator diagnostic (issue #373). Output is deduplicated and
+// sorted by the transaction layer.
+func installConflictPaths(requests []installtxn.GroupRequest, err error) string {
+	var conflict *installtxn.ConflictError
+	if !errors.As(err, &conflict) || len(conflict.LogicalIDs) == 0 {
+		return ""
+	}
+	plans := make([]installplan.Plan, 0, len(requests))
+	for _, request := range requests {
+		plans = append(plans, request.Plan)
+	}
+	return conflictRelativePaths(plans, conflict.LogicalIDs)
+}
+
+// conflictRelativePaths maps conflicting LogicalIDs to the runtime-relative
+// paths their plans compose, preserving the given order and dropping
+// duplicates. LogicalIDs without a file in the plans (the state artifact) are
+// omitted, so every caller renders the same conflict_paths representation.
+func conflictRelativePaths(plans []installplan.Plan, logicalIDs []string) string {
+	relative := make(map[string]string)
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
+			relative[file.LogicalID()] = file.RelativePath()
+		}
+	}
+	paths := make([]string, 0, len(logicalIDs))
+	seen := make(map[string]bool, len(logicalIDs))
+	for _, id := range logicalIDs {
+		path, ok := relative[id]
+		if !ok || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return strings.Join(paths, ",")
 }
 
 // installFailureReason maps a grouped-transaction failure to the operator reason

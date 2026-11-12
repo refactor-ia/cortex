@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"sort"
 
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
@@ -77,6 +78,7 @@ type UninstallObservation struct {
 	removals              map[string]RemovalEvidence
 	ready                 bool
 	unsupportedActorPaths []string
+	conflictPaths         map[string]string
 }
 
 // UnsupportedActorPaths returns detached, bounded recorded relative actor paths
@@ -84,6 +86,19 @@ type UninstallObservation struct {
 // contents, external guidance presence, or removal authority.
 func (observation UninstallObservation) UnsupportedActorPaths() []string {
 	return append([]string(nil), observation.unsupportedActorPaths...)
+}
+
+// ConflictPaths returns the detached runtime-relative paths of prior-owned
+// artifacts whose observed content drifted from the recorded state (issue
+// #373). Paths carry no touch authority; they exist only so conflict refusals
+// can name which assets conflict.
+func (observation UninstallObservation) ConflictPaths() []string {
+	paths := make([]string, 0, len(observation.conflictPaths))
+	for _, path := range observation.conflictPaths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // Records returns detached logical records in canonical prior-state order, with the
@@ -174,6 +189,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	}
 
 	artifacts := manifest.Artifacts()
+	conflictPaths := make(map[string]string)
 	records := make([]UninstallRecord, 0, len(artifacts)+1)
 	exact := make(map[string]ExactFile, len(artifacts)+1)
 	removals := make(map[string]RemovalEvidence, len(artifacts)+1)
@@ -193,6 +209,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 			} else {
 				record.Status = UninstallConflict
 				conflict = true
+				conflictPaths[record.LogicalID] = artifact.RelativePath()
 			}
 		}
 		records = append(records, record)
@@ -201,7 +218,7 @@ func ObserveUninstall(root UninstallRoot, options Options) (UninstallObservation
 	exact["state/install-state"] = ExactFile{bytes: append([]byte{}, state...), mode: stateMode}
 	removals["state/install-state"] = RemovalEvidence{destination: ".cortex/install-state.json", exact: exact["state/install-state"]}
 	records = append(records, UninstallRecord{LogicalID: "state/install-state", Status: UninstallRemove, SHA256: stateHash})
-	return UninstallObservation{runtimeID: root.runtimeID, rootPath: root.rootPath, records: records, exact: exact, removals: removals, ready: !conflict}, nil
+	return UninstallObservation{runtimeID: root.runtimeID, rootPath: root.rootPath, records: records, exact: exact, removals: removals, ready: !conflict, conflictPaths: conflictPaths}, nil
 }
 
 func validUninstallRoot(root UninstallRoot) bool {

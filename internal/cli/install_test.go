@@ -211,6 +211,24 @@ func TestRunInstallUnrepresentableProjectionIsNotApplied(t *testing.T) {
 		t.Fatalf("install = (%q, %q)", stdout.String(), stderr.String())
 	}
 }
+func TestRunInstallConflictListsConflictingPaths(t *testing.T) {
+	deps := compatibleInstallDependencies(t, t.TempDir())
+	deps.applyGroup = func([]installtxn.GroupRequest, string, string) (installtxn.GroupResult, error) {
+		return installtxn.GroupResult{}, &installtxn.ConflictError{LogicalIDs: []string{"skills/requirements-analyst"}}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &stdout, &stderr, certifiedPiOnlyRunner(), deps); code != exitConflict {
+		t.Fatalf("install exit = %d, want %d", code, exitConflict)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	want := "status=not_applied reason=ownership_conflict touch=denied conflict_paths=skills/cortex-requirements-analyst/SKILL.md"
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("stdout = %q, want conflict paths %q", stdout.String(), want)
+	}
+}
+
 func TestRunInstallFailuresDoNotReportCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

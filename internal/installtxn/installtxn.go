@@ -31,6 +31,33 @@ var (
 	ErrFailed   = errors.New("install transaction: failed")
 )
 
+// ConflictError wraps ErrConflict with the LogicalIDs whose ownership decisions
+// conflicted, so callers can render path-level diagnostics. It carries no path,
+// content, or touch authority: the transaction result contract stays intact.
+type ConflictError struct {
+	LogicalIDs []string
+}
+
+// Error keeps the sentinel text so errors.Is(ErrConflict) compatibility and the
+// opaque stderr contract are unchanged.
+func (e *ConflictError) Error() string { return ErrConflict.Error() }
+
+// Unwrap preserves errors.Is(err, ErrConflict) for every existing caller.
+func (e *ConflictError) Unwrap() error { return ErrConflict }
+
+// conflictLogicalIDs extracts the LogicalIDs whose action is ownership conflict
+// from a prepared result, sorted for deterministic diagnostics.
+func conflictLogicalIDs(result Result) []string {
+	ids := make([]string, 0, len(result.actions))
+	for _, action := range result.actions {
+		if action.Action == ownership.Conflict {
+			ids = append(ids, action.LogicalID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 const stateRelativePath = ".cortex/install-state.json"
 
 var errPriorOwnership = errors.New("install transaction: prior ownership index is invalid")
@@ -593,7 +620,7 @@ func applyGroupWith(requests []GroupRequest, backupRoot, backupName string, appl
 		sequenced, single, err := prepareSequenced(request.Plan, current[index], request.CWD)
 		if err != nil {
 			if errors.Is(err, ErrConflict) {
-				return GroupResult{}, ErrConflict
+				return GroupResult{}, &ConflictError{LogicalIDs: conflictLogicalIDs(single)}
 			}
 			return GroupResult{}, errors.Join(ErrInvalid, err)
 		}

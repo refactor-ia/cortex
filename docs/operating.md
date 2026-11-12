@@ -54,7 +54,7 @@ operation=install status=completed touch=applied create=33 replace=0 remove=0 un
 - `status=completed touch=applied` — the transaction applied and was read back. Running install again is a no-op reported honestly as `create=0 unchanged=33`.
 - `status=not_applied reason=compatibility_uncertified touch=denied` — no compatible runtime was found; nothing was written.
 - `status=not_applied reason=projection_unrepresentable touch=denied` — a runtime exists but cannot represent a capability honestly; Cortex refused rather than approximating. Report it; do not work around it.
-- `status=not_applied reason=ownership_conflict touch=denied` (exit 3) — a target file exists without verified Cortex ownership. Someone else wrote there. Stop and ask the user; never delete or rewrite foreign files to clear the path.
+- `status=not_applied reason=ownership_conflict touch=denied` (exit 3) — a target file exists without verified Cortex ownership. Someone else wrote there. Stop and ask the user; never delete or rewrite foreign files to clear the path. The status line appends `conflict_paths=<relative path,...>` naming every asset whose ownership decision conflicted, so the conflicting files are named without reading transaction internals.
 - `warning=uncertified_admission runtimes=N certification=not_certified` — the transaction configured N runtimes whose exact version has no verified evidence. This is disclosed non-certified admission, not a failure; the user may accept it once they know.
 
 ## Directory targets
@@ -100,6 +100,8 @@ cortex update --runtime pi --catalog ./catalog --apply  # the plan, applied
 
 Default mode touches nothing — run the plan first, read it, then decide. `--apply` writes only inside that runtime's Cortex-owned root. On Pi, if legacy externally-modified guidance is detected, the plan asks for explicit consent with `--adopt-guidance`: that is a one-time adoption of external bytes (they are preserved, not overwritten), not a drift override, and drift is always refused.
 
+A plan or apply that hits an asset without verified Cortex ownership reports `operation=<logical id> action=conflict` and ends with `status=conflict conflict_paths=<relative path,...>` (exit 3), naming each conflicting asset by its path under the runtime root. Nothing is written; stop and ask the user rather than removing the file.
+
 ## Upgrade to alpha20
 
 Use the [published alpha20 archive and checksum procedure](verification.md#verify-an-archive) for the machine's platform. Keep the extracted binary, catalog and licenses together in a versioned directory. Do not replace user model routes or runtime configuration with release defaults.
@@ -134,7 +136,7 @@ Preserve command exit codes, output and the last completed transaction. A failed
 
 - `uninstall=completed remove=N` — removed exactly what it owned.
 - `not_installed` — nothing of Cortex's there; nothing done. The grouped uninstall exits 0; `uninstall --target-dir` exits 3 because a directory target without ownership fails closed.
-- `conflict` / `blocked` — shared actor state or unverified ownership blocks removal; the whole grouped uninstall fails closed and nothing is removed. Report the diagnostic notes to the user instead of forcing it.
+- `conflict` / `blocked` — shared actor state or unverified ownership blocks removal; the whole grouped uninstall fails closed and nothing is removed. The runtime line appends `conflict_paths=<relative path,...>` naming the drifted prior-owned assets. Report the diagnostic notes to the user instead of forcing it.
 
 ## Never do this
 

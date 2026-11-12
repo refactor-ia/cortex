@@ -46,7 +46,7 @@ func TestRunUninstallRuntimeHarness(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, stdout, stderr := runUninstallForTest(t, roots, nil)
-		if code != exitConflict || stderr != "" || stdout != uninstallLines("blocked", "conflict", "blocked") {
+		if code != exitConflict || stderr != "" || stdout != uninstallLines("blocked", "conflict", "blocked", "skills/cortex-alpha/SKILL.md") {
 			t.Fatalf("uninstall = (%d, %q, %q)", code, stdout, stderr)
 		}
 		for i := range roots {
@@ -216,6 +216,11 @@ func writeInstalled(t *testing.T, root skillroot.UninstallRoot, content string) 
 }
 
 func uninstallLines(statuses ...string) string {
+	var conflictPaths string
+	if len(statuses) > 3 {
+		conflictPaths = statuses[3]
+		statuses = statuses[:3]
+	}
 	var output strings.Builder
 	for i, runtime := range []string{"pi", "opencode", "claude-code"} {
 		remove, conflict := 2, 0
@@ -224,7 +229,12 @@ func uninstallLines(statuses ...string) string {
 		} else if statuses[i] == "conflict" {
 			remove, conflict = 1, 1
 		}
-		_, _ = fmt.Fprintf(&output, "runtime=%s uninstall=%s remove=%d absent=0 conflict=%d\n", runtime, statuses[i], remove, conflict)
+		line := fmt.Sprintf("runtime=%s uninstall=%s remove=%d absent=0 conflict=%d", runtime, statuses[i], remove, conflict)
+		if statuses[i] == "conflict" && conflictPaths != "" {
+			line += " conflict_paths=" + conflictPaths
+		}
+		output.WriteString(line)
+		output.WriteByte('\n')
 	}
 	return output.String()
 }

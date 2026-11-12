@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -128,7 +129,7 @@ func runWithUpdateDependencies(ctx context.Context, args []string, stdout, stder
 	}
 	if !apply {
 		header := fmt.Sprintf("runtime=%s outcome=%s action=%s root=%s mode=plan%s", decision.ID, decision.Outcome, decision.Action, plan.RootPath(), warning)
-		return writeUpdateOperations(stdout, header, classified, "planned")
+		return writeUpdateOperations(stdout, header, plan, classified, "planned")
 	}
 	return applyUpdate(stdout, stderr, plan, observation, classified, observations, warning)
 }
@@ -266,7 +267,7 @@ func runDirectoryUpdate(stdout, stderr io.Writer, targetDir, catalogDir string, 
 	}
 	header := fmt.Sprintf("runtime=%s outcome=%s action=%s root=%s mode=plan", decision.ID, decision.Outcome, decision.Action, plan.RootPath())
 	if !apply {
-		return writeUpdateOperations(stdout, header, classified, "planned")
+		return writeUpdateOperations(stdout, header, plan, classified, "planned")
 	}
 	return applyDirectoryUpdate(stdout, stderr, plan, observation, classified, header)
 }
@@ -306,7 +307,7 @@ func applyDirectoryUpdate(stdout, stderr io.Writer, plan installplan.Plan, obser
 		return exitFailure
 	}
 	if !report.Ready() {
-		return writeUpdateOperations(stdout, header, classified, "conflict")
+		return writeUpdateOperations(stdout, header, plan, classified, "conflict")
 	}
 	backupRoot := filepath.Join(plan.RootPath(), ".cortex")
 	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
@@ -317,7 +318,7 @@ func applyDirectoryUpdate(stdout, stderr io.Writer, plan installplan.Plan, obser
 	result, txErr := applyCandidate(plan, observation, backupRoot, backupName)
 	if txErr != nil {
 		if errors.Is(txErr, installtxn.ErrConflict) {
-			return writeUpdateOperations(stdout, header, classified, "conflict")
+			return writeUpdateOperations(stdout, header, plan, classified, "conflict")
 		}
 		writeError(stderr, "update_transaction_failed")
 		return exitTransaction
@@ -386,12 +387,16 @@ func updateRefusalReason(outcome runtimematrix.Outcome) string {
 }
 
 // writeUpdateOperations prints one read-only operation report with its status.
-func writeUpdateOperations(stdout io.Writer, header string, classified installobserve.Result, status string) int {
+// A conflict status names the conflicting assets by runtime-relative path in
+// the same conflict_paths form install and uninstall use (issue #373).
+func writeUpdateOperations(stdout io.Writer, header string, plan installplan.Plan, classified installobserve.Result, status string) int {
 	output := strings.Builder{}
 	output.WriteString(header + "\n")
+	var conflicts []string
 	for _, item := range classified.ArtifactDecisions() {
 		if item.Action == ownership.Conflict {
 			status = "conflict"
+			conflicts = append(conflicts, item.LogicalID)
 		}
 		if item.ModeDrift {
 			fmt.Fprintf(&output, "operation=%s action=%s mode_drift=true observed_mode=%04o canonical_mode=0600\n", item.LogicalID, item.Action, item.ObservedMode.Perm())
@@ -402,7 +407,14 @@ func writeUpdateOperations(stdout io.Writer, header string, classified installob
 	if classified.StateAction() == ownership.Conflict {
 		status = "conflict"
 	}
-	fmt.Fprintf(&output, "operation=state/install-state action=%s\nstatus=%s\n", classified.StateAction(), status)
+	fmt.Fprintf(&output, "operation=state/install-state action=%s\nstatus=%s", classified.StateAction(), status)
+	if status == "conflict" {
+		sort.Strings(conflicts)
+		if paths := conflictRelativePaths([]installplan.Plan{plan}, conflicts); paths != "" {
+			output.WriteString(" conflict_paths=" + paths)
+		}
+	}
+	output.WriteString("\n")
 	_, _ = io.WriteString(stdout, output.String())
 	if status == "conflict" {
 		return exitConflict
@@ -423,7 +435,7 @@ func applyUpdate(stdout, stderr io.Writer, plan installplan.Plan, observation in
 		return exitFailure
 	}
 	if !report.Ready() {
-		return writeUpdateOperations(stdout, header, classified, "conflict")
+		return writeUpdateOperations(stdout, header, plan, classified, "conflict")
 	}
 	backupRoot := filepath.Join(plan.RootPath(), ".cortex")
 	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
@@ -434,7 +446,7 @@ func applyUpdate(stdout, stderr io.Writer, plan installplan.Plan, observation in
 	result, txErr := applyCandidate(plan, observation, backupRoot, backupName)
 	if txErr != nil {
 		if errors.Is(txErr, installtxn.ErrConflict) {
-			return writeUpdateOperations(stdout, header, classified, "conflict")
+			return writeUpdateOperations(stdout, header, plan, classified, "conflict")
 		}
 		writeError(stderr, "update_transaction_failed")
 		return exitTransaction
@@ -511,7 +523,7 @@ func updateActorGuidance(stdout, stderr io.Writer, canonical installplan.Plan, o
 	}
 	proof := preflight.Proof() // Retain the exact immutable candidate and evidence.
 	if !apply {
-		return writeUpdateOperations(stdout, header, proof.Result(), "planned")
+		return writeUpdateOperations(stdout, header, canonical, proof.Result(), "planned")
 	}
 	backupName := nextUpdateBackupName()
 	result, err := installtxn.ApplyActorGuidance(canonical, observation, proof, cwd, filepath.Join(canonical.RootPath(), ".cortex"), backupName)

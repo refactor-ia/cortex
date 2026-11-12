@@ -235,28 +235,36 @@ func runInstall(ctx context.Context, stdout, stderr io.Writer, runner runtimepro
 }
 
 // installConflictPaths renders the conflicting logical assets as runtime-relative
-// paths for the operator diagnostic (issue #373). LogicalIDs without a file in
-// the composed requests map to their own identity, so the state artifact still
-// names itself. Output is deduplicated and sorted by the transaction layer.
+// paths for the operator diagnostic (issue #373). Output is deduplicated and
+// sorted by the transaction layer.
 func installConflictPaths(requests []installtxn.GroupRequest, err error) string {
 	var conflict *installtxn.ConflictError
 	if !errors.As(err, &conflict) || len(conflict.LogicalIDs) == 0 {
 		return ""
 	}
-	relative := make(map[string]string)
+	plans := make([]installplan.Plan, 0, len(requests))
 	for _, request := range requests {
-		for _, file := range request.Plan.Files() {
+		plans = append(plans, request.Plan)
+	}
+	return conflictRelativePaths(plans, conflict.LogicalIDs)
+}
+
+// conflictRelativePaths maps conflicting LogicalIDs to the runtime-relative
+// paths their plans compose, preserving the given order and dropping
+// duplicates. LogicalIDs without a file in the plans (the state artifact) are
+// omitted, so every caller renders the same conflict_paths representation.
+func conflictRelativePaths(plans []installplan.Plan, logicalIDs []string) string {
+	relative := make(map[string]string)
+	for _, plan := range plans {
+		for _, file := range plan.Files() {
 			relative[file.LogicalID()] = file.RelativePath()
 		}
 	}
-	paths := make([]string, 0, len(conflict.LogicalIDs))
-	seen := make(map[string]bool, len(conflict.LogicalIDs))
-	for _, id := range conflict.LogicalIDs {
+	paths := make([]string, 0, len(logicalIDs))
+	seen := make(map[string]bool, len(logicalIDs))
+	for _, id := range logicalIDs {
 		path, ok := relative[id]
-		if !ok {
-			continue
-		}
-		if seen[path] {
+		if !ok || seen[path] {
 			continue
 		}
 		seen[path] = true

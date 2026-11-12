@@ -100,6 +100,8 @@ cortex update --runtime pi --catalog ./catalog --apply  # the plan, applied
 
 Default mode touches nothing — run the plan first, read it, then decide. `--apply` writes only inside that runtime's Cortex-owned root. On Pi, if legacy externally-modified guidance is detected, the plan asks for explicit consent with `--adopt-guidance`: that is a one-time adoption of external bytes (they are preserved, not overwritten), not a drift override, and drift is always refused.
 
+A plan or apply that hits an asset without verified Cortex ownership reports `operation=<logical id> action=conflict` and ends with `status=conflict conflict_paths=<relative path,...>` (exit 3), naming each conflicting asset by its path under the runtime root. Nothing is written; stop and ask the user rather than removing the file.
+
 ## Upgrade to alpha20
 
 Use the [published alpha20 archive and checksum procedure](verification.md#verify-an-archive) for the machine's platform. Keep the extracted binary, catalog and licenses together in a versioned directory. Do not replace user model routes or runtime configuration with release defaults.

@@ -478,3 +478,39 @@ func TestUpdatePlanReportsModeDrift(t *testing.T) {
 		t.Fatalf("stdout %q does not have status=planned or contains status=conflict", stdout)
 	}
 }
+
+// TestUpdateConflictNamesUserOwnedPaths pins issue #373 for the explicit-runtime
+// update path: a user-owned file occupying a catalog target is named by its
+// runtime-relative path in both plan and apply refusals, and is never touched.
+func TestUpdateConflictNamesUserOwnedPaths(t *testing.T) {
+	fixture := newUpdateFixture(t)
+	root := updateRootPath(t, fixture, runtimematrix.RuntimeOpenCode)
+	const relative = "skills/cortex-requirements-analyst/SKILL.md"
+	userFile := filepath.Join(root, filepath.FromSlash(relative))
+	mustOK(os.MkdirAll(filepath.Dir(userFile), 0o700))
+	mustOK(os.WriteFile(userFile, []byte("user-owned"), 0o600))
+	for _, apply := range []bool{false, true} {
+		args := []string{"update", "--runtime", "opencode", "--catalog", fixture.catalog}
+		mode := "plan"
+		if apply {
+			args = append(args, "--apply")
+			mode = "apply"
+		}
+		code, stdout, stderr := runUpdateCommand(t, fixture.dependencies(runtimematrix.RuntimeOpenCode), args...)
+		if code != exitConflict || stderr != "" {
+			t.Fatalf("conflict update (%s) = (%d, %q, %q)", mode, code, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "mode="+mode) || !strings.Contains(stdout, "\noperation=skills/requirements-analyst action=conflict\n") {
+			t.Fatalf("conflict update (%s) stdout = %q", mode, stdout)
+		}
+		if !strings.HasSuffix(stdout, "\nstatus=conflict conflict_paths="+relative+"\n") {
+			t.Fatalf("conflict update (%s) status line lacks conflict_paths: %q", mode, stdout)
+		}
+		if string(must(os.ReadFile(userFile))) != "user-owned" {
+			t.Fatalf("conflict update (%s) changed the user-owned file", mode)
+		}
+		if _, err := os.Lstat(filepath.Join(root, ".cortex", "install-state.json")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("conflict update (%s) wrote install state: %v", mode, err)
+		}
+	}
+}

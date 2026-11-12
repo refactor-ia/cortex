@@ -126,3 +126,51 @@ func TestUninstallDirectoryTargetRemovesOnlyOwnedFiles(t *testing.T) {
 		t.Fatalf("owned skill files must be removed, left: %v", leftover)
 	}
 }
+
+// A missing target directory trivially has no prior Cortex ownership, so
+// uninstall fails closed exactly like an existing directory without
+// ownership records (issue #358) and creates nothing on disk.
+func TestUninstallDirectoryTargetFailsClosedWhenRootMissing(t *testing.T) {
+	home := canonicalHome(t)
+	target := filepath.Join(home, "typo-dir")
+
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(), []string{"uninstall", "--target-dir", target}, &stdout, &stderr, nil, directoryInstallDependencies(t, home), defaultUninstallDependencies())
+	if code != exitConflict {
+		t.Fatalf("exit = %d, want %d", code, exitConflict)
+	}
+	if got, want := stdout.String(), "runtime=directory uninstall=not_installed remove=0 absent=0 conflict=0\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("missing target must not be created: %v", err)
+	}
+}
+
+// An existing directory without Cortex ownership keeps failing closed.
+func TestUninstallDirectoryTargetFailsClosedWhenNotInstalled(t *testing.T) {
+	home := canonicalHome(t)
+	target := filepath.Join(home, "agent-skills")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(), []string{"uninstall", "--target-dir", target}, &stdout, &stderr, nil, directoryInstallDependencies(t, home), defaultUninstallDependencies())
+	if code != exitConflict {
+		t.Fatalf("exit = %d, want %d", code, exitConflict)
+	}
+	if got, want := stdout.String(), "runtime=directory uninstall=not_installed remove=0 absent=0 conflict=0\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("target must stay empty: %v %v", entries, err)
+	}
+}

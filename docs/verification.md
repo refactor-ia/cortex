@@ -76,6 +76,21 @@ List other combinations explicitly as experimental or excluded, including empty 
 
 The existing full-matrix smoke planner remains a certification planner, not an executor for this bounded matrix. Installation, availability probes and source tests do not replace real capability invocations. Release notes must distinguish verified evaluation scope from excluded scope and must not describe either as full parity or certification.
 
+## Beta1 declared matrix
+
+Declared on 2026-11-12 for [v0.1.0-beta.1](../ROADMAP.md#beta1-exit-criteria) (#426), before any beta1 verification result is recorded. No combination below has beta1 evidence yet.
+
+| Dimension | Supported | Experimental | Excluded |
+| --- | --- | --- | --- |
+| Platforms | macOS ARM64, Linux AMD64 | | Windows; any architecture without a published archive |
+| Runtimes | OpenCode, Claude Code | Pi | Hermes, PowerShell |
+| Capabilities | All twelve in the current catalog | | Any capability added after the beta1 freeze |
+
+- **Supported scope:** 2 platforms by 2 runtimes by 12 capabilities, 48 combinations. Each records structural checks, isolated install and readback, and one real capability invocation, with command, exit status and bounded redacted output, bound to the archive identity.
+- **Pi is experimental** because it refused unverified external guidance on macOS in the [alpha20 deployment](#alpha20-delivered-evidence), and Pi retry recovery (#396) is open. If both are resolved and verified before beta1, Pi moves to supported without changing the rest of the matrix.
+- **Runtime versions** are pinned when verification runs and recorded with each result.
+- Beta1 does not certify the full eleven-family by three-runtime target.
+
 ## Historical runtime admission evidence
 
 This predates alpha20 and does not certify its runtime versions. The following isolated marker installation, readback, acknowledgement, and cleanup evidence succeeded with zero retries, exit 0, and no timeouts or overflows. Marker `98372fc8807c2965cb1062664614ea8c1773f240bca7fb97c2d1dcb78b9fe3f6`; snapshot `6f08ee25dc84c7cba2be78deab7eeaca8585d5fa1528795a9256e642854fac88`.

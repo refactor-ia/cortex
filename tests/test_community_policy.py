@@ -620,6 +620,12 @@ class CommunityPolicyTests(unittest.TestCase):
                         with self.subTest(expected=expected):
                                 self.assertIn(expected, text)
 
+        def test_archive_verification_uses_published_asset_names(self) -> None:
+                verification = read_text("docs/verification.md")
+                self.assertIn('archive="cortex-$VERSION-$PLATFORM.tar.gz"', verification)
+                self.assertNotIn("cortex_$VERSION", verification)
+                self.assertNotIn("cortex_v", verification)
+
         def test_foundation_documents_state_clean_target_status(self) -> None:
                 readme = read_text("README.md")
                 for expected in (

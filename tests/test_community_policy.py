@@ -466,8 +466,11 @@ class CommunityPolicyTests(unittest.TestCase):
                         actual_files.update(
                                 path.relative_to(REPO_ROOT).as_posix()
                                 for name in file_names
-                                if (path := directory_path / name).is_file()
-                                or path.is_symlink()
+                                if not (directory_path == REPO_ROOT and name == ".git")
+                                and (
+                                        (path := directory_path / name).is_file()
+                                        or path.is_symlink()
+                                )
                         )
 
                 self.assertEqual(len(EXPECTED_FILES), 416)

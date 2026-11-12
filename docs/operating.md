@@ -102,6 +102,15 @@ Default mode touches nothing — run the plan first, read it, then decide. `--ap
 
 A plan or apply that hits an asset without verified Cortex ownership reports `operation=<logical id> action=conflict` and ends with `status=conflict conflict_paths=<relative path,...>` (exit 3), naming each conflicting asset by its path under the runtime root. Nothing is written; stop and ask the user rather than removing the file.
 
+When a guidance preflight or apply re-check refuses, the plan prints `status=conflict reason=actor_guidance_unverified` (exit 3) followed by one `asset=` line per failing asset naming the failing file and the cause:
+
+```
+asset=skills/adversarial-tester path=skills/cortex-adversarial-tester/SKILL.md cause=content_drift action=conflict
+asset=skills/requirements-analyst path=skills/cortex-requirements-analyst/SKILL.md cause=mode_drift observed_mode=0640 canonical_mode=0600
+```
+
+`cause=content_drift` means the bytes differ from the recorded state; `cause=mode_drift` reports the observed versus canonical file mode. Shadow conflicts (externally authored files under Cortex-owned identities) report `cause=shadow_role` with the shadow location. Paths are runtime-relative.
+
 ## Upgrade to alpha20
 
 Use the [published alpha20 archive and checksum procedure](verification.md#verify-an-archive) for the machine's platform. Keep the extracted binary, catalog and licenses together in a versioned directory. Do not replace user model routes or runtime configuration with release defaults.

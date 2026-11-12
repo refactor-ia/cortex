@@ -342,6 +342,24 @@ func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 	}
 }
 
+func TestQAHelpDocumentsSetupBackendLikeSetupUsage(t *testing.T) {
+	const setupLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n"
+	help, helpErr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), []string{"qa", "--help"}, help, helpErr, nil); code != exitOK || helpErr.Len() != 0 {
+		t.Fatalf("qa --help exit=%d stderr=%q", code, helpErr)
+	}
+	if !strings.Contains(help.String(), setupLine) {
+		t.Fatalf("qa --help = %q, want setup usage %q", help, setupLine)
+	}
+	setupOut, setupErr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), []string{"qa", "setup"}, setupOut, setupErr, nil); code != exitUsage || setupOut.Len() != 0 {
+		t.Fatalf("qa setup exit=%d stdout=%q", code, setupOut)
+	}
+	if !strings.HasSuffix(setupErr.String(), setupLine) {
+		t.Fatalf("qa setup stderr = %q, want setup usage %q", setupErr, setupLine)
+	}
+}
+
 func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	args := roleReportFixture(t, "requirements-analyst")
 	var catalogRoot string

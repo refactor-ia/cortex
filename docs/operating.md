@@ -187,6 +187,11 @@ user-owned profile file in the catalog root:
 {"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}
 ```
 
+Routes are keyed by role and then by backend token (`pi`, `claude`, `opencode`); a
+`qa run --backend <b>` reads only the `<b>` entry, and a role without one is refused
+as `route_incomplete` with a `route_missing_backend=<b>` line and a `qa setup ... --backend <b>` remedy. `qa setup`
+writes these entries for you.
+
 Location: `<catalog-root>/cortex/qa-profiles.json` (mode 0600, regular file). The
 `defaultProfile` applies to every `qa run` without a `--profile` flag; pass
 `--profile <id>` to select another profile for one run. The three optional flags
@@ -289,14 +294,20 @@ run looks like, and where it currently stops:
    when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run
-   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m>`. Relative and
+   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]`.
+   On a machine whose pi backend is unavailable, pass `--backend claude` or
+   `--backend opencode`; without `--backend` the route is written for `pi`. Relative and
    absolute roots are both accepted: the command resolves the path before it writes,
    so `qa setup --catalog catalog` and `qa run --catalog catalog` from the same
    directory address the same file (#324). The root must already exist and contain
    `catalog.json`; `qa setup` validates it before probing models and refuses to create
    the tree, so a typo fails instead of writing a profile no run reads. `qa setup`
-   writes `<catalog>/cortex/qa-profiles.json` with one route per fleet role,
-   pi-backend scoped (#328).
+   writes `<catalog>/cortex/qa-profiles.json` with one route per fleet role for the
+   selected backend and preserves routes already configured for other backends, so
+   running it once per backend routes the whole fleet on each (#328). Only the `pi`
+   pair is checked against the runtime's model table at setup; a `claude` or
+   `opencode` pair is written as given and an unavailable model is refused at the
+   run's `model_probe` preflight. `--effort` defaults to `high`.
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh

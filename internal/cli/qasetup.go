@@ -100,9 +100,13 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return exitOK
 }
 
+// qaSetupUsageLine is the single setup usage line shared by the setup refusal
+// and qa --help, so both surfaces name --backend identically (#336).
+const qaSetupUsageLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n"
+
 func qaSetupUsage(stderr io.Writer) int {
 	writeError(stderr, "invalid_arguments")
-	_, _ = io.WriteString(stderr, "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n")
+	_, _ = io.WriteString(stderr, qaSetupUsageLine)
 	return exitUsage
 }
 

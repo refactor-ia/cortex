@@ -95,7 +95,9 @@ runtime=directory presence=present compatibility=compatible action=configure tou
   A target with no prior Cortex ownership, including a path that does not exist, is refused
   with `uninstall=not_installed` and exit 3; nothing is created or removed.
 - `cortex doctor --target-dir <dir>` reports `presence`, `writability`, and `ownership`
-  (`unowned`, `owned`, `invalid`) for the directory; an unwritable directory or an unreadable
+  (`unowned`, `owned`, `invalid`) for the directory. Only a missing
+  `.cortex/install-state.json` is `unowned`; a state file that exists but cannot be read or
+  decoded is `invalid`. An unwritable directory or an unreadable
   prior state exits with the same conflict code install would hit.
 
 ## Running update

@@ -163,12 +163,15 @@ func runDoctorDirectoryTarget(stdout io.Writer, targetDir string) int {
 
 // doctorTargetOwnership classifies the prior state of a directory target:
 // unowned (no state file), owned (a canonical state this build decodes), or
-// invalid (a state file it cannot classify, which blocks install like the
-// canonical prior-state blocker does).
+// invalid (a state file it cannot read or classify, which blocks install like
+// the canonical prior-state blocker does).
 func doctorTargetOwnership(targetDir string) string {
 	state, err := os.ReadFile(filepath.Join(targetDir, ".cortex", "install-state.json"))
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return "unowned"
+	}
+	if err != nil {
+		return "invalid"
 	}
 	manifest, err := installstate.Decode(state)
 	if err != nil || manifest.RuntimeID() != runtimematrix.RuntimeDirectory {

@@ -395,7 +395,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				_, _ = fmt.Fprintf(stderr, "evidence_reason=%s\n", evidenceErr.Reason)
 			}
 			if evidenceErr.Detail != "" {
-				_, _ = fmt.Fprintf(stderr, "evidence_detail=%s\n", evidenceErr.Detail)
+				_, _ = fmt.Fprintf(stderr, "evidence_detail=%s\n", escapeDiagnosticText(evidenceErr.Detail))
 			}
 		}
 		if diagnostic := qaAdmissionDiagnostic(err); diagnostic != "" {
@@ -466,6 +466,13 @@ func sanitizeRouteIdentity(value string) string {
 	if value == "" || len(value) > 128 {
 		return "<redacted>"
 	}
+	return escapeDiagnosticText(value)
+}
+
+// escapeDiagnosticText keeps printable ASCII and renders every other byte, and
+// the backslash itself, as \xNN, so caller-supplied text stays readable in a
+// terminal diagnostic without letting escape or control sequences through.
+func escapeDiagnosticText(value string) string {
 	var b strings.Builder
 	b.Grow(len(value))
 	for index := 0; index < len(value); index++ {

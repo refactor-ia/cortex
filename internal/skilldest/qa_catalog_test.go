@@ -30,8 +30,8 @@ func TestProductionCatalogProjectsExactlyTheQAFleet(t *testing.T) {
 			continue
 		}
 		if manifest.ID == "reasoning" {
-			if len(manifest.Capabilities) != 1 || len(manifest.Agents) != 0 {
-				t.Fatalf("reasoning capabilities = %#v, agents %#v, want one non-agent skill", manifest.Capabilities, manifest.Agents)
+			if len(manifest.Capabilities) != 3 || len(manifest.Agents) != 0 {
+				t.Fatalf("reasoning capabilities = %#v, agents %#v, want three non-agent skills", manifest.Capabilities, manifest.Agents)
 			}
 			continue
 		}

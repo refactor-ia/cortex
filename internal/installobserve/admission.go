@@ -2,7 +2,6 @@ package installobserve
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -94,8 +93,14 @@ func (assets AdmissionAssets) SkillText() string { return assets.skillText }
 // ActorProvenance says so. The skill is required either way, because all three
 // runtimes load it from their own root.
 func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (AdmissionAssets, error) {
-	if !validAdmissionBinding(expected) || validateShadowRoot(root) != nil || validateShadowRoot(cwd) != nil {
-		return AdmissionAssets{}, admissionInvalid()
+	if !validAdmissionBinding(expected) {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "binding_invalid"}
+	}
+	if validateShadowRoot(root) != nil {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "install_root_invalid"}
+	}
+	if validateShadowRoot(cwd) != nil {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "current_directory_invalid"}
 	}
 	state, mode, present, err := readRegular(root, ".cortex/install-state.json", DefaultMaxStateBytes)
 	if err != nil {
@@ -143,9 +148,11 @@ func ObserveAdmissionAssets(root, cwd string, expected AdmissionBinding) (Admiss
 	if actorErr != nil {
 		return AdmissionAssets{}, actorErr
 	}
-	if (manifest.SchemaVersion() == 3 && !admissionActorGuidance(actorBytes, actor, expected)) ||
-		admissionShadows(root, cwd, expected.Role, actorBytes) != nil {
-		return AdmissionAssets{}, admissionInvalid()
+	if manifest.SchemaVersion() == 3 && !admissionActorGuidance(actorBytes, actor, expected) {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "actor_guidance_invalid"}
+	}
+	if admissionShadows(root, cwd, expected.Role, actorBytes) != nil {
+		return AdmissionAssets{}, &AdmissionUnavailableError{Stage: "actor_shadow_unverified"}
 	}
 	assets.actorProvenance, assets.actorSHA256, assets.actorPath = ActorProvenanceInstalled, actor.SHA256(), actorPath
 	return assets, nil
@@ -265,6 +272,17 @@ func admissionFile(root, relative, expectedHash, kind string) ([]byte, string, *
 // is a fixed vocabulary token; Expected and Found carry hex digests or the
 // catalog fingerprint, never paths, file content, or provider output
 // (issue #294: the operator learns what mismatched, not just that it failed).
+//
+// Every refusal carries one of these stages, so no refusal is opaque (#329,
+// #374 S3/S4): binding_invalid, install_root_invalid, current_directory_invalid,
+// install_state_unreadable, install_state_missing, install_state_mode,
+// install_state_invalid, catalog_fingerprint, skill_unlisted, skill_missing,
+// skill_mode, skill_mismatch, actor_unlisted, actor_contract, actor_missing,
+// actor_mode, actor_mismatch, actor_guidance_invalid, actor_shadow_unverified.
+// A stage names only the check that refused. The guidance and shadow checks
+// each fold several internal reasons into one token rather than invent a
+// distinction they do not model, so the token is coarse but never an invented
+// cause, and a stage never implies a remedy beyond re-reading the same assets.
 type AdmissionUnavailableError struct {
 	Stage    string
 	Expected string
@@ -279,5 +297,3 @@ func (e *AdmissionUnavailableError) Error() string {
 }
 
 var _ error = (*AdmissionUnavailableError)(nil)
-
-func admissionInvalid() error { return errors.New("install observe: admission assets unavailable") }

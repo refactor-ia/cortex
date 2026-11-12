@@ -72,8 +72,10 @@ func qaBackendIdentity(backend string) string {
 
 // qaBackendProbe is the backend availability seam. It is a variable so a test
 // can answer for a fixture runtime without launching a real one; nil selects
-// the production probe.
-var qaBackendProbe func(ctx context.Context, backend string) string
+// the production probe. It answers with the whole verdict and not its code
+// alone: a refusal carries the routed pair it was about (#339, #374 S7), and
+// discarding that here is what left doctor unable to name it.
+var qaBackendProbe func(ctx context.Context, backend string) qapi.AvailabilityVerdict
 
 // qaAssetCheck is the installed-asset seam for the doctor QA line. It runs the
 // same read-only admission check qa run performs: the binary's embedded catalog
@@ -106,6 +108,13 @@ func checkQAAssets(backend string) error {
 // qaAssetAvailabilityFromError maps an admission failure onto the doctor QA
 // availability token and its bounded diagnostic. Missing assets and mismatched
 // assets are two tokens; the diagnostic carries only stages and hex digests.
+//
+// A refusal whose stage says the check itself could not conclude — the binding
+// is not one this binary admits, a root is not canonical, the actor's guidance
+// or shadow status could not be proven — gets its own token. Reporting those as
+// assets_mismatch implied a digest disagreement that was never observed (#374
+// S7); the stage name is the only detail that claim can carry.
+//
 // Any other check failure fails closed (issue #361): a failed check never
 // degrades to ready.
 func qaAssetAvailabilityFromError(err error) (string, string) {
@@ -120,7 +129,16 @@ func qaAssetAvailabilityFromError(err error) (string, string) {
 			diagnostic += " expected=" + unavailable.Expected
 		}
 		return "assets_missing", diagnostic
+	case "binding_invalid", "install_root_invalid", "current_directory_invalid", "actor_guidance_invalid", "actor_shadow_unverified":
+		return "assets_unverifiable", qaAssetStageDiagnostic(unavailable)
 	}
+	return "assets_mismatch", qaAssetStageDiagnostic(unavailable)
+}
+
+// qaAssetStageDiagnostic renders the stage and whatever identity the refusal
+// carried. Expected and Found are hex digests or the catalog fingerprint, so
+// the foreign-catalog case keeps naming both.
+func qaAssetStageDiagnostic(unavailable *installobserve.AdmissionUnavailableError) string {
 	diagnostic := " qa_assets_stage=" + unavailable.Stage
 	if unavailable.Expected != "" {
 		diagnostic += " expected=" + unavailable.Expected
@@ -128,19 +146,24 @@ func qaAssetAvailabilityFromError(err error) (string, string) {
 	if unavailable.Found != "" {
 		diagnostic += " found=" + unavailable.Found
 	}
-	return "assets_mismatch", diagnostic
+	return diagnostic
 }
 
 // probeQABackend answers whether one backend could run a report, without
 // running one. It binds the runtime and issues that backend's own fixed,
 // bounded availability probes — the read-only prefix of a report run, and
 // nothing past it.
-func probeQABackend(ctx context.Context, backend string) string {
+func probeQABackend(ctx context.Context, backend string) qapi.AvailabilityVerdict {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return string(qaadmission.CodeUnsupportedRuntime)
+		return qapi.AvailabilityVerdict{Code: qaadmission.CodeUnsupportedRuntime}
 	}
-	verdict := qapi.ProbeBackendAvailability(ctx, backend, qaProbeRole, cwd, nil)
+	return qapi.ProbeBackendAvailability(ctx, backend, qaProbeRole, cwd, nil)
+}
+
+// qaAvailabilityToken renders one verdict as the doctor availability token:
+// ready, or the fixed admission code the probe reached. One vocabulary, not two.
+func qaAvailabilityToken(verdict qapi.AvailabilityVerdict) string {
 	if verdict.Available {
 		return qaAvailabilityReady
 	}
@@ -169,8 +192,9 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 		if probe == nil {
 			probe = probeQABackend
 		}
-		availability = probe(ctx, backend)
-		if availability == qaAvailabilityReady {
+		verdict := probe(ctx, backend)
+		availability = qaAvailabilityToken(verdict)
+		if verdict.Available {
 			check := qaAssetCheck
 			if check == nil {
 				check = checkQAAssets
@@ -180,6 +204,9 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 					availability, diagnostic = token, note
 				}
 			}
+		}
+		if diagnostic == "" {
+			diagnostic = qaRouteIdentity(verdict)
 		}
 	}
 	return " qa_backend=" + backend + " qa_identity=" + qaBackendIdentity(backend) +
@@ -205,4 +232,13 @@ func qaInstallRoot(backend string) (string, error) {
 		}
 	}
 	return "", errUnknownQABackend
+}
+
+// qaRouteIdentity renders the routed pair one availability verdict answered
+// about, so a doctor line names what it probed instead of discarding it.
+func qaRouteIdentity(verdict qapi.AvailabilityVerdict) string {
+	if verdict.Available || verdict.Provider == "" || verdict.Model == "" {
+		return ""
+	}
+	return " qa_route_provider=" + sanitizeRouteIdentity(verdict.Provider) + " qa_route_model=" + sanitizeRouteIdentity(verdict.Model)
 }

@@ -1,10 +1,12 @@
 # Cortex
 
-Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. Today that means eight capabilities on Pi, OpenCode, and Claude Code: six quality-assurance roles, one report-only QA guide, and one delivery-practice skill.
+Cortex puts a curated set of agent capabilities into the AI coding runtimes you already use. The source catalog contains twelve capabilities for projection onto Pi, OpenCode, and Claude Code: six quality-assurance roles, one report-only QA guide, three maintainer skills, and two documentation guides.
 
 It writes only its own files, transactionally, and removes exactly what it wrote on uninstall. It never installs or replaces a runtime, never touches your configuration, and does nothing at all when you are not running a Cortex command.
 
-> **Status — the lifecycle works; the product is not finished.** This repository contains the target architecture and community foundation. `doctor`, `install`, `update` and `uninstall` are executable today. **Implementation is not complete:** one family of eleven carries capabilities, full runtime-family parity is not claimed, and there is no certified release path. Releases are prereleases for evaluation.
+> **Status — alpha20 is published for evaluation.** [v0.1.0-alpha.20](https://github.com/refactor-ia/cortex/releases/tag/v0.1.0-alpha.20) ships twelve capabilities across three of eleven families, including maintainer triage, review and delivery. Packaged lifecycle checks and real macOS/Linux deployments have passed within the [recorded scope](docs/verification.md#alpha20-delivered-evidence). Full runtime-family parity and release certification are not claimed. The next milestone is a bounded beta, not another content expansion; see [beta exit criteria](ROADMAP.md#beta1-exit-criteria).
+
+The repository includes the target architecture and community foundation. Implementation is not complete: the published alpha is not a claim that the full target architecture is delivered.
 
 ## What you get
 
@@ -18,23 +20,23 @@ It writes only its own files, transactionally, and removes exactly what it wrote
 | `evidence-auditor` | Evaluates evidence sufficiency, attribution, and uncertainty. |
 | `qa-no-ci` | A report-only guide for running QA when a project has no CI. |
 | `maintainer-delivery` | An advisory checklist for taking an issue to merge; the operator decides and runs every step. |
+| `maintainer-triage` | Validates reports, versions and duplicates; tracks human feature decisions and applies authorized labels/comments. |
+| `maintainer-review` | Assesses solution fit, side effects, user experience, complexity and costs; recommendations are not merge permission. |
+| `guide-writing` | Produces actionable project documentation with verified steps and honest status. |
+| `odd-roadmap` | Maintains a result-oriented roadmap coordination index without taking over the development workflow. |
+
+Enter triage for intake, review for a direct diff/PR assessment, or delivery for
+accepted-work coordination. Reuse applicable evidence; these are not mandatory
+pipeline stages. Labels/comments require user authorization and repository policy
+under the [bounded triage contract](docs/architecture/overview.md#bounded-maintainer-triage-actions).
+Skill activation grants no permission and installs no GitHub event listener.
+Catalog projection is covered by isolated tests, not a release certification.
 
 On Pi, the six QA roles are also registered as agents, not just skills.
 
 ## Start in two minutes
 
-Releases are prereleases, so GitHub's `releases/latest` URL does not resolve. Pin the version you want (check [releases](https://github.com/refactor-ia/cortex/releases) for the current one) and download the archive for your platform into an empty directory. Verify your platform's line before extracting (replace `darwin_arm64` with `linux_amd64` on Linux):
-
-```bash
-VERSION=v0.1.0-alpha.16
-curl -LO https://github.com/refactor-ia/cortex/releases/download/$VERSION/SHA256SUMS
-shasum -a 256 -c SHA256SUMS 2>/dev/null | grep "cortex-.*: OK"
-curl -LO https://github.com/refactor-ia/cortex/releases/download/$VERSION/cortex-$VERSION-darwin_arm64.tar.gz
-shasum -a 256 -c SHA256SUMS 2>/dev/null | grep "cortex-.*: OK"
-tar xzf cortex-$VERSION-darwin_arm64.tar.gz
-```
-
-The `OK` grep skips the other platform's file, which `shasum -c` reports as `FAILED open or read` on stdout because it has not been downloaded; it is not a checksum mismatch.
+Use the explicit prerelease tag, not GitHub's `releases/latest` endpoint. Download into a new directory and follow [Verify an archive](docs/verification.md#verify-an-archive) for macOS ARM64 or Linux AMD64. That procedure checks the exact archive filename and stops before extraction on any download or checksum failure.
 
 Then walk the lifecycle:
 
@@ -44,7 +46,7 @@ Then walk the lifecycle:
 ./cortex uninstall  # removes exactly what install wrote
 ```
 
-`doctor` exit code 0 means an install can proceed. The install output names what was created; running install again is an honest no-op. If you have Go, `go install github.com/refactor-ia/cortex/cmd/cortex@latest` installs the binary alone.
+`doctor` reports runtime discovery and backend readiness, not verified ownership, successful model calls or certification. A later install/update can still refuse an ownership conflict. The install output names what was created; running install again is an honest no-op. For an existing installation, use the [upgrade and recovery procedure](docs/operating.md#upgrade-to-alpha20). If you have Go, `go install github.com/refactor-ia/cortex/cmd/cortex@latest` installs the binary alone.
 
 ### Run a QA report
 
@@ -54,7 +56,7 @@ From the unpacked archive directory, with your own authenticated model route:
 
 ```bash
 printf 'R1: Every API response must complete within 100 ms.\nR2: Every API response must wait at least 500 ms before returning.\nIdentify the contradiction; do not edit files.\n' > request.txt
-./cortex qa run --role requirements-analyst --request request.txt --catalog ./catalog --backend pi
+./cortex qa run --role requirements-analyst --request request.txt --catalog "$(pwd)/catalog" --backend pi
 ```
 
 The report should flag the two incompatible timing requirements. QA runs support Pi, Claude Code, and OpenCode headless backends (`--backend pi|claude|opencode`), and accept a bounded execution-evidence sidecar (`--evidence evidence.json`). It is report-only: it assesses the request and evidence you supply; it does not execute tests. Run it from a disposable directory.
@@ -78,7 +80,7 @@ Cortex has no Git or GitHub authority; no SDD, TDD, or review authority; no life
 | --- | --- |
 | **Executable today** | Read-only `doctor`; transactional `install` and `update`; conservative `uninstall`. |
 | **Implemented foundations** | Catalog schemas, loading, admission, and snapshots; rendering, projection, and artifact planning; the runtime matrix. Not yet an end-to-end product. |
-| **Target only** | Full 11-family × 3-runtime parity, release certification, the remaining ten families' capabilities. |
+| **Target only** | Full 11-family × 3-runtime parity, release certification, the remaining eight families' capabilities. |
 
 Where it is going: one curated distribution projecting approved capabilities into compatible runtimes through generated adapters, across eleven curation families — reasoning, model intelligence, execution, quality assurance, web, mobile, PCSoft, services, personal, memory integration, and documentation. Families are internal curation boundaries, not user-selected packs. No delivery date is promised. User model profiles are not a Cortex capability: Gentle-Shell™ owns them.
 

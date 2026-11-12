@@ -270,7 +270,12 @@ func validUpdate(event map[string]json.RawMessage) bool {
 	case "text_delta", "thinking_delta":
 		return exactFields(update, "type", "contentIndex", "delta") && numberField(update, "contentIndex") && stringFieldOK(update, "delta")
 	case "text_end", "thinking_end":
-		return exactFields(update, "type", "contentIndex", "content") && numberField(update, "contentIndex") && stringFieldOK(update, "content")
+		// pi 1.4.0 completes a thinking block with an empty content string when
+		// the block produced no reasoning text (issue #286). The block shape
+		// stays closed; only the emptiness is allowed, and a stream whose only
+		// block is empty still fails the report contract downstream.
+		_, contentOK := stringField(update, "content")
+		return exactFields(update, "type", "contentIndex", "content") && numberField(update, "contentIndex") && contentOK
 	case "done":
 		return exactFields(update, "type", "reason", "message") && stringFieldOK(update, "reason") && validAssistant(update["message"], false)
 	}

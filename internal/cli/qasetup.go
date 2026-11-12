@@ -51,6 +51,25 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if _, admitted := qaroute.RuntimeFor(backend); !admitted {
 		return qaSetupUsage(stderr)
 	}
+	catalogRoot, err := filepath.Abs(catalog)
+	if err != nil {
+		writeError(stderr, "setup_failed")
+		_, _ = fmt.Fprintf(stderr, "%v\n", err)
+		return exitFailure
+	}
+	// The profile is only useful in a catalog `qa run` can load, so setup
+	// validates the existing root before it probes models or writes anything
+	// (#324). A typo is refused instead of materializing a tree no run reads.
+	if err := qapi.ValidateProfileCatalogRoot(catalogRoot); err != nil {
+		writeError(stderr, "setup_failed")
+		rootError, ok := err.(*qapi.ProfileCatalogRootError)
+		if !ok {
+			_, _ = fmt.Fprintf(stderr, "%v\n", err)
+			return exitFailure
+		}
+		_, _ = fmt.Fprintf(stderr, "stage=catalog expected=catalog root containing catalog.json catalog_reason=%s next_check=cortex qa --help\n", rootError.Reason)
+		return exitFailure
+	}
 	// The pi model table is the only surface setup can probe (issue #325):
 	// extension-free pi models. For other backends the operator's pair is
 	// their own runtime's surface, which this process cannot enumerate, so
@@ -71,13 +90,13 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			return exitFailure
 		}
 	}
-	if err := writeQAProfile(catalog, backend, provider, model, effort); err != nil {
+	if err := writeQAProfile(catalogRoot, backend, provider, model, effort); err != nil {
 		writeError(stderr, "setup_failed")
 		_, _ = fmt.Fprintf(stderr, "%v\n", err)
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stdout, "qa route profile written to %s (%d roles -> %s: %s/%s effort=%s)\n",
-		filepath.Join(catalog, "cortex", "qa-profiles.json"), len(qarole.Catalog()), backend, provider, model, effort)
+		filepath.Join(catalogRoot, "cortex", "qa-profiles.json"), len(qarole.Catalog()), backend, provider, model, effort)
 	return exitOK
 }
 

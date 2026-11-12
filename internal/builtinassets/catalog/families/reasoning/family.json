@@ -1,1 +1,1 @@
-{"schemaVersion":1,"id":"reasoning","router":"families/reasoning/router.md","capabilities":["families/reasoning/capabilities/maintainer-delivery.json"],"agents":[]}
+{"schemaVersion":1,"id":"reasoning","router":"families/reasoning/router.md","capabilities":["families/reasoning/capabilities/maintainer-delivery.json","families/reasoning/capabilities/maintainer-review.json","families/reasoning/capabilities/maintainer-triage.json"],"agents":[]}

@@ -41,7 +41,7 @@ runtime=pi presence=present compatibility=compatible action=configure touch=deni
 | `action` | What install would do: `configure`, or a skip/refusal for incompatible or unidentifiable targets. |
 | `touch` | Always `denied` in doctor: doctor never writes. |
 
-**Exit code**: 0 means an install can proceed; a non-zero exit means uncertainty — read the report, do not retry blindly. If a runtime version cannot be identified at all, Cortex refuses to write to that runtime; report this to the user rather than editing configuration to force it.
+**Exit code**: 0 reports successful runtime/readiness probing, not verified asset ownership, successful model execution or certification. A later install/update can still refuse a conflict. A non-zero exit means uncertainty — read the report, do not retry blindly. If a runtime version cannot be identified at all, Cortex refuses to write to that runtime; report this to the user rather than editing configuration to force it.
 
 ## Running install
 
@@ -83,6 +83,8 @@ runtime=directory presence=present compatibility=compatible action=configure tou
   `cortex update --target-dir <dir> --catalog ./catalog [--apply]` (a target with no prior
   state is refused with `reason=not_installed` instead of becoming a first install), and
   `cortex uninstall --target-dir <dir>` removes exactly the owned files; foreign files stay.
+  A target with no prior Cortex ownership, including a path that does not exist, is refused
+  with `uninstall=not_installed` and exit 3; nothing is created or removed.
 - `cortex doctor --target-dir <dir>` reports `presence`, `writability`, and `ownership`
   (`unowned`, `owned`, `invalid`) for the directory; an unwritable directory or an unreadable
   prior state exits with the same conflict code install would hit.
@@ -98,12 +100,40 @@ cortex update --runtime pi --catalog ./catalog --apply  # the plan, applied
 
 Default mode touches nothing — run the plan first, read it, then decide. `--apply` writes only inside that runtime's Cortex-owned root. On Pi, if legacy externally-modified guidance is detected, the plan asks for explicit consent with `--adopt-guidance`: that is a one-time adoption of external bytes (they are preserved, not overwritten), not a drift override, and drift is always refused.
 
+## Upgrade to alpha20
+
+Use the [published alpha20 archive and checksum procedure](verification.md#verify-an-archive) for the machine's platform. Keep the extracted binary, catalog and licenses together in a versioned directory. Do not replace user model routes or runtime configuration with release defaults.
+
+1. Run the extracted `./cortex --version` and check the exact release identity in [delivered evidence](verification.md#alpha20-delivered-evidence).
+2. Record the currently selected executable (`command -v cortex`) and its version. Back up that executable before replacement; stop if it is not the location you intended to manage. Do not change shell PATH or overwrite a different installation implicitly.
+3. For each present runtime, run the read-only plan with an **absolute** path to the newly extracted catalog:
+
+   ```bash
+   ./cortex update --runtime pi --catalog "$(pwd)/catalog"
+   # Only after an admitted plan:
+   ./cortex update --runtime pi --catalog "$(pwd)/catalog" --apply
+   ```
+
+   Repeat for `opencode` and `claude-code`. Per-runtime updates are separate transactions: success in one does not make the entire machine complete. For a first installation, use `install`, not `update`.
+4. Retain the reported Cortex transaction backup IDs. Read back the owned capability files through the ownership manifest; unrelated bare skill directories can coexist with Cortex-prefixed directories. Do not delete a duplicate-looking directory to make verification pass.
+5. Replace the intended executable atomically from the verified release, retaining its backup. Check the selected `cortex --version` again. `doctor` is a separate readiness probe, not proof that each update applied or that model calls work.
+
+### Pi guidance refusal and explicit adoption
+
+`status=conflict reason=actor_guidance_unverified` means the Pi update has not verified existing guidance ownership. That runtime is **not updated**, even if other runtimes or the executable succeeded. Do not delete guidance, alter ownership records, force an overwrite, or silently add `--adopt-guidance`.
+
+Where verified legacy external guidance is eligible, an owner may explicitly authorize conservative adoption using `--adopt-guidance` on the Pi plan and apply commands. Adoption preserves the external guidance; it does not authorize arbitrary drift or bypass other refusals. An agent must obtain that specific decision rather than infer it from a general installation request. If admission still fails, report the reason and leave Pi unchanged.
+
+### Partial failure and recovery
+
+Preserve command exit codes, output and the last completed transaction. A failed post-update verifier does not prove that the preceding update rolled back. Inspect the recorded ownership paths/hashes and backup IDs before continuing; do not blindly repeat already-applied work. Backups and a restored executable alone do not roll back capability files. Follow the applicable transaction recovery contract, and report a partial installation honestly when proof or authorization is unavailable.
+
 ## Running uninstall
 
 `cortex uninstall` removes only material verified as Cortex-owned, making a backup first. Per-runtime statuses:
 
 - `uninstall=completed remove=N` — removed exactly what it owned.
-- `not_installed` — nothing of Cortex's there; nothing done.
+- `not_installed` — nothing of Cortex's there; nothing done. The grouped uninstall exits 0; `uninstall --target-dir` exits 3 because a directory target without ownership fails closed.
 - `conflict` / `blocked` — shared actor state or unverified ownership blocks removal; the whole grouped uninstall fails closed and nothing is removed. The runtime line appends `conflict_paths=<relative path,...>` naming the drifted prior-owned assets. Report the diagnostic notes to the user instead of forcing it.
 
 ## Never do this
@@ -161,9 +191,89 @@ user-owned profile file in the catalog root:
 
 Location: `<catalog-root>/cortex/qa-profiles.json` (mode 0600, regular file). The
 `defaultProfile` applies to every `qa run` without a `--profile` flag; pass
-`--profile <id>` to select another profile for one run. When the pinned model is
+`--profile <id>` to select another profile for one run. The three optional flags
+`--backend`, `--evidence` and `--profile` are independent: each may be supplied
+once, in any order, after the required flags. When the pinned model is
 absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
+
+A profile source that exists but cannot be read safely is refused, never silently
+replaced: a catalog root reached through a symlink, a symlinked or non-regular
+profile file, an oversized or malformed file, or an unreadable `defaultProfile`
+all end in `profile_invalid` before anything is launched. Only a catalog with no
+`cortex/qa-profiles.json` file at all uses the placeholder `nan` route. A refused
+`profile_invalid` prints `profile_selected` (when `--profile` was passed), the
+source's `profile_default` and `profile_valid_ids` once the file is readable, and
+the `route_setup` path to edit, so an unknown id points at the file instead of
+guessing. `profile_valid_ids` is the sorted set the route policy itself accepts,
+read through the same decoder the run uses.
+
+Neither command accepts a catalog root reached through a symlink: every path
+component must be a real directory, and `qa setup` refuses to create a missing
+tree. This is a strict policy, not a bug to route around, because the profile and
+the shadow scan have to address the same bytes the run reads. On macOS that
+includes the system temporary directory: `/tmp` is a symlink to `/private/tmp`, so
+a catalog under `/tmp/...` is refused until it is addressed through its canonical
+`/private/tmp/...` path (`cd` into it and use `pwd -P`).
+
+## Read a qa run refusal
+
+A `qa run` refusal names the preflight question that refused it (#374), using one
+fixed vocabulary and no guessed cause:
+
+- `stage=route_resolution` — the route could not be resolved: an unknown or
+  unusable `--profile`, a backend route the profile does not carry, or a route the
+  policy does not admit. Nothing is launched and no provider is claimed, because
+  none was resolved.
+- `stage=actor_admission` — the installed assets of the selected role were refused;
+  the following `admission_stage` names the check.
+- `stage=model_probe` — the backend's own availability probe answered that the
+  routed pair is unusable. `route_provider` and `route_model` name the pair that was
+  actually routed (nothing else), escaped for the terminal, and `model_unavailable`
+  or `auth_not_ready` prints its own remedy.
+- `stage=evidence_admission` — the supplied evidence sidecar was refused before
+  launch, with the `evidence_field` and `evidence_reason` that refused it.
+
+The vocabulary is preflight-only. A post-launch outcome (execution, timeout,
+stream, normalization) prints no stage, because no preflight question refused it.
+The `note=prerequisites` line names runtimes only and never claims a route.
+
+## Read an admission refusal
+
+`qa run` verifies the selected role's installed assets before it launches anything.
+Every refusal is typed and names the check that refused (#329, #374):
+
+- **binding** — `admission_stage=binding_invalid`: the role/backend/catalog binding
+  this run asked for is not one the binary admits.
+- **root** — `install_root_invalid` or `current_directory_invalid`: the install root
+  or the working directory is not a canonical absolute directory, so neither the
+  ledger read nor the shadow scan can be trusted.
+- **install state** — `install_state_missing`, `install_state_unreadable`,
+  `install_state_mode`, `install_state_invalid`: the `.cortex/install-state.json`
+  ledger is absent, unreadable, not 0600, or not a ledger this backend can admit.
+- **fingerprint** — `catalog_fingerprint`: the ledger was installed from a different
+  catalog; the expected and found fingerprints are printed.
+- **assets** — `skill_unlisted`, `skill_missing`, `skill_mode`, `skill_mismatch`,
+  `actor_unlisted`, `actor_contract`, `actor_missing`, `actor_mode`,
+  `actor_mismatch`: the selected skill or installed actor is not declared, absent,
+  or differs from the declared mode, digest, or actor contract version.
+- **guidance and shadow** — `actor_guidance_invalid`, `actor_shadow_unverified`: the
+  actor's registered guidance could not be proven against the catalog binding, or
+  the selected actor could not be proven unshadowed in the runtime and project
+  roots. Each of the two covers more than one internal reason, so it is reported as
+  one coarse stage instead of an invented sub-cause.
+
+Only stages and hex digests reach the diagnostic; no path, file content, or provider
+output does. A stage says which check refused: it does not claim the failure is
+transient or persistent, and it is not a remedy. Re-read the same assets and fix
+whichever one the stage names.
+
+`cortex doctor` reports the same refusals for its probe role: an asset check that
+cannot conclude — `binding_invalid`, `install_root_invalid`,
+`current_directory_invalid`, `actor_guidance_invalid`, `actor_shadow_unverified` —
+is reported as `qa_availability=assets_unverifiable` with the same `qa_assets_stage`,
+rather than as a digest mismatch that was never observed. A foreign catalog keeps
+naming both fingerprints (`assets_mismatch` with `expected` and `found`).
 
 ## Walk the QA fleet end to end
 
@@ -175,13 +285,20 @@ run looks like, and where it currently stops:
    from an empty directory. Expect `status=completed`, per-runtime lines, and the
    `warning=uncertified_admission` disclosure. Verify readiness with `cortex doctor`:
    every runtime reports `qa_availability` for the probe role only — it is a model
-   availability probe, not an admission guarantee.
+   availability probe, not an admission guarantee. `qa_route_scope=embedded_default_route`
+   states what was probed: the binary's embedded catalog and the policy default route.
+   Doctor reads no caller catalog and no `--profile` route, names the routed pair only
+   when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run
-   `cortex qa setup --catalog <abs-path>/catalog --provider <p> --model <m>`. Use an
-   **absolute** catalog path: `qa run` only reads the route profile from a canonical
-   absolute root (#324). `qa setup` writes `<catalog>/cortex/qa-profiles.json` with one
-   route per fleet role, pi-backend scoped (#328).
+   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m>`. Relative and
+   absolute roots are both accepted: the command resolves the path before it writes,
+   so `qa setup --catalog catalog` and `qa run --catalog catalog` from the same
+   directory address the same file (#324). The root must already exist and contain
+   `catalog.json`; `qa setup` validates it before probing models and refuses to create
+   the tree, so a typo fails instead of writing a profile no run reads. `qa setup`
+   writes `<catalog>/cortex/qa-profiles.json` with one route per fleet role,
+   pi-backend scoped (#328).
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh
@@ -193,6 +310,13 @@ run looks like, and where it currently stops:
    The sidecar must be a JSON array of execution records; the report evaluates them
    and never runs commands itself. On success the report is the only stdout output;
    the retained stream lands in `.cortex/qa-streams/` for audit.
+
+   Cortex does not launch retries or select fallback models. Pi may retry internally
+   within its single invocation. A recovered report is accepted only after matched
+   failed-attempt envelopes, an ordered retry notification (up to three attempts),
+   a deletion-only context edit, and a successful retry-end notification. Tools,
+   duplicate results, aborted runs, incomplete recovery and final backend failures
+   remain rejected; failed-attempt text is never returned as the report.
 
    **Evidence record schema:**
 

@@ -12,6 +12,8 @@ This map lists the authorities available in the clean Cortex repository.
 | Target product boundary and architecture | [Architecture overview](architecture/overview.md) | Authoritative target contract; implementation is incomplete |
 | Product direction and sequencing | [Roadmap](../ROADMAP.md) | Direction document; consistent with the target architecture |
 | Project mandatory foundations | [Project constitution design](design/project-constitution.md) | Proposed specification for issue #146; not yet implemented |
+| Evidence-first operating method | [Evidence-First Operating Method design](design/evidence-first.md) | Proposed specification for issue #414; not yet implemented |
+| Project-owned evidence command | [Evidence Command design](design/evidence-command.md) | Proposed specification for issue #418; not yet implemented |
 | User-global construction policy (fork-first) | [Fork First, Upstream Last design](design/fork-first-upstream-last.md) | Proposed specification for issue #3; not yet implemented |
 | Contribution workflow and public language | [Contributing guide](../CONTRIBUTING.md) | Current collaboration contract |
 | Contributor rules for agents working in this repository | [AGENTS.md](../AGENTS.md) | Binding repository rules for contributing agents |

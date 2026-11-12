@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -66,17 +68,36 @@ func fakePi() int {
 	switch scenario, err := os.ReadFile("qa-report-scenario"); {
 	case err != nil:
 		return 2
-	case string(bytes.TrimSpace(scenario)) == "report":
+	case string(bytes.TrimSpace(scenario)) == "report" || string(bytes.TrimSpace(scenario)) == "retry-report":
 		qaRecordRoleEvidence()
+		retrying := string(bytes.TrimSpace(scenario)) == "retry-report"
+		if retrying {
+			f, err := os.OpenFile("qa-report-invocations", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				return 2
+			}
+			_, _ = f.WriteString("run\n")
+			_ = f.Close()
+			failed := `{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"error"}`
+			fmt.Print("{\"type\":\"agent_start\"}\n{\"type\":\"turn_start\"}\n")
+			fmt.Printf("{\"type\":\"message_start\",\"message\":%s}\n{\"type\":\"message_end\",\"message\":%s}\n{\"type\":\"turn_end\",\"message\":%s,\"toolResults\":[]}\n{\"type\":\"agent_end\",\"messages\":[%s],\"willRetry\":true}\n", failed, failed, failed, failed)
+			fmt.Print("{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"synthetic failure\"}\n{\"type\":\"entry_appended\",\"entry\":{\"type\":\"context_edit\",\"id\":\"edit\",\"parentId\":\"failed\",\"targetId\":\"failed\",\"timestamp\":\"fixture\",\"replacement\":null}}\n")
+		}
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": fixtureReport}},
 			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
 		})
-		fmt.Printf(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n" +
-			`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
+		if !retrying {
+			fmt.Print(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n")
+		}
+		fmt.Print(`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
 			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
-		fmt.Printf(`{"type":"message_end","message":%s}`+"\n"+`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message, message)
+		fmt.Printf(`{"type":"message_end","message":%s}`+"\n", message)
+		if retrying {
+			fmt.Print("{\"type\":\"auto_retry_end\",\"attempt\":1,\"success\":true}\n")
+		}
+		fmt.Printf(`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message)
 		fmt.Printf(`{"type":"agent_end","messages":[%s],"willRetry":false}`+"\n"+`{"type":"agent_settled"}`+"\n", message)
 		return 0
 	case string(bytes.TrimSpace(scenario)) == "blank":
@@ -239,6 +260,76 @@ func TestQARunUnloadableCatalogNamesTheStage(t *testing.T) {
 	}
 }
 
+// TestQARunRefusesAShadowedActorBeforeLaunch pins the public half of #329 and
+// #374 S3/S4: a run whose selected actor is shadowed by a project file is
+// refused at the admission stage that refused, and the refusal names it instead
+// of reporting only that assets were unavailable. Nothing is launched, and the
+// disposable install tree and working directory are unchanged afterwards.
+func TestQARunRefusesAShadowedActorBeforeLaunch(t *testing.T) {
+	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	cwd := must(os.Getwd())
+	shadow := filepath.Join(cwd, ".pi", "agents", "other.md")
+	mustOK(os.MkdirAll(filepath.Dir(shadow), 0o700))
+	mustOK(os.WriteFile(shadow, []byte("---\nname: cortex-requirements-analyst\n---\n"), 0o600))
+	before := qaFixtureFingerprint(t, os.Getenv("HOME"), cwd)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := "error=actor_unavailable\n" + qaReportNote + "stage=actor_admission\nadmission_stage=actor_shadow_unverified\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("shadowed run = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	for _, artifact := range []string{"qa-report-frame", qaReportRoleEvidencePath, "qa-report-invocations"} {
+		if _, err := os.Stat(filepath.Join(cwd, artifact)); !os.IsNotExist(err) {
+			t.Fatalf("a shadowed actor wrote %q, want no launch", artifact)
+		}
+	}
+	if after := qaFixtureFingerprint(t, os.Getenv("HOME"), cwd); after != before {
+		t.Fatalf("a refused run changed the fixture tree:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// qaFixtureFingerprint summarizes the disposable roots one refusal may touch —
+// relative path, mode, size, and content digest per entry — so a test can prove
+// a refused run wrote nothing. It reads only the fixture roots it is given.
+func qaFixtureFingerprint(t *testing.T, roots ...string) string {
+	t.Helper()
+	lines := make([]string, 0, 64)
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			line := fmt.Sprintf("%s %s %d", path, info.Mode(), info.Size())
+			if info.Mode().IsRegular() {
+				line += fmt.Sprintf(" %x", sha256.Sum256(must(os.ReadFile(path))))
+			}
+			lines = append(lines, line)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+func TestQARunAcceptsPiInternalRetryWithoutRelaunch(t *testing.T) {
+	args := reportFixture(t)
+	mustOK(os.WriteFile("qa-report-scenario", []byte("retry-report"), 0o600))
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	if code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if calls := string(must(os.ReadFile("qa-report-invocations"))); calls != "run\n" {
+		t.Fatalf("backend invocations=%q; want exactly one", calls)
+	}
+}
+
 func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	if code := Run(context.Background(), []string{"qa", "--help"}, stdout, io.Discard, nil); code != exitOK {
@@ -252,7 +343,7 @@ func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 }
 
 func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
-	args := roleReportFixture(t, "requirements-analyst")
+	args := disposableCatalogArgs(t, roleReportFixture(t, "requirements-analyst"))
 	var catalogRoot string
 	for index, arg := range args {
 		if arg == "--catalog" && index+1 < len(args) {
@@ -262,6 +353,7 @@ func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	if catalogRoot == "" {
 		t.Fatal("fixture did not carry a --catalog argument")
 	}
+	requireDisposableCatalog(t, catalogRoot)
 	profileDir := filepath.Join(catalogRoot, "cortex")
 	mustOK(os.MkdirAll(profileDir, 0o700))
 	profile := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`)
@@ -278,8 +370,49 @@ func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	}
 }
 
+// TestQASetupAndRunAgreeOnARelativeCatalog reproduces the issue #324 example
+// through the public CLI: setup and run both take the same non-absolute catalog
+// path from one directory, so the run must use the profile setup wrote there
+// instead of ignoring it. The catalog is a disposable copy.
+func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
+	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	cwd := must(os.Getwd())
+	if err := os.CopyFS(filepath.Join(cwd, "catalog"), os.DirFS(qaCatalogArgument(args))); err != nil {
+		t.Fatalf("disposable catalog copy = %v", err)
+	}
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "nan", "--model", "glm5.3", "--effort", "high"}
+	if code := Run(context.Background(), setup, stdout, stderr, nil); code != exitOK {
+		t.Fatalf("relative qa setup exit = %d stderr = %q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	run := []string{"qa", "run", "--role", "requirements-analyst", "--request", "requirements.txt", "--catalog", "catalog"}
+	if code := Run(context.Background(), run, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("relative qa run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	for _, want := range []string{"route_profile qa-fleet", "route_model glm5.3", "route_backend pi"} {
+		if !bytes.Contains(frame, []byte(want)) {
+			t.Fatalf("relative catalog run ignored the profile setup wrote: frame lost %q", want)
+		}
+	}
+}
+
+// qaSetupCatalogFixture returns a disposable catalog root that already carries
+// catalog.json: `qa setup` refuses to create the tree (#324), so a fixture that
+// expects a written profile must look like a catalog `qa run` could load.
+func qaSetupCatalogFixture(t *testing.T) string {
+	t.Helper()
+	root := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.WriteFile(filepath.Join(root, "catalog.json"), []byte("{}\n"), 0o600))
+	return root
+}
+
 func TestQASetupWritesProfileForAllRoles(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })
@@ -317,8 +450,62 @@ func TestQASetupWritesProfileForAllRoles(t *testing.T) {
 	}
 }
 
+// refusingPi fails if anything asks it to resolve a runtime binary. qa setup
+// must validate the catalog root before it probes model availability (#324),
+// so a refusal at the catalog stage proves the probe never ran.
+type refusingPi struct{ calls int }
+
+func (resolver *refusingPi) Resolve(context.Context) (string, error) {
+	resolver.calls++
+	return "", fmt.Errorf("qa setup probed models before validating the catalog root")
+}
+
+// TestQASetupRefusesCatalogRootsQaRunCouldNotLoad pins the setup half of the
+// source-agreement rule (#324): setup writes the profile only into a catalog
+// root `qa run` can load, and it never creates the tree. A typo therefore fails
+// loudly instead of writing a profile no run would ever read.
+func TestQASetupRefusesCatalogRootsQaRunCouldNotLoad(t *testing.T) {
+	root := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.Mkdir(filepath.Join(root, "empty"), 0o700))
+	linked := must(filepath.EvalSymlinks(t.TempDir()))
+	mustOK(os.WriteFile(filepath.Join(linked, "catalog.json"), []byte("{}\n"), 0o600))
+	mustOK(os.Symlink(linked, filepath.Join(root, "linked-catalog")))
+	t.Chdir(root)
+	for _, testCase := range []struct{ name, catalog, reason string }{
+		{name: "absent root", catalog: "typo-catalog", reason: "missing"},
+		{name: "directory without catalog.json", catalog: "empty", reason: "catalog_json_missing"},
+		{name: "symlinked root", catalog: "linked-catalog", reason: "unusable"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resolver := &refusingPi{}
+			original := qaPiResolver
+			qaPiResolver = resolver
+			t.Cleanup(func() { qaPiResolver = original })
+
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			args := []string{"qa", "setup", "--catalog", testCase.catalog, "--provider", "openai-codex", "--model", "gpt-5.6-terra"}
+			code := Run(context.Background(), args, stdout, stderr, nil)
+			want := "error=setup_failed\nstage=catalog expected=catalog root containing catalog.json catalog_reason=" + testCase.reason + " next_check=cortex qa --help\n"
+			if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("qa setup = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+			}
+			if resolver.calls != 0 {
+				t.Fatalf("qa setup resolved the runtime %d times before validating the catalog root", resolver.calls)
+			}
+			if _, err := os.Stat(filepath.Join(root, testCase.catalog, "cortex")); !os.IsNotExist(err) {
+				t.Fatalf("qa setup wrote a profile tree under %q after refusing the catalog root", testCase.catalog)
+			}
+			if testCase.reason == "missing" {
+				if _, err := os.Stat(filepath.Join(root, testCase.catalog)); !os.IsNotExist(err) {
+					t.Fatalf("qa setup created %q after refusing the catalog root", testCase.catalog)
+				}
+			}
+		})
+	}
+}
+
 func TestQASetupRefusesModelsTheRuntimeDoesNotHave(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })
@@ -365,6 +552,424 @@ func TestQARunEvidenceSidecar(t *testing.T) {
 			}
 		})
 	}
+}
+
+// repositoryCatalog is the real catalog, resolved while the working directory
+// is still the package directory, before any fixture changes it.
+var repositoryCatalog = must(filepath.Abs("../../catalog"))
+
+// requireDisposableCatalog refuses to stage files in the repository catalog:
+// packages run in parallel, and a sibling reading catalog/ would observe the
+// transient entries (#428).
+func requireDisposableCatalog(t *testing.T, catalogRoot string) {
+	t.Helper()
+	if rel, err := filepath.Rel(repositoryCatalog, must(filepath.Abs(catalogRoot))); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("catalog %q is the repository catalog; tests must write to a disposable copy", catalogRoot)
+	}
+}
+
+// qaCatalogArgument reads the catalog root out of one assembled qa run argv.
+func qaCatalogArgument(args []string) string {
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+// qaProfileFileFixture writes the user-owned route profile qa run reads: a
+// default profile and the qa-fleet profile `cortex qa setup` writes (#374),
+// each routing the role to a different model, so which profile a run selected
+// is observable in the framed input instead of inferred.
+//
+// The catalog root must be a disposable copy of the production catalog; any
+// file already there is still restored, never left mutated.
+func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
+	t.Helper()
+	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
+	qaProfileBodyFixture(t, catalogRoot, profile)
+}
+
+// qaProfileBodyFixture stages one exact profile body in the catalog root and
+// restores the previous state afterwards. A profile the test itself authored
+// is the only way to pin what a diagnostic does with caller-supplied text.
+func qaProfileBodyFixture(t *testing.T, catalogRoot, body string) {
+	t.Helper()
+	requireDisposableCatalog(t, catalogRoot)
+	profileDirectory := filepath.Join(catalogRoot, "cortex")
+	mustOK(os.MkdirAll(profileDirectory, 0o700))
+	path := filepath.Join(profileDirectory, "qa-profiles.json")
+	previous, previousErr := os.ReadFile(path)
+	t.Cleanup(func() {
+		if previousErr == nil {
+			_ = os.WriteFile(path, previous, 0o600)
+			return
+		}
+		_ = os.Remove(path)
+		_ = os.Remove(profileDirectory)
+	})
+	mustOK(os.WriteFile(path, []byte(body), 0o600))
+}
+
+// profileReportFixture materializes the report fixture plus the two-profile
+// catalog the CLI resolves --profile against.
+func profileReportFixture(t *testing.T) []string {
+	t.Helper()
+	args := disposableCatalogArgs(t, roleReportFixture(t, qarole.RequirementsAnalyst))
+	qaProfileFileFixture(t, qaCatalogArgument(args), qarole.RequirementsAnalyst)
+	return args
+}
+
+// disposableCatalogArgs copies the fixture catalog into the test's working
+// directory and points --catalog at the copy, so staged profiles never touch
+// the repository catalog.
+func disposableCatalogArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+	copied := append([]string{}, args...)
+	for index, arg := range copied {
+		if arg == "--catalog" && index+1 < len(copied) {
+			copied[index+1] = catalogRoot
+		}
+	}
+	return copied
+}
+
+// TestQARunProfileFlagSelectsTheRequestedProfile pins the --profile contract
+// (#374 S6): the flag selects the named profile instead of the file's
+// defaultProfile, and an unknown id is refused instead of silently falling back
+// to the default route.
+func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
+	t.Run("an omitted flag keeps the default profile", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+			t.Fatalf("default profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		frame := must(os.ReadFile("qa-report-frame"))
+		for _, want := range []string{"route_profile fleet-default", "route_model qwen3.6"} {
+			if !bytes.Contains(frame, []byte(want)) {
+				t.Fatalf("frame does not carry %q: %q", want, frame)
+			}
+		}
+	})
+	t.Run("the flag selects a non-default profile", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(append([]string{}, args...), "--profile", "qa-fleet"), stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+			t.Fatalf("--profile qa-fleet = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		frame := must(os.ReadFile("qa-report-frame"))
+		for _, want := range []string{"route_profile qa-fleet", "route_model gpt-5.6-terra", "route_effort high"} {
+			if !bytes.Contains(frame, []byte(want)) {
+				t.Fatalf("frame does not carry %q: %q", want, frame)
+			}
+		}
+	})
+	t.Run("an unknown profile id is refused, never silently defaulted", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), append(append([]string{}, args...), "--profile", "no-such-profile"), stdout, stderr, nil); code != exitFailure || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "error=profile_invalid\n") {
+			t.Fatalf("unknown profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+		if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+			t.Fatal("a refused profile must not launch the backend")
+		}
+	})
+}
+
+// TestQARunWithoutAProfileUsesTheDocumentedPlaceholder keeps the legitimate
+// default: with no profile source at all, the policy placeholder still routes
+// the run (issue #298).
+func TestQARunWithoutAProfileUsesTheDocumentedPlaceholder(t *testing.T) {
+	args := reportFixture(t)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("placeholder run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	for _, want := range []string{"route_profile role-default", "route_model qwen3.6"} {
+		if !bytes.Contains(frame, []byte(want)) {
+			t.Fatalf("frame does not carry the placeholder %q: %q", want, frame)
+		}
+	}
+}
+
+// TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack pins the other
+// half of #324: a profile source that exists but cannot be read safely is a
+// named refusal, never a silent placeholder route and never a launch.
+func TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		install func(t *testing.T, path string)
+	}{
+		{name: "symlinked profile file", install: func(t *testing.T, path string) {
+			mustOK(os.Symlink(path+".elsewhere", path))
+		}},
+		{name: "malformed profile file", install: func(t *testing.T, path string) {
+			mustOK(os.WriteFile(path, []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`), 0o600))
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			args := roleReportFixture(t, qarole.RequirementsAnalyst)
+			// Stage the profile in a disposable copy: the repository catalog
+			// must never be mutated by a test that plants an unsafe file.
+			catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+			mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+			for index, arg := range args {
+				if arg == "--catalog" && index+1 < len(args) {
+					args[index+1] = catalogRoot
+				}
+			}
+			profileDirectory := filepath.Join(catalogRoot, "cortex")
+			mustOK(os.MkdirAll(profileDirectory, 0o700))
+			testCase.install(t, filepath.Join(profileDirectory, "qa-profiles.json"))
+
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			code := Run(context.Background(), args, stdout, stderr, nil)
+			want := "error=profile_invalid\n" + qaReportNote + "stage=route_resolution\nprofile_source=unusable route_setup=" + filepath.Join(catalogRoot, "cortex", "qa-profiles.json") + "\n"
+			if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("unusable default profile = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+			}
+			if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+				t.Fatal("a refused default profile must not launch the backend")
+			}
+		})
+	}
+}
+
+// TestQARunProfileRefusalNamesTheSelectedProfile pins the refusal half of S6
+// (#374): an unknown --profile id names the selection, what the profile source
+// actually offers, and the file to edit, without echoing anything unbounded.
+func TestQARunProfileRefusalNamesTheSelectedProfile(t *testing.T) {
+	args := profileReportFixture(t)
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), append(append([]string{}, args...), "--profile", "no-such-profile"), stdout, stderr, nil)
+	want := "error=profile_invalid\n" + qaReportNote + "stage=route_resolution\nprofile_selected=no-such-profile profile_source=readable profile_default=fleet-default profile_valid_ids=fleet-default,qa-fleet route_setup=" + filepath.Join(qaCatalogArgument(args), "cortex", "qa-profiles.json") + "\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("unknown --profile = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	// A hostile id is never echoed: the diagnostic is bounded to the profile-id
+	// character set and carries no escape or control bytes.
+	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	code = Run(context.Background(), append(append([]string{}, args...), "--profile", "../\x1b[2Jevil"), stdout, stderr, nil)
+	if code != exitFailure || strings.Contains(stderr.String(), "\x1b") || !strings.Contains(stderr.String(), "profile_selected=<redacted> ") {
+		t.Fatalf("hostile --profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestQARunNamesThePreflightRefusalStage pins #374 S4: each preflight refusal
+// says which question refused — route resolution, actor admission, model probe,
+// or evidence admission — using the stage vocabulary the pipeline already
+// distinguishes, and a post-launch outcome claims no preflight stage at all.
+func TestQARunNamesThePreflightRefusalStage(t *testing.T) {
+	t.Run("route resolution names no resolved route", func(t *testing.T) {
+		args := profileReportFixture(t)
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--profile", "no-such-profile"))
+		for _, want := range []string{"stage=route_resolution\n", "profile_valid_ids=fleet-default,qa-fleet"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("unknown --profile stderr %q does not name %q", stderr, want)
+			}
+		}
+		// A refused route resolution never claims a routed pair: none was
+		// resolved, so naming one would be a guess (S4/S5).
+		if code != exitFailure || strings.Contains(stderr, "route_provider=") || strings.Contains(stderr, "placeholder") {
+			t.Fatalf("unknown --profile = %d stderr %q, want no claimed route", code, stderr)
+		}
+	})
+	t.Run("model probe names the routed pair the profile resolved", func(t *testing.T) {
+		args := profileReportFixture(t)
+		mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--profile", "qa-fleet"))
+		for _, want := range []string{"stage=model_probe\n", "route_provider=openai-codex route_model=gpt-5.6-terra\n"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("model probe stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("model probe = %d stderr %q", code, stderr)
+		}
+	})
+	t.Run("an incomplete backend route is a route resolution refusal", func(t *testing.T) {
+		args := reportFixture(t)
+		catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+		mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+		for index, arg := range args {
+			if arg == "--catalog" && index+1 < len(args) {
+				args[index+1] = catalogRoot
+			}
+		}
+		// The profile routes this role on claude only, so a pi run is
+		// incomplete rather than unresolvable.
+		qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"claude":{"provider":"claude","model":"claude-fixture","effort":"medium"}}}}}}`)
+		stderr, code := runQARefusal(t, args)
+		for _, want := range []string{"error=route_incomplete\n", "stage=route_resolution\n", "route_missing_backend=pi remedy="} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("incomplete route stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("incomplete route = %d stderr %q", code, stderr)
+		}
+	})
+	t.Run("evidence admission is named before launch", func(t *testing.T) {
+		args := reportFixture(t)
+		mustOK(os.WriteFile("evidence.json", []byte(`{"schema":"custom"}`), 0o600))
+		stderr, code := runQARefusal(t, append(append([]string{}, args...), "--evidence", "evidence.json"))
+		for _, want := range []string{"error=invalid_request\n", "stage=evidence_admission\n"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("evidence refusal stderr %q does not name %q", stderr, want)
+			}
+		}
+		if code != exitFailure {
+			t.Fatalf("evidence refusal = %d stderr %q", code, stderr)
+		}
+		if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+			t.Fatal("a refused evidence sidecar must not launch the backend")
+		}
+	})
+	t.Run("a post-launch outcome claims no preflight stage", func(t *testing.T) {
+		args := reportFixture(t)
+		mustOK(os.WriteFile("qa-report-scenario", []byte("nonzero"), 0o600))
+		stderr, code := runQARefusal(t, args)
+		if code != exitFailure || strings.Contains(stderr, "stage=") {
+			t.Fatalf("post-launch failure = %d stderr %q, want no preflight stage", code, stderr)
+		}
+	})
+}
+
+// TestQARunModelProbeEscapesTheRoutedPair pins the safety half of S4/S5: the
+// routed provider/model come from a caller-owned profile file, so they are
+// bounded and escaped before they reach the operator's terminal. The profile is
+// staged in the disposable catalog copy, never in the repository catalog.
+func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
+	args := reportFixture(t)
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			args[index+1] = catalogRoot
+		}
+	}
+	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
+	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
+	stderr, code := runQARefusal(t, args)
+	if code != exitFailure || strings.Contains(stderr, "\x1b") {
+		t.Fatalf("hostile routed pair = %d stderr %q, want escaped output", code, stderr)
+	}
+	if !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
+		t.Fatalf("stderr %q does not escape the routed model", stderr)
+	}
+}
+
+// TestQAReportNoteClaimsNoRoute pins #374 S5: the prerequisite note printed
+// with every non-catalog refusal no longer claims the placeholder "nan" route,
+// because a refusal often happens with a profile route already resolved (or
+// with no route resolved at all).
+func TestQAReportNoteClaimsNoRoute(t *testing.T) {
+	for _, banned := range []string{"nan", "placeholder", "default route"} {
+		if strings.Contains(qaReportNote, banned) {
+			t.Fatalf("the prerequisite note still claims %q: %q", banned, qaReportNote)
+		}
+	}
+}
+
+// runQARefusal runs one public qa invocation that must be refused, and returns
+// its stderr and exit code. Success is a test bug: the callers assert on
+// refusals only.
+func runQARefusal(t *testing.T, args []string) (string, int) {
+	t.Helper()
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	if code == exitOK {
+		t.Fatalf("Run(%q) unexpectedly succeeded: stdout %q", args, stdout.String())
+	}
+	return stderr.String(), code
+}
+
+// TestQARunAcceptsTheDocumentedOptionalFlagsTogether pins the documented
+// optional-flag surface (#374 S6): --backend, --evidence and --profile are
+// independent and combinable in any order after the required flags.
+func TestQARunAcceptsTheDocumentedOptionalFlagsTogether(t *testing.T) {
+	const evidence = `[{"id":"selected-test","command":"go test -run TestSelected ./example","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]`
+	cases := []struct {
+		name         string
+		options      []string
+		withEvidence bool
+	}{
+		{name: "profile alone", options: []string{"--profile", "qa-fleet"}},
+		{name: "profile then evidence", options: []string{"--profile", "qa-fleet", "--evidence", "evidence.json"}, withEvidence: true},
+		{name: "evidence then profile", options: []string{"--evidence", "evidence.json", "--profile", "qa-fleet"}, withEvidence: true},
+		{name: "all three flags", options: []string{"--backend", "pi", "--profile", "qa-fleet", "--evidence", "evidence.json"}, withEvidence: true},
+		{name: "all three flags reversed", options: []string{"--evidence", "evidence.json", "--profile", "qa-fleet", "--backend", "pi"}, withEvidence: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			args := profileReportFixture(t)
+			mustOK(os.WriteFile("evidence.json", []byte(evidence), 0o600))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), append(append([]string{}, args...), tt.options...), stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+				t.Fatalf("%s = %d stdout %q stderr %q", tt.name, code, stdout.String(), stderr.String())
+			}
+			frame := must(os.ReadFile("qa-report-frame"))
+			wants := []string{"route_profile qa-fleet", "route_model gpt-5.6-terra", "route_backend pi"}
+			if tt.withEvidence {
+				wants = append(wants, evidence)
+			}
+			for _, want := range wants {
+				if !bytes.Contains(frame, []byte(want)) {
+					t.Fatalf("%s lost %q from the frame: %q", tt.name, want, frame)
+				}
+			}
+		})
+	}
+}
+
+// TestQARunRejectsDuplicateAndUnknownOptionalFlags pins the rejection half of
+// the optional-flag surface: duplicates, unknown flags, empty values, more than
+// three option pairs, and reordered required flags stay exact usage failures,
+// with no backend launch and no route-profile mutation.
+func TestQARunRejectsDuplicateAndUnknownOptionalFlags(t *testing.T) {
+	const evidenceName = "evidence.json"
+	cases := []struct {
+		name    string
+		options []string
+	}{
+		{name: "duplicate profile", options: []string{"--profile", "qa-fleet", "--profile", "fleet-default"}},
+		{name: "duplicate evidence", options: []string{"--evidence", evidenceName, "--evidence", evidenceName}},
+		{name: "duplicate backend", options: []string{"--backend", "pi", "--backend", "pi"}},
+		{name: "unknown optional flag", options: []string{"--route", "qa-fleet"}},
+		{name: "empty profile value", options: []string{"--profile", ""}},
+		{name: "more pairs than optional flags", options: []string{"--profile", "qa-fleet", "--evidence", evidenceName, "--backend", "pi", "--evidence", evidenceName}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			args := profileReportFixture(t)
+			mustOK(os.WriteFile(evidenceName, []byte(`[{"id":"selected-test"}]`), 0o600))
+			profilePath := filepath.Join(qaCatalogArgument(args), "cortex", "qa-profiles.json")
+			before := must(os.ReadFile(profilePath))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			if code := Run(context.Background(), append(append([]string{}, args...), tt.options...), stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 || stderr.String() != "error=invalid_arguments\n"+qaUsage {
+				t.Fatalf("%s = %d stdout %q stderr %q", tt.name, code, stdout.String(), stderr.String())
+			}
+			if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+				t.Fatalf("%s launched the backend", tt.name)
+			}
+			if after := must(os.ReadFile(profilePath)); !bytes.Equal(before, after) {
+				t.Fatalf("%s mutated the route profile", tt.name)
+			}
+		})
+	}
+	t.Run("required flags keep their order", func(t *testing.T) {
+		args := profileReportFixture(t)
+		reordered := []string{"qa", "run", "--request", "requirements.txt", "--role", string(qarole.RequirementsAnalyst), "--catalog", qaCatalogArgument(args)}
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), reordered, stdout, stderr, nil); code != exitUsage || stdout.Len() != 0 || stderr.String() != "error=invalid_arguments\n"+qaUsage {
+			t.Fatalf("reordered required flags = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+		}
+	})
 }
 
 func TestQARunRejectsEvidenceInputs(t *testing.T) {
@@ -820,7 +1425,7 @@ func TestQARunRejectsUnknownAndEmptyRoles(t *testing.T) {
 // for other backends already present in the profile are preserved, and an
 // unadmitted backend token is a usage error.
 func TestQASetupWritesRoutesForTheRequestedBackend(t *testing.T) {
-	catalog := t.TempDir()
+	catalog := qaSetupCatalogFixture(t)
 	original := qaPiResolver
 	qaPiResolver = fixturePi{must(os.Executable())}
 	t.Cleanup(func() { qaPiResolver = original })

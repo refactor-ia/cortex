@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"maintainer-triage","description":"Trigger: maintainer triage, issue intake, PR triage, feature pool. Validate reports and apply authorized triage labels/comments.","family":"reasoning","source":"families/reasoning/sources/maintainer-triage.md","activation":"automatic","provenance":"cortex-owned","license":"CC-BY-SA-4.0","redistributionAllowed":true}

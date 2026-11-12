@@ -13,6 +13,7 @@ import (
 
 const profileDirectory = "cortex"
 const profileFilename = "qa-profiles.json"
+const profileCatalogFile = "catalog.json"
 
 type profileSource struct {
 	root, directory, file os.FileInfo
@@ -27,15 +28,23 @@ func resolveProfileRoute(root string, request AdmissionRequest) (qaroute.Resolve
 	if request.Profile == "" {
 		// A user-owned profile file with a defaultProfile configures the route
 		// without a per-run flag: the fleet ships no models, each owner routes
-		// with their own (issue #298 decision). Without a valid source, the
-		// policy placeholder applies.
+		// with their own (issue #298 decision). Only an absent source leaves the
+		// policy placeholder in charge; a source that exists but cannot be read
+		// safely is refused, never silently bypassed (#324).
 		if source, ok := inspectProfileSource(root); ok {
-			if bytes, ok := source.read(); ok {
-				if defaultID, ok := qaroute.DefaultProfileID(bytes); ok {
-					routeRequest.ProfileID = defaultID
-					return qaroute.Resolve(routeRequest, qaroute.Snapshot{Present: true, Bytes: bytes})
-				}
+			bytes, read := source.read()
+			if !read {
+				return qaroute.ResolvedRoute{}, qaroute.Failure{Code: "profile_invalid"}
 			}
+			defaultID, found := qaroute.DefaultProfileID(bytes)
+			if !found {
+				return qaroute.ResolvedRoute{}, qaroute.Failure{Code: "profile_invalid"}
+			}
+			routeRequest.ProfileID = defaultID
+			return qaroute.Resolve(routeRequest, qaroute.Snapshot{Present: true, Bytes: bytes})
+		}
+		if profileSourcePresent(root) {
+			return qaroute.ResolvedRoute{}, qaroute.Failure{Code: "profile_invalid"}
 		}
 		return qaroute.Resolve(routeRequest, qaroute.Snapshot{})
 	}
@@ -138,4 +147,79 @@ func sameProfileInfo(before, after os.FileInfo) bool {
 
 func profileDirectoryOrFileInfo(info os.FileInfo) bool {
 	return profileDirectoryInfo(info) || profileFileInfo(info)
+}
+
+// profileSourcePresent reports whether a profile source occupies the profile
+// location below root. It observes existence only, never payload: an absent
+// file is what entitles a default run to the policy placeholder, while a
+// location that exists but cannot be inspected safely is a refusal. A profile
+// directory without the file is still an absent profile (#324).
+func profileSourcePresent(root string) bool {
+	directory := filepath.Join(root, profileDirectory)
+	info, err := os.Lstat(directory)
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return true
+	}
+	_, err = os.Lstat(filepath.Join(directory, profileFilename))
+	return !os.IsNotExist(err)
+}
+
+// ProfileSelection reports the defaultProfile id and every profile id the
+// user-owned profile below root defines, from the same single safe snapshot
+// read route resolution uses. It reports ok=false when no source is present or
+// when the source cannot be inspected or decoded safely, so a caller describes
+// a refusal without opening a second, weaker read path (#374 S6).
+//
+// The ids come from qaroute.ProfileIDs and the default from
+// qaroute.DefaultProfileID: the two existing decoders over one verified byte
+// snapshot, never a second profile representation.
+func ProfileSelection(root string) (string, []string, bool) {
+	source, ok := inspectProfileSource(root)
+	if !ok {
+		return "", nil, false
+	}
+	data, ok := source.read()
+	if !ok {
+		return "", nil, false
+	}
+	ids, ok := qaroute.ProfileIDs(data)
+	if !ok {
+		return "", nil, false
+	}
+	defaultID, ok := qaroute.DefaultProfileID(data)
+	if !ok {
+		return "", nil, false
+	}
+	return defaultID, ids, true
+}
+
+// ProfileCatalogRootError names why a catalog root cannot host the user-owned
+// route profile. Reason is one fixed token owned by this package.
+type ProfileCatalogRootError struct{ Reason string }
+
+func (err *ProfileCatalogRootError) Error() string {
+	return "catalog root is not usable: " + err.Reason
+}
+
+// ValidateProfileCatalogRoot reports whether root can be the catalog root qa
+// setup writes the route profile into (#324). It holds setup to the agreement
+// qa run depends on: the root must already exist, resolve without symlinks, and
+// carry catalog.json — the file qa run loads. Setup refuses instead of creating
+// the tree, because a typo would otherwise write a profile into a directory no
+// run ever reads.
+func ValidateProfileCatalogRoot(root string) error {
+	if !canonicalProfileRoot(root) {
+		if _, err := os.Lstat(root); os.IsNotExist(err) {
+			return &ProfileCatalogRootError{Reason: "missing"}
+		}
+		return &ProfileCatalogRootError{Reason: "unusable"}
+	}
+	info, err := os.Lstat(filepath.Join(root, profileCatalogFile))
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return &ProfileCatalogRootError{Reason: "catalog_json_missing"}
+	}
+	return nil
 }

@@ -83,6 +83,8 @@ runtime=directory presence=present compatibility=compatible action=configure tou
   `cortex update --target-dir <dir> --catalog ./catalog [--apply]` (a target with no prior
   state is refused with `reason=not_installed` instead of becoming a first install), and
   `cortex uninstall --target-dir <dir>` removes exactly the owned files; foreign files stay.
+  A target with no prior Cortex ownership, including a path that does not exist, is refused
+  with `uninstall=not_installed` and exit 3; nothing is created or removed.
 - `cortex doctor --target-dir <dir>` reports `presence`, `writability`, and `ownership`
   (`unowned`, `owned`, `invalid`) for the directory; an unwritable directory or an unreadable
   prior state exits with the same conflict code install would hit.
@@ -131,7 +133,7 @@ Preserve command exit codes, output and the last completed transaction. A failed
 `cortex uninstall` removes only material verified as Cortex-owned, making a backup first. Per-runtime statuses:
 
 - `uninstall=completed remove=N` — removed exactly what it owned.
-- `not_installed` — nothing of Cortex's there; nothing done.
+- `not_installed` — nothing of Cortex's there; nothing done. The grouped uninstall exits 0; `uninstall --target-dir` exits 3 because a directory target without ownership fails closed.
 - `conflict` / `blocked` — shared actor state or unverified ownership blocks removal; the whole grouped uninstall fails closed and nothing is removed. Report the diagnostic notes to the user instead of forcing it.
 
 ## Never do this

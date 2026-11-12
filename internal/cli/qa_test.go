@@ -1072,6 +1072,53 @@ func TestQARunEvidenceDiagnosticAttribution(t *testing.T) {
 	}
 }
 
+func TestQARunEvidenceDetailIsEscaped(t *testing.T) {
+	args := reportFixture(t)
+	for _, tc := range []struct {
+		name       string
+		data       string
+		wantDetail string
+	}{
+		{
+			name:       "object key with terminal escape bytes",
+			data:       "{\"\\u001b[2J\\u001b[31mowned\\u001b[0m\": 1}",
+			wantDetail: "evidence_detail=top-level must be a JSON array of records, not an object with keys: \\x1b[2J\\x1b[31mowned\\x1b[0m\n",
+		},
+		{
+			name:       "unknown record field with control bytes",
+			data:       "[{\"id\": \"x\", \"a\\u0007b\\u007fc\": 1}]",
+			wantDetail: "evidence_detail=record 0 contains unknown field \"a\\x5cab\\x5cx7fc\"\n",
+		},
+		{
+			name:       "normal object key is reported unchanged",
+			data:       `{"records": []}`,
+			wantDetail: "evidence_detail=top-level must be a JSON array of records, not an object with keys: records\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "evidence.json")
+			mustOK(os.WriteFile(path, []byte(tc.data), 0o600))
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			code := Run(context.Background(), append(args, "--evidence", path), stdout, stderr, nil)
+			if code != exitFailure {
+				t.Fatalf("exit code = %d, want %d", code, exitFailure)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			errOut := stderr.String()
+			for _, c := range []byte(errOut) {
+				if (c < 0x20 && c != '\n') || c == 0x7f {
+					t.Fatalf("stderr %q contains raw control byte 0x%02x", errOut, c)
+				}
+			}
+			if !strings.Contains(errOut, tc.wantDetail) {
+				t.Fatalf("stderr %q does not contain %q", errOut, tc.wantDetail)
+			}
+		})
+	}
+}
+
 func TestQAHelp(t *testing.T) {
 	for _, tt := range []struct {
 		name string

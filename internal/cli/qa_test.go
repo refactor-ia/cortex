@@ -361,7 +361,7 @@ func TestQAHelpDocumentsSetupBackendLikeSetupUsage(t *testing.T) {
 }
 
 func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
-	args := roleReportFixture(t, "requirements-analyst")
+	args := disposableCatalogArgs(t, roleReportFixture(t, "requirements-analyst"))
 	var catalogRoot string
 	for index, arg := range args {
 		if arg == "--catalog" && index+1 < len(args) {
@@ -371,6 +371,7 @@ func TestQARunHonorsRouteProfileFromCatalog(t *testing.T) {
 	if catalogRoot == "" {
 		t.Fatal("fixture did not carry a --catalog argument")
 	}
+	requireDisposableCatalog(t, catalogRoot)
 	profileDir := filepath.Join(catalogRoot, "cortex")
 	mustOK(os.MkdirAll(profileDir, 0o700))
 	profile := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`)
@@ -571,6 +572,20 @@ func TestQARunEvidenceSidecar(t *testing.T) {
 	}
 }
 
+// repositoryCatalog is the real catalog, resolved while the working directory
+// is still the package directory, before any fixture changes it.
+var repositoryCatalog = must(filepath.Abs("../../catalog"))
+
+// requireDisposableCatalog refuses to stage files in the repository catalog:
+// packages run in parallel, and a sibling reading catalog/ would observe the
+// transient entries (#428).
+func requireDisposableCatalog(t *testing.T, catalogRoot string) {
+	t.Helper()
+	if rel, err := filepath.Rel(repositoryCatalog, must(filepath.Abs(catalogRoot))); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("catalog %q is the repository catalog; tests must write to a disposable copy", catalogRoot)
+	}
+}
+
 // qaCatalogArgument reads the catalog root out of one assembled qa run argv.
 func qaCatalogArgument(args []string) string {
 	for index, arg := range args {
@@ -586,8 +601,8 @@ func qaCatalogArgument(args []string) string {
 // each routing the role to a different model, so which profile a run selected
 // is observable in the framed input instead of inferred.
 //
-// The catalog root is the production catalog the admission binding compares
-// against, so any file already there is restored, never left mutated.
+// The catalog root must be a disposable copy of the production catalog; any
+// file already there is still restored, never left mutated.
 func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
 	t.Helper()
 	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
@@ -599,6 +614,7 @@ func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) 
 // is the only way to pin what a diagnostic does with caller-supplied text.
 func qaProfileBodyFixture(t *testing.T, catalogRoot, body string) {
 	t.Helper()
+	requireDisposableCatalog(t, catalogRoot)
 	profileDirectory := filepath.Join(catalogRoot, "cortex")
 	mustOK(os.MkdirAll(profileDirectory, 0o700))
 	path := filepath.Join(profileDirectory, "qa-profiles.json")
@@ -618,9 +634,25 @@ func qaProfileBodyFixture(t *testing.T, catalogRoot, body string) {
 // catalog the CLI resolves --profile against.
 func profileReportFixture(t *testing.T) []string {
 	t.Helper()
-	args := roleReportFixture(t, qarole.RequirementsAnalyst)
+	args := disposableCatalogArgs(t, roleReportFixture(t, qarole.RequirementsAnalyst))
 	qaProfileFileFixture(t, qaCatalogArgument(args), qarole.RequirementsAnalyst)
 	return args
+}
+
+// disposableCatalogArgs copies the fixture catalog into the test's working
+// directory and points --catalog at the copy, so staged profiles never touch
+// the repository catalog.
+func disposableCatalogArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-copy")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(qaCatalogArgument(args))))
+	copied := append([]string{}, args...)
+	for index, arg := range copied {
+		if arg == "--catalog" && index+1 < len(copied) {
+			copied[index+1] = catalogRoot
+		}
+	}
+	return copied
 }
 
 // TestQARunProfileFlagSelectsTheRequestedProfile pins the --profile contract

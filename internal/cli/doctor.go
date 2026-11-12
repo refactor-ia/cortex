@@ -728,9 +728,11 @@ func runDirectoryUninstall(targetDir string, stdout, stderr io.Writer, deps unin
 		writeError(stderr, "uninstall_observation_failed")
 		return exitFailure
 	}
+	// A missing target has no prior Cortex ownership either, so it fails
+	// closed like an existing directory without ownership records (#358).
 	if !exists {
 		preflight = append(preflight, uninstallPreflight{root: root, status: "not_installed"})
-		return writeUninstallResult(stdout, stderr, preflight, exitOK)
+		return writeUninstallResult(stdout, stderr, preflight, exitConflict)
 	}
 	observation, err := deps.observe(trusted, installobserve.DefaultOptions())
 	if err != nil {

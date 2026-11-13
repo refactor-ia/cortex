@@ -89,6 +89,7 @@ Declared on 2026-11-12 for [v0.1.0-beta.1](../ROADMAP.md#beta1-exit-criteria) (#
 - **Supported scope:** 2 platforms by 2 runtimes by 12 capabilities, 48 combinations. Each records structural checks, isolated install and readback, and one real capability invocation, with command, exit status and bounded redacted output, bound to the archive identity.
 - **Pi is experimental** because it refused unverified external guidance on macOS in the [alpha20 deployment](#alpha20-delivered-evidence), and Pi retry recovery (#396) is open. If both are resolved and verified before beta1, Pi moves to supported without changing the rest of the matrix.
 - **Runtime versions** are pinned when verification runs and recorded with each result.
+- **Model routes are user-owned** and outside the supported matrix. Cortex does not certify any provider or model. Each result records the backend, provider and model it ran with, as context for that result only.
 - Beta1 does not certify the full eleven-family by three-runtime target.
 
 ## Historical runtime admission evidence

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,10 @@ func TestRunRejectsInvalidInputBeforeStart(t *testing.T) {
 		{"oversized frame", testInvocation(t, "success"), bytes.Repeat([]byte("x"), qaadmission.MaxRequestBytes+1), 30 * time.Second},
 		{"too short timeout", testInvocation(t, "success"), []byte("frame"), 29 * time.Second},
 		{"too long timeout", testInvocation(t, "success"), []byte("frame"), 3601 * time.Second},
+		{"Claude empty frame", Invocation{binary: "/runtime/claude", cwd: "/workspace", argv: claudeArgv()}, nil, 30 * time.Second},
+		{"Claude oversized frame", Invocation{binary: "/runtime/claude", cwd: "/workspace", argv: claudeArgv()}, bytes.Repeat([]byte("x"), qaadmission.MaxRequestBytes+1), 30 * time.Second},
+		{"Claude too short timeout", Invocation{binary: "/runtime/claude", cwd: "/workspace", argv: claudeArgv()}, []byte("frame"), 29 * time.Second},
+		{"Claude too long timeout", Invocation{binary: "/runtime/claude", cwd: "/workspace", argv: claudeArgv()}, []byte("frame"), 3601 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			facts := runOnce(context.Background(), tc.invocation, tc.frame, tc.timeout)
@@ -232,6 +237,84 @@ func TestRunRejectsInvalidInputBeforeStart(t *testing.T) {
 				t.Fatalf("invalid input facts = %#v", facts)
 			}
 		})
+	}
+}
+
+func TestRunPreservesNULStdin(t *testing.T) {
+	t.Setenv("PATH", "/synthetic/path")
+	invocation := testInvocation(t, "success")
+	canonicalCWD, err := filepath.EvalSymlinks(invocation.cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.cwd = canonicalCWD
+	frame := []byte("bounded\x00stdin")
+	before := bytes.Clone(frame)
+	facts := runOnce(context.Background(), invocation, frame, 30*time.Second)
+	want := fmt.Sprintf("stdin=%s cwd=%s fixed=true path=true\n", sha256Text(frame), sha256Text([]byte(invocation.cwd)))
+	if facts.invalid || facts.launchFailed || facts.timedOut || facts.exitNonZero || facts.waitFailed || facts.stdoutTruncated || facts.stderrTruncated || string(facts.stdout) != want || len(facts.stderr) != 0 || !bytes.Equal(frame, before) {
+		t.Fatalf("stdin was not preserved: stdout=%q stderr=%q facts=%#v", facts.stdout, facts.stderr, facts)
+	}
+}
+
+// Only the complete fixed Claude vector may carry an empty argument. Every
+// near-match and every generic/Pi/OpenCode empty or NUL stays pre-launch invalid.
+func TestRunRejectsEmptyAndNULArgvBeforeStart(t *testing.T) {
+	invocation := testInvocation(t, "success")
+	marker := filepath.Join(invocation.cwd, "launch-marker")
+	if err := os.WriteFile(marker, []byte("unchanged\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]string{
+		nil, {""}, {"--tools", ""}, {"--model", ""},
+		{"run", "--format", "json", "-m", ""},
+		append(claudeArgv(), "extra"), append(claudeArgv(), ""), claudeArgv()[1:],
+	}
+	for index, argument := range claudeArgv() {
+		if argument != "" {
+			argv := slices.Clone(claudeArgv())
+			argv[index] = "changed"
+			cases = append(cases, argv)
+		}
+		for _, invalid := range []string{"", "nul\x00byte"} {
+			argv := slices.Clone(claudeArgv())
+			if argv[index] == invalid {
+				continue
+			}
+			argv[index] = invalid
+			cases = append(cases, argv)
+		}
+	}
+	for _, invalid := range []string{"", "nul\x00byte"} {
+		argv := invocation.Argv()
+		cases = append(cases, append(argv, invalid))
+	}
+	for index, argv := range cases {
+		t.Run(fmt.Sprint(index), func(t *testing.T) {
+			candidate := invocation
+			candidate.argv = argv
+			facts := runOnce(context.Background(), candidate, []byte("frame"), 30*time.Second)
+			if !facts.invalid || facts.launchFailed || facts.timedOut || facts.exitNonZero || facts.waitFailed || facts.stdoutTruncated || facts.stderrTruncated || len(facts.stdout) != 0 || len(facts.stderr) != 0 {
+				t.Fatalf("rejected argv facts = %#v", facts)
+			}
+			if got, err := os.ReadFile(marker); err != nil || string(got) != "unchanged\n" {
+				t.Fatalf("rejected argv changed launch counter: %q, %v", got, err)
+			}
+		})
+	}
+	for _, path := range []string{"relative", "", "/nul\x00path"} {
+		for _, field := range []string{"binary", "cwd"} {
+			candidate := invocation
+			candidate.argv = claudeArgv()
+			if field == "binary" {
+				candidate.binary = path
+			} else {
+				candidate.cwd = path
+			}
+			if facts := runOnce(context.Background(), candidate, []byte("frame"), 30*time.Second); !facts.invalid || len(facts.stdout) != 0 || len(facts.stderr) != 0 {
+				t.Fatalf("invalid %s accepted: %#v", field, facts)
+			}
+		}
 	}
 }
 
@@ -286,6 +369,9 @@ func TestRunHelper(t *testing.T) {
 	}
 	switch os.Args[index+1] {
 	case "success":
+		if err := os.WriteFile("launch-marker", []byte("launched\n"), 0600); err != nil {
+			os.Exit(2)
+		}
 		input, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			os.Exit(2)

@@ -351,6 +351,13 @@ run looks like, and where it currently stops:
    duplicate results, aborted runs, incomplete recovery and final backend failures
    remain rejected; failed-attempt text is never returned as the report.
 
+   With `--backend claude`, the fixed headless invocation disables built-in tools
+   before launch with `--tools ""` (a separate empty argument), keeps the one-turn
+   bound, strictly replaces MCP servers with an empty set, and disables hooks in
+   explicit neutral settings. Verified skill text and the task travel only in the
+   bounded stdin frame, never in argv. Stream parsing also rejects tool calls as
+   defense in depth; it is not the pre-launch tool control.
+
    **Evidence record schema:**
 
    `cortex qa run --evidence <file.json>` requires a top-level JSON array containing up to 8

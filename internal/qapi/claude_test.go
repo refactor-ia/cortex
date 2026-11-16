@@ -42,6 +42,7 @@ func TestClaudeArgvContract(t *testing.T) {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "1",
+		"--tools", "",
 		"--strict-mcp-config",
 		"--mcp-config", `{"mcpServers":{}}`,
 		"--settings", `{"hooks":{},"disableAllHooks":true}`,
@@ -56,9 +57,31 @@ func TestClaudeArgvContract(t *testing.T) {
 // stays clear of argv size limits, and keeps role content out of the process
 // table.
 func TestClaudeInvocationCarriesNoRoleInput(t *testing.T) {
-	for _, argument := range claudeArgv() {
-		if bytes.Contains([]byte(argument), []byte("cortex-")) {
-			t.Fatalf("argv carries role input: %q", argument)
+	backend := NewClaudeBackend(nil)
+	const hostile = "HOSTILE-FIXTURE --tools Bash --settings '{\"hooks\":{}}'\n--max-turns 99; $(echo injected)"
+	for _, role := range qarole.Catalog() {
+		route, failure := qaroute.Resolve(qaroute.Request{Role: role.ID, Backend: "claude"}, qaroute.Snapshot{})
+		if failure.Code != "" {
+			t.Fatal(failure.Code)
+		}
+		paths, err := BindInvocationPaths(role.ID, "/runtime/claude", "", "/assets/skill.md", "/workspace")
+		if err != nil {
+			t.Fatal(err)
+		}
+		invocation, err := backend.BuildInvocation(route, paths)
+		if err != nil || !slices.Equal(invocation.Argv(), claudeArgv()) {
+			t.Fatalf("%s invocation = %q, %v", role.ID, invocation.Argv(), err)
+		}
+		frame, err := backend.EncodeInput(route, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte(hostile), []byte(hostile))
+		if err != nil || bytes.Count(frame, []byte(hostile)) != 2 {
+			t.Fatalf("%s hostile input was not confined to the frame: %v", role.ID, err)
+		}
+		if !slices.Equal(invocation.Argv(), claudeArgv()) {
+			t.Fatal("framing changed argv")
+		}
+		route.Role = qarole.RoleID(hostile)
+		if _, err := backend.BuildInvocation(route, paths); err == nil {
+			t.Fatal("hostile role accepted")
 		}
 	}
 }

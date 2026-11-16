@@ -116,13 +116,16 @@ func (claudeBackend) BuildInvocation(route qaroute.ResolvedRoute, binding BoundI
 // system/init -> assistant -> rate_limit_event -> result stream.
 //
 // --max-turns 1 is the single-turn bound, and --verbose is required for
-// stream-json to emit anything but the terminal event under -p.
+// stream-json to emit anything but the terminal event under -p. --tools with
+// a separate empty token disables built-in tools before launch; MCP and hooks
+// are neutralized separately. Stream tool-call rejection remains defense in depth.
 func claudeArgv() []string {
 	return []string{
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "1",
+		"--tools", "",
 		"--strict-mcp-config",
 		"--mcp-config", claudeEmptyMCPConfig,
 		"--settings", claudeNeutralSettings,

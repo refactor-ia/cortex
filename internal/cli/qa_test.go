@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/refactor-ia/cortex/internal/catalog"
 	"github.com/refactor-ia/cortex/internal/installstate"
 	"github.com/refactor-ia/cortex/internal/qaactor"
+	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qarole"
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
@@ -26,15 +29,102 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "--model" || os.Args[1] == "--list-models" || os.Args[1] == "auth") {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "--model" || os.Args[1] == "--list-models" || os.Args[1] == "auth" || os.Args[1] == "-p") {
 		os.Exit(fakePi())
 	}
 	os.Exit(m.Run())
 }
 
+// fakeClaudeQA records the actual process boundary without any runtime or
+// provider access. The existing frame recorder captures stdin separately.
+func fakeClaudeQA() int {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println("2.1.316 (Claude Code)")
+		return 0
+	}
+	if slices.Equal(os.Args[1:], []string{"auth", "status", "--json"}) {
+		fmt.Println(`{"loggedIn":true,"authMethod":"fixture"}`)
+		return 0
+	}
+	qaRecordRoleEvidence()
+	observation, err := json.Marshal(struct{ Argv, Env []string }{os.Args[1:], os.Environ()})
+	if err != nil || os.WriteFile("qa-child-observation", observation, 0600) != nil {
+		return 2
+	}
+	fmt.Println(`{"type":"system","subtype":"init"}`)
+	fmt.Println(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"fixture"}]}}`)
+	result, _ := json.Marshal(map[string]any{"type": "result", "num_turns": 1, "is_error": false, "result": fixtureReport})
+	fmt.Println(string(result))
+	return 0
+}
+
+func TestQARunClaudeDisablesToolsBeforeLaunch(t *testing.T) {
+	catalogRoot := must(filepath.Abs("../../catalog"))
+	home := canonicalHome(t)
+	cwd := must(filepath.EvalSymlinks(t.TempDir()))
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("USER", "fixture-operator")
+	t.Setenv("PATH", "/synthetic/path")
+	t.Setenv("CORTEX_HOSTILE_FIXTURE", "must-not-reach-child")
+	t.Setenv("NODE_OPTIONS", "--hostile-fixture")
+	t.Chdir(cwd)
+	var installOut, installErr bytes.Buffer
+	if code := runWithInstallDependencies(context.Background(), []string{"install"}, &installOut, &installErr, readyRunner(), compatibleInstallDependencies(t, home)); code != exitOK || installErr.Len() != 0 {
+		t.Fatalf("fixture install = %d stdout=%q stderr=%q", code, installOut.String(), installErr.String())
+	}
+	mustOK(os.WriteFile("qa-report-scenario", []byte("claude-report"), 0600))
+	original := qaPiResolver
+	qaPiResolver = fixturePi{must(os.Executable())}
+	t.Cleanup(func() { qaPiResolver = original })
+	const task = "HOSTILE-TASK --tools Bash --max-turns 99\n$(echo injected); --settings hooks"
+	mustOK(os.WriteFile("request.txt", []byte(task), 0600))
+	args := []string{"qa", "run", "--role", "requirements-analyst", "--request", "request.txt", "--catalog", catalogRoot, "--backend", "claude"}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	if code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
+		t.Fatalf("Claude run = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var child struct{ Argv, Env []string }
+	mustOK(json.Unmarshal(must(os.ReadFile("qa-child-observation")), &child))
+	want := []string{"-p", "--output-format", "stream-json", "--verbose", "--max-turns", "1", "--tools", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--settings", `{"hooks":{},"disableAllHooks":true}`}
+	if !slices.Equal(child.Argv, want) {
+		t.Errorf("child argv = %q, want %q", child.Argv, want)
+	}
+	allowed := []string{"LC_ALL", "LANG", "NO_COLOR", "TERM", "PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP"}
+	if runtime.GOOS == "windows" {
+		allowed = append(allowed, "SystemRoot", "ComSpec", "PATHEXT")
+	}
+	for _, entry := range child.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		if !slices.Contains(allowed, name) || strings.Contains(entry, task) {
+			t.Errorf("unexpected child environment name %q", name)
+		}
+	}
+	for _, required := range []string{"LC_ALL=C", "LANG=C", "NO_COLOR=1", "TERM=dumb", "HOME=" + home, "USER=fixture-operator", "PATH=/synthetic/path"} {
+		if !slices.Contains(child.Env, required) {
+			t.Errorf("child environment omitted %q", required)
+		}
+	}
+	frame := must(os.ReadFile("qa-report-frame"))
+	skill := must(os.ReadFile(filepath.Join(home, ".claude", "skills", "cortex-requirements-analyst", "SKILL.md")))
+	if !bytes.Contains(frame, []byte(task)) || !bytes.Contains(frame, skill) || len(frame) > qaadmission.MaxRequestBytes || !bytes.Contains(frame, []byte("skill_delivery inline\n")) {
+		t.Fatal("child stdin lost bounded inline skill/task framing")
+	}
+	for _, argument := range child.Argv {
+		if strings.Contains(argument, "HOSTILE-TASK") || strings.Contains(argument, "cortex-") {
+			t.Error("prompt input leaked into child argv")
+		}
+	}
+}
+
 // fakePi is a deterministic fake Pi subprocess used only as test evidence; it
 // never performs provider, authentication, or network work.
 func fakePi() int {
+	if scenario, _ := os.ReadFile("qa-report-scenario"); string(scenario) == "claude-report" {
+		return fakeClaudeQA()
+	}
 	if os.Args[1] == "--version" {
 		fmt.Println(qapi.PiSDKVersion)
 		return 0

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ type runFacts struct {
 	stderrTruncated         bool
 }
 
-// runOnce starts exactly one already-bound Pi command. Its raw inputs and captures remain in memory.
+// runOnce starts exactly one already-bound backend command. Its raw inputs and captures remain in memory.
 func runOnce(ctx context.Context, invocation Invocation, framedInput []byte, timeout time.Duration) runFacts {
 	if !validInvocation(invocation) || len(framedInput) == 0 || len(framedInput) > qaadmission.MaxRequestBytes || timeout < time.Duration(qaadmission.MinimumTimeoutSeconds)*time.Second || timeout > time.Duration(qaadmission.MaximumTimeoutSeconds)*time.Second {
 		return runFacts{invalid: true}
@@ -66,8 +67,11 @@ func validInvocation(invocation Invocation) bool {
 	if !absolutePaths(invocation.binary, invocation.cwd) || len(invocation.argv) == 0 {
 		return false
 	}
+	// Only the complete fixed Claude vector may carry its intentional empty
+	// --tools value. A preceding flag alone never authorizes an empty token.
+	fixedClaude := slices.Equal(invocation.argv, claudeArgv())
 	for _, argument := range invocation.argv {
-		if argument == "" || strings.IndexByte(argument, 0) >= 0 {
+		if (argument == "" && !fixedClaude) || strings.IndexByte(argument, 0) >= 0 {
 			return false
 		}
 	}

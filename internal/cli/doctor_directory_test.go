@@ -104,28 +104,30 @@ func TestDoctorDirectoryTargetUnreadableStateIsInvalid(t *testing.T) {
 		return target
 	}
 
-	// An undecodable state is the existing invalid classification.
-	garbage := writeState("garbage", []byte("not json"))
-	garbageCode, garbageOut, garbageErr := runDoctorOnTarget(t, garbage)
-	if garbageErr != "" || garbageOut != "target="+garbage+" presence=present writability=writable ownership=invalid\n" {
-		t.Fatalf("garbage: exit = %d stdout = %q stderr = %q", garbageCode, garbageOut, garbageErr)
-	}
+	t.Run("undecodable", func(t *testing.T) {
+		garbage := writeState("garbage", []byte("not json"))
+		code, stdout, stderr := runDoctorOnTarget(t, garbage)
+		if code != exitConflict || stderr != "" || stdout != "target="+garbage+" presence=present writability=writable ownership=invalid\n" {
+			t.Fatalf("garbage: exit = %d stdout = %q stderr = %q", code, stdout, stderr)
+		}
+	})
 
-	// An unreadable state exists, so it is invalid exactly like an undecodable one.
-	unreadable := writeState("unreadable", []byte("{}"))
-	statePath := filepath.Join(unreadable, ".cortex", "install-state.json")
-	if err := os.Chmod(statePath, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(statePath, 0o600) })
-	if os.Getuid() == 0 {
-		t.Skip("root can read a mode 0000 file")
-	}
-	code, stdout, stderr := runDoctorOnTarget(t, unreadable)
-	if want := "target=" + unreadable + " presence=present writability=writable ownership=invalid\n"; stdout != want {
-		t.Fatalf("unreadable stdout = %q, want %q", stdout, want)
-	}
-	if stderr != "" || code != exitOK || garbageCode != exitOK {
-		t.Fatalf("unreadable: exit = %d (invalid exits %d) stderr = %q", code, garbageCode, stderr)
-	}
+	t.Run("unreadable", func(t *testing.T) {
+		unreadable := writeState("unreadable", []byte("{}"))
+		statePath := filepath.Join(unreadable, ".cortex", "install-state.json")
+		if err := os.Chmod(statePath, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(statePath, 0o600) })
+		if os.Getuid() == 0 {
+			t.Skip("root can read a mode 0000 file")
+		}
+		code, stdout, stderr := runDoctorOnTarget(t, unreadable)
+		if want := "target=" + unreadable + " presence=present writability=writable ownership=invalid\n"; stdout != want {
+			t.Fatalf("unreadable stdout = %q, want %q", stdout, want)
+		}
+		if stderr != "" || code != exitConflict {
+			t.Fatalf("unreadable: exit = %d, want conflict; stderr = %q", code, stderr)
+		}
+	})
 }

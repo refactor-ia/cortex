@@ -97,8 +97,8 @@ runtime=directory presence=present compatibility=compatible action=configure tou
 - `cortex doctor --target-dir <dir>` reports `presence`, `writability`, and `ownership`
   (`unowned`, `owned`, `invalid`) for the directory. Only a missing
   `.cortex/install-state.json` is `unowned`; a state file that exists but cannot be read or
-  decoded is `invalid`. An unwritable directory or an unreadable
-  prior state exits with the same conflict code install would hit.
+  decoded is `invalid`. An unwritable directory or an `invalid` prior state exits
+  with conflict code 3; unreadable state must not be treated as a clean first install.
 
 ## Running update
 

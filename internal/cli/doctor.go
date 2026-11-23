@@ -153,7 +153,11 @@ func runDoctorDirectoryTarget(stdout io.Writer, targetDir string) int {
 			line += " writability=unwritable"
 			code = exitConflict
 		}
-		line += " ownership=" + doctorTargetOwnership(targetDir)
+		ownership := doctorTargetOwnership(targetDir)
+		line += " ownership=" + ownership
+		if ownership == "invalid" {
+			code = exitConflict
+		}
 	}
 	if _, err := io.WriteString(stdout, line+"\n"); err != nil {
 		return exitFailure
@@ -268,7 +272,7 @@ const (
 		"so frame directives stay rejected while the quoted diff passes validation (issue #305).\n"
 	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n" +
 		"install [--target-dir <dir>]: configure every compatible present runtime, or project the\ncatalog as plain SKILL.md files into an existing directory (Agent Skills layout)\n" +
-		"doctor [--target-dir <dir>]: probe runtimes, or report one directory target\n" +
+		"doctor [--target-dir <dir>]: probe host/target; conflicts exit 3\n" +
 		"uninstall [--target-dir <dir>]: remove owned files from every runtime root, or from <dir>\n\n" + qaHelp
 	// qaReportNote surfaces runtime prerequisites on non-catalog failures. It
 	// names no route: a refusal happens with a profile route resolved, with a

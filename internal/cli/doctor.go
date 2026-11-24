@@ -359,6 +359,7 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		evidence, err = readQAFile(evidencePath, qapi.MaxEvidenceBytes)
 		if err != nil {
 			failure := qaFailure(stderr, "invalid_request")
+			_, _ = fmt.Fprintf(stderr, "stage=%s\n", qaStageEvidenceAdmission)
 			if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 				_, _ = fmt.Fprintf(stderr, "evidence_field=path evidence_reason=file_not_found\n")
 			} else if stat, statErr := os.Stat(evidencePath); statErr == nil && stat.Size() > int64(qapi.MaxEvidenceBytes) {
@@ -379,7 +380,9 @@ func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	installRoot, err := qaInstallRoot(backend)
 	if err != nil {
-		return qaFailure(stderr, "actor_unavailable")
+		failure := qaFailure(stderr, "actor_unavailable")
+		_, _ = fmt.Fprintf(stderr, "stage=%s\n", qaStageActorAdmission)
+		return failure
 	}
 	report, code, err := qapi.RunLocalReportOn(ctx, qapi.ReportRequest{
 		Role: role, Profile: profile, CatalogRoot: catalogRoot, InstallRoot: installRoot,

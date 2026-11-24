@@ -868,6 +868,76 @@ func TestQARunProfileRefusalNamesTheSelectedProfile(t *testing.T) {
 	}
 }
 
+// Early file refusals happen before the report pipeline can classify them.
+func TestQARunEarlyEvidenceRefusalNamesStage(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, field, reason string
+	}{
+		{"missing", "missing.json", "path", "file_unavailable"},
+		{"directory", ".", "path", "not_a_file"},
+		{"oversized", "oversized.json", "top-level", "exceeds_size"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := reportFixture(t)
+			if tc.name == "oversized" {
+				mustOK(os.WriteFile(tc.path, bytes.Repeat([]byte(" "), qapi.MaxEvidenceBytes+1), 0o600))
+			}
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			code := Run(context.Background(), append(args, "--evidence", tc.path), stdout, stderr, nil)
+			want := "error=invalid_request\n" + qaReportNote + "stage=evidence_admission\n" + fmt.Sprintf("evidence_field=%s evidence_reason=%s\n", tc.field, tc.reason)
+			if code != exitFailure || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), want) || strings.Count(stderr.String(), "stage=") != 1 {
+				t.Fatalf("evidence refusal = %d stdout %q stderr %q, want prefix %q", code, stdout.String(), stderr.String(), want)
+			}
+			if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+				t.Fatal("evidence refusal must not launch the backend")
+			}
+		})
+	}
+}
+
+func TestQARunEarlyInstallRootRefusalNamesStage(t *testing.T) {
+	args := reportFixture(t)
+	t.Setenv("HOME", "")
+	mustOK(os.Unsetenv("HOME"))
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := "error=actor_unavailable\n" + qaReportNote + "stage=actor_admission\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("install-root refusal = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("install-root refusal must not launch the backend")
+	}
+}
+
+func TestQARunModelRefusalEscapesProfileRouteIdentity(t *testing.T) {
+	args := profileReportFixture(t)
+	// Both fields originate in a caller-owned profile; neither may emit a
+	// terminal command, a new diagnostic line, or a literal backslash escape.
+	route, err := json.Marshal(map[string]string{
+		"provider": "\x1b]52;c;SGVsbG8=\x07",
+		"model":    "m\n\r\x1b]0;title\x07\\tail",
+		"effort":   "low",
+	})
+	mustOK(err)
+	qaProfileBodyFixture(t, qaCatalogArgument(args), fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":%s}}}}}`, route))
+	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := `route_provider=\x1b]52;c;SGVsbG8=\x07 route_model=m\x0a\x0d\x1b]0;title\x07\x5ctail` + "\n"
+	if code != exitFailure || stdout.Len() != 0 || !strings.Contains(stderr.String(), "error=model_unavailable\n") || !strings.Contains(stderr.String(), "stage=model_probe\n") || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("hostile route refusal = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	for _, control := range []string{"\x1b", "\x07", "\r"} {
+		if strings.Contains(stderr.String(), control) {
+			t.Fatalf("refusal contains raw terminal control %q: %q", control, stderr.String())
+		}
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("model refusal must not launch report execution")
+	}
+}
+
 // TestQARunNamesThePreflightRefusalStage pins #374 S4: each preflight refusal
 // says which question refused — route resolution, actor admission, model probe,
 // or evidence admission — using the stage vocabulary the pipeline already

@@ -252,14 +252,16 @@ fixed vocabulary and no guessed cause:
   unusable `--profile`, a backend route the profile does not carry, or a route the
   policy does not admit. Nothing is launched and no provider is claimed, because
   none was resolved.
-- `stage=actor_admission` — the installed assets of the selected role were refused;
-  the following `admission_stage` names the check.
+- `stage=actor_admission` — the selected runtime's install root could not be
+  resolved, or the installed assets of the selected role were refused. Asset
+  refusals also include `admission_stage` to name the check.
 - `stage=model_probe` — the backend's own availability probe answered that the
   routed pair is unusable. `route_provider` and `route_model` name the pair that was
   actually routed (nothing else), escaped for the terminal, and `model_unavailable`
   or `auth_not_ready` prints its own remedy.
 - `stage=evidence_admission` — the supplied evidence sidecar was refused before
-  launch, with the `evidence_field` and `evidence_reason` that refused it.
+  launch, including failures to read the file, with the `evidence_field` and
+  `evidence_reason` that refused it.
 
 The vocabulary is preflight-only. A post-launch outcome (execution, timeout,
 stream, normalization) prints no stage, because no preflight question refused it.

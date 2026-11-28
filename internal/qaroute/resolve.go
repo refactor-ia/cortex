@@ -3,6 +3,7 @@ package qaroute
 import (
 	"crypto/sha256"
 	"fmt"
+	"unicode"
 
 	"github.com/refactor-ia/cortex/internal/runtimematrix"
 )
@@ -124,4 +125,20 @@ func Resolve(request Request, snapshot Snapshot) (ResolvedRoute, Failure) {
 		Provider: base.provider, Model: base.model, Effort: base.effort,
 		ProfileID: profileID, ProfileSHA256: digest, OverrideFields: fields,
 	}, Failure{}
+}
+
+// SafeArgvToken reports whether one route value can stand as a single argv
+// token: non-empty, not option-shaped (no leading '-'), and free of
+// whitespace and control characters. It is the one shape rule every
+// invocation boundary asks, so backends never carry their own copy (#465).
+func SafeArgvToken(value string) bool {
+	if value == "" || value[0] == '-' {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

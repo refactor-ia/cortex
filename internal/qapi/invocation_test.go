@@ -205,3 +205,40 @@ func TestPiInvocationStillRequiresTheActorPath(t *testing.T) {
 		t.Fatal("BuildInvocation() accepted a Pi binding with no actor path")
 	}
 }
+
+// R1-001 (#465): the invocation boundary refuses a provider or model that is
+// unsafe as an argv token, for role-default and profile routes alike, on every
+// admitted backend.
+func TestBuildInvocationRefusesUnsafeRouteTokens(t *testing.T) {
+	backends := map[string]Backend{"pi": piBackend{}, "claude": NewClaudeBackend(nil), "opencode": NewOpenCodeBackend(nil)}
+	for id, backend := range backends {
+		binding, err := BindInvocationPaths(qarole.TestRunner, "/synthetic/bin/"+id, "/synthetic/actor.md", "/synthetic/skill/SKILL.md", "/synthetic/worktree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		roleDefault, failure := qaroute.Resolve(qaroute.Request{Role: qarole.TestRunner, Backend: id, Override: qaroute.Override{Provider: "--evil", Model: "gpt-5.6", Effort: "low"}}, qaroute.Snapshot{})
+		if failure.Code != "" {
+			t.Fatalf("%s: Resolve() failure = %q", id, failure.Code)
+		}
+		if _, err := backend.BuildInvocation(roleDefault, binding); err == nil {
+			t.Fatalf("%s: BuildInvocation accepted provider --evil on a role-default route", id)
+		}
+		profile, failure := fixtureResolve(qarole.TestRunner, id)
+		if failure.Code != "" {
+			t.Fatalf("%s: Resolve() failure = %q", id, failure.Code)
+		}
+		for _, unsafe := range []string{"", "-x", "a b", "a\tb", "a\nb", "a\x00b", "a\x7fb"} {
+			for _, field := range []string{"provider", "model"} {
+				mutated := profile
+				if field == "provider" {
+					mutated.Provider = unsafe
+				} else {
+					mutated.Model = unsafe
+				}
+				if _, err := backend.BuildInvocation(mutated, binding); err == nil {
+					t.Fatalf("%s: BuildInvocation accepted %s %q on a profile route", id, field, unsafe)
+				}
+			}
+		}
+	}
+}

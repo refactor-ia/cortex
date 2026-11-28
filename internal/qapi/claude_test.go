@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
+	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 // claudeCapture loads one committed Claude Code stream capture. Every test in
@@ -383,5 +384,45 @@ func TestParseClaudeReportStreamAcceptsThinkingTokens(t *testing.T) {
 	}
 	if report != "OK" {
 		t.Fatalf("report = %q, want %q", report, "OK")
+	}
+}
+
+// R3-002 (#465): what BuildInvocation can and cannot detect on a mutated
+// profile-attested route. Nothing at this layer binds the route's provider,
+// model, or effort to the profile: ProfileSHA256 digests the whole profile
+// file and is only carried into the frame and receipt. So a mutation that keeps
+// every value a safe argv token is accepted here, and that gap is pinned
+// explicitly instead of hidden; an unsafe value is still refused.
+func TestClaudeMutatedProfileRouteDetection(t *testing.T) {
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "claude")
+	if failure.Code != "" {
+		t.Fatalf("Resolve() failure = %q", failure.Code)
+	}
+	backend := NewClaudeBackend(nil)
+	paths, err := BindInvocationPaths(qarole.RequirementsAnalyst, "/runtime/claude", "/assets/actor.md", "/assets/skill.md", "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*qaroute.ResolvedRoute){
+		func(r *qaroute.ResolvedRoute) { r.Provider = "other-provider" },
+		func(r *qaroute.ResolvedRoute) { r.Model = "other-model" },
+		func(r *qaroute.ResolvedRoute) { r.Effort = "max" },
+	} {
+		mutated := route
+		mutate(&mutated)
+		if _, err := backend.BuildInvocation(mutated, paths); err != nil {
+			t.Fatalf("gap changed: BuildInvocation now rejects a safe mutation %+v: %v; turn this into a rejection test", mutated, err)
+		}
+	}
+	for _, mutate := range []func(*qaroute.ResolvedRoute){
+		func(r *qaroute.ResolvedRoute) { r.Provider = "--evil" },
+		func(r *qaroute.ResolvedRoute) { r.Model = "a b" },
+		func(r *qaroute.ResolvedRoute) { r.Effort = "" },
+	} {
+		mutated := route
+		mutate(&mutated)
+		if _, err := backend.BuildInvocation(mutated, paths); err == nil {
+			t.Fatalf("BuildInvocation accepted an unsafe mutation %+v", mutated)
+		}
 	}
 }

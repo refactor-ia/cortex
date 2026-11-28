@@ -985,7 +985,7 @@ func TestQARunNamesThePreflightRefusalStage(t *testing.T) {
 
 // TestQARunModelProbeEscapesTheRoutedPair pins the safety half of S4/S5: the
 // routed provider/model come from a caller-owned profile file, so they are
-// bounded and escaped before they reach the operator's terminal. The profile is
+// refused before launch and never reach the operator's terminal unescaped. The profile is
 // staged in the disposable catalog copy, never in the repository catalog.
 func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 	args := reportFixture(t)
@@ -999,11 +999,16 @@ func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
 	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
 	stderr, code := runQARefusal(t, args)
-	if code != exitFailure || strings.Contains(stderr, "\x1b") {
-		t.Fatalf("hostile routed pair = %d stderr %q, want escaped output", code, stderr)
+	// #465 R1-001: a model that is unsafe as argv is refused at the invocation
+	// boundary, before any launch; the run reports that as actor_unavailable.
+	if code != exitFailure || !strings.HasPrefix(stderr, "error=actor_unavailable\n") || strings.Contains(stderr, "\x1b") {
+		t.Fatalf("hostile routed pair = %d stderr %q, want escaped actor_unavailable refusal", code, stderr)
 	}
-	if !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
-		t.Fatalf("stderr %q does not escape the routed model", stderr)
+	if strings.Contains(stderr, "evil") && !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
+		t.Fatalf("stderr %q names the routed model without the probe-stage escaping", stderr)
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("a hostile routed model must not launch the backend")
 	}
 }
 

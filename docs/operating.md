@@ -226,9 +226,12 @@ absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
 
 A profile source that exists but cannot be read safely is refused, never silently
-replaced: a catalog root reached through a symlink, a symlinked or non-regular
-profile file, an oversized or malformed file, or an unreadable `defaultProfile`
-all end in `profile_invalid` before anything is launched. A catalog with no
+replaced: a symlinked or non-regular profile file, an oversized or malformed
+file, or an unreadable `defaultProfile` all end in `profile_invalid` before
+anything is launched. A catalog root reached through a symlink is refused one
+stage earlier, when the catalog loads, as `adapter_unavailable` with
+`stage=catalog`; the catalog stage always precedes the profile, so a run whose
+catalog and profile are both unusable names the catalog. A catalog with no
 `cortex/qa-profiles.json` file at all has no route: `qa run` refuses with
 `route_incomplete` and the `qa setup` remedy before anything is probed. A refused
 `profile_invalid` prints `profile_selected` (when `--profile` was passed), the

@@ -902,3 +902,44 @@ func TestParseReportStreamReasoningBlocks(t *testing.T) {
 		}
 	})
 }
+
+// R3-001 (#465): when the catalog fails to load and the selected profile is
+// also invalid, the catalog stage is named first. The profile lives inside the
+// catalog root, so an unloadable root cannot be the source of a profile verdict.
+func TestReportCatalogFailurePrecedesInvalidProfile(t *testing.T) {
+	root := t.TempDir()
+	writeProfile(t, root, []byte("not json"))
+	request := ReportRequest{Role: qarole.RequirementsAnalyst, CatalogRoot: root, Profile: "missing-profile"}
+	_, code, err := RunLocalReportOn(context.Background(), request, "pi", nil)
+	var catalogError *CatalogLoadError
+	if code != qaadmission.CodeAdapterUnavailable || !errors.As(err, &catalogError) {
+		t.Fatalf("catalog+profile failure = %q, %v; want the catalog stage first", code, err)
+	}
+}
+
+// R3-001 (#465): a catalog root reached through a symlink is refused at the
+// catalog stage, before the profile source is read.
+func TestReportSymlinkCatalogRootIsACatalogFailure(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(base, "catalog")
+	if err := os.CopyFS(target, os.DirFS(filepath.Join("..", "..", "catalog"))); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureProfile(t, target, qarole.RequirementsAnalyst, "pi")
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	var catalogError *CatalogLoadError
+	// Control: the canonical root loads, so the refusal below is the symlink's.
+	if _, _, err := RunLocalReportOn(context.Background(), ReportRequest{Role: qarole.RequirementsAnalyst, CatalogRoot: target}, "pi", nil); errors.As(err, &catalogError) {
+		t.Fatalf("canonical catalog root failed to load: %v", err)
+	}
+	_, code, err := RunLocalReportOn(context.Background(), ReportRequest{Role: qarole.RequirementsAnalyst, CatalogRoot: link}, "pi", nil)
+	if code != qaadmission.CodeAdapterUnavailable || !errors.As(err, &catalogError) {
+		t.Fatalf("symlinked catalog root = %q, %v; want catalog stage", code, err)
+	}
+}

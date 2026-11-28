@@ -433,7 +433,7 @@ func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 }
 
 func TestQAHelpDocumentsSetupBackendLikeSetupUsage(t *testing.T) {
-	const setupLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n"
+	const setupLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>] [--role <role-id>]\n"
 	help, helpErr := &bytes.Buffer{}, &bytes.Buffer{}
 	if code := Run(context.Background(), []string{"qa", "--help"}, help, helpErr, nil); code != exitOK || helpErr.Len() != 0 {
 		t.Fatalf("qa --help exit=%d stderr=%q", code, helpErr)

@@ -112,7 +112,7 @@ func TestResultEcho(t *testing.T) {
 		t.Fatalf("echo mismatch = %#v", got)
 	}
 	invalid := binding
-	invalid.Route.Model = "glm5.3"
+	invalid.Route.Model = ""
 	if got := normalizeResponse(runFacts{stdout: valid}, invalid); got.code != qaadmission.CodeNormalizationFailed {
 		t.Fatalf("invalid expected binding = %#v", got)
 	}

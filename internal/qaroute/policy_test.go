@@ -9,31 +9,6 @@ import (
 	"github.com/refactor-ia/cortex/internal/qarole"
 )
 
-func TestResolveDefaults(t *testing.T) {
-	for _, tc := range []struct {
-		role   qarole.RoleID
-		model  string
-		effort string
-	}{
-		{qarole.RequirementsAnalyst, "qwen3.6", "high"},
-		{qarole.TestDesigner, "qwen3.6", "high"},
-		{qarole.ExploratoryTester, "glm5.3", "high"},
-		{qarole.AdversarialTester, "deepseek-v4-flash", "high"},
-		{qarole.TestRunner, "qwen3.6", "low"},
-		{qarole.EvidenceAuditor, "glm5.3", "high"},
-	} {
-		t.Run(string(tc.role), func(t *testing.T) {
-			got, failure := Resolve(Request{Role: tc.role, Backend: "pi"}, Snapshot{})
-			if failure.Code != "" {
-				t.Fatalf("Resolve() failure = %q", failure.Code)
-			}
-			if got.Provider != "nan" || got.Model != tc.model || got.Effort != tc.effort || got.ProfileID != "role-default" || got.ProfileSHA256 != "" {
-				t.Fatalf("Resolve() = %+v", got)
-			}
-		})
-	}
-}
-
 func TestResolveProfileOverrideShapesAndOriginalDigest(t *testing.T) {
 	snapshot := []byte("{\n  \"schemaVersion\": 1, \"defaultProfile\": \"balanced\", \"profiles\": {\"balanced\": {\"routes\": {\"test-runner\": {\"pi\": {\"provider\": \"nan\", \"model\": \"qwen3.6\", \"effort\": \"low\"}}}}}}\n")
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshot))
@@ -114,5 +89,16 @@ func TestResolveHonorsProfileDefinedRoutes(t *testing.T) {
 				t.Fatalf("Resolve() = (%+v, %q), want %s/%s", got, failure.Code, tc.provider, tc.model)
 			}
 		})
+	}
+}
+
+// D1 (#458): roles carry no provider/model defaults. A role without a profile
+// route fails route_incomplete for every role, and never resolves to nan.
+func TestResolveWithoutProfileRouteIsIncompleteForEveryRole(t *testing.T) {
+	for _, role := range []qarole.RoleID{qarole.RequirementsAnalyst, qarole.TestDesigner, qarole.ExploratoryTester, qarole.AdversarialTester, qarole.TestRunner, qarole.EvidenceAuditor} {
+		got, failure := Resolve(Request{Role: role, Backend: "pi"}, Snapshot{})
+		if failure.Code != "route_incomplete" || got.Provider != "" {
+			t.Fatalf("Resolve(%s) = (%+v, %q), want route_incomplete", role, got, failure.Code)
+		}
 	}
 }

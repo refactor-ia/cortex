@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
-	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 // openCodeCapture loads one committed OpenCode stream capture. As in the
@@ -236,7 +235,7 @@ func TestOpenCodeBackendParseReportSuccess(t *testing.T) {
 // or resolved for another backend, still does not: the adapter re-resolves
 // rather than trusting the value it was handed.
 func TestOpenCodeRouteIsAdmitted(t *testing.T) {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "opencode"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "opencode")
 	if failure.Code != "" {
 		t.Fatalf("route policy rejected opencode: %q", failure.Code)
 	}
@@ -252,7 +251,7 @@ func TestOpenCodeRouteIsAdmitted(t *testing.T) {
 		t.Fatalf("EncodeInput rejected an admitted route: %v", err)
 	}
 	mutated := route
-	mutated.Model = "qwen9.9-absent"
+	mutated.ProfileID = "role-default"
 	if _, err := backend.BuildInvocation(mutated, paths); err == nil {
 		t.Fatalf("BuildInvocation accepted a mutated route")
 	}

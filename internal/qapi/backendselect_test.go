@@ -3,6 +3,7 @@ package qapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
@@ -44,7 +45,7 @@ func TestProbeBackendAvailabilityRejectsUnadmittedInput(t *testing.T) {
 		{"nil context", piBackendID, qarole.RequirementsAnalyst, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			verdict := ProbeBackendAvailability(test.ctx, test.backend, test.role, availabilityCWD(t), failingPathResolver{})
+			verdict := ProbeBackendAvailability(test.ctx, test.backend, test.role, "", availabilityCWD(t), failingPathResolver{})
 			if verdict.Available || verdict.Code != qaadmission.CodeUnsupportedRuntime {
 				t.Fatalf("verdict = %#v, want unavailable unsupported_runtime", verdict)
 			}
@@ -64,7 +65,7 @@ func TestProbeBackendAvailabilityReportsUnbindableRuntime(t *testing.T) {
 	recorder.install(t)
 	for _, id := range []string{piBackendID, claudeBackendID, opencodeBackendID} {
 		t.Run(id, func(t *testing.T) {
-			verdict := ProbeBackendAvailability(context.Background(), id, qarole.RequirementsAnalyst, availabilityCWD(t), failingPathResolver{})
+			verdict := ProbeBackendAvailability(context.Background(), id, qarole.RequirementsAnalyst, probeCatalog(t, id), availabilityCWD(t), failingPathResolver{})
 			if verdict.Available || verdict.Code != qaadmission.CodeUnsupportedRuntime {
 				t.Fatalf("verdict = %#v, want unavailable unsupported_runtime", verdict)
 			}
@@ -72,6 +73,52 @@ func TestProbeBackendAvailabilityReportsUnbindableRuntime(t *testing.T) {
 	}
 	if len(recorder.issued) != 0 {
 		t.Fatalf("an unbindable runtime still issued probe commands: %v", recorder.issued)
+	}
+}
+
+// probeCatalog writes a catalog root whose default profile routes the probe
+// role on one backend, so a probe gets past route resolution.
+func probeCatalog(t *testing.T, backend string) string {
+	t.Helper()
+	root := testProfileRoot(t)
+	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"mine","profiles":{"mine":{"routes":{"requirements-analyst":{"`+backend+`":{"provider":"openai-codex","model":"gpt-5.6","effort":"high"}}}}}}`))
+	return root
+}
+
+// D1 (#458): without a profile route the probe refuses route_incomplete and
+// issues nothing; there is no default route to probe.
+func TestProbeBackendAvailabilityWithoutARouteIsIncomplete(t *testing.T) {
+	recorder := &probeRecorder{}
+	recorder.install(t)
+	for _, root := range []string{"", testProfileRoot(t)} {
+		verdict := ProbeBackendAvailability(context.Background(), piBackendID, qarole.RequirementsAnalyst, root, availabilityCWD(t), failingPathResolver{})
+		if verdict.Available || verdict.Code != qaadmission.CodeRouteIncomplete {
+			t.Fatalf("root %q verdict = %#v, want route_incomplete", root, verdict)
+		}
+	}
+	if len(recorder.issued) != 0 {
+		t.Fatalf("a route-less probe issued commands: %v", recorder.issued)
+	}
+}
+
+// The probe asks about the route the catalog profile resolves, not a default.
+func TestProbeBackendAvailabilityProbesTheProfileRoute(t *testing.T) {
+	original := executeVersionCommand
+	executeVersionCommand = func(context.Context, string, string) versionCapture { return successfulVersion() }
+	t.Cleanup(func() { executeVersionCommand = original })
+	// The model table lacks the route, so the verdict names the pair the probe
+	// asked about.
+	recorder := &probeRecorder{captures: []probeCapture{
+		completeCapture([]byte(modelTableHeader+"\nother         other-model          1        1        yes       no\n"), 0),
+	}}
+	recorder.install(t)
+	resolver := &runtimeResolver{path: runtimeBinary(t, "pi")}
+	verdict := ProbeBackendAvailability(context.Background(), piBackendID, qarole.RequirementsAnalyst, probeCatalog(t, piBackendID), runtimeDirectory(t), resolver)
+	if verdict.Available || verdict.Code != qaadmission.CodeModelUnavailable || verdict.Provider != "openai-codex" || verdict.Model != "gpt-5.6" {
+		t.Fatalf("verdict = %#v, want the profile route probed", verdict)
+	}
+	if len(recorder.issued) == 0 || strings.Join(recorder.issued[0], " ") != "--list-models --no-extensions" {
+		t.Fatalf("issued = %v, want the model probe first", recorder.issued)
 	}
 }
 

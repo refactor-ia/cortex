@@ -148,7 +148,10 @@ func TestActorGuidanceAdmission(t *testing.T) {
 				t.Fatal("composed effective identity was mislabeled as canonical")
 			}
 			// Pure qapi contracts must carry the effective hash and actual actor path.
-			route, failure := qaroute.Resolve(qaroute.Request{Role: f.expected.Role, Backend: "pi"}, qaroute.Snapshot{})
+			// Roles carry no default route (D1, #458); the fixture routes
+			// through an owner profile.
+			profile := []byte(`{"schemaVersion":1,"defaultProfile":"fixture","profiles":{"fixture":{"routes":{"` + string(f.expected.Role) + `":{"pi":{"provider":"openai-codex","model":"gpt-5.6","effort":"high"}}}}}}`)
+			route, failure := qaroute.Resolve(qaroute.Request{Role: f.expected.Role, Backend: "pi", ProfileID: "fixture"}, qaroute.Snapshot{Present: true, Bytes: profile})
 			if failure.Code != "" {
 				t.Fatal(failure.Code)
 			}

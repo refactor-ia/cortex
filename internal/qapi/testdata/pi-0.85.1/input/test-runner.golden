@@ -1,5 +1,5 @@
 /skill:cortex-test-runner
-identity 606
+identity 665
 input_contract cortex.qa.pi-input.v1
 role test-runner
 actor_contract cortex.qa.pi-actor.v1
@@ -11,8 +11,8 @@ route_backend pi
 route_provider nan
 route_model qwen3.6
 route_effort low
-route_profile role-default
-route_profile_sha256 
+route_profile fixture
+route_profile_sha256 3a7f4ee3c5ed30ced5d36fb67e7bb8875857ec0ec413a0971dc80c7805e56b6b
 route_override_fields 
 revision cccccccccccccccccccccccccccccccccccccccc
 fingerprint candidate.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

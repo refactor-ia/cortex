@@ -30,7 +30,8 @@ func TestProfileRouteDefaultBypassesProfileSource(t *testing.T) {
 	got, failure := resolveProfileRoute(filepath.Join(t.TempDir(), "missing"), AdmissionRequest{
 		Role: qarole.ExploratoryTester, Backend: "pi",
 	})
-	if failure.Code != "" || got.Model != "glm5.3" || got.ProfileID != "role-default" {
+	// No profile source and no default route (D1, #458): route_incomplete.
+	if failure.Code != "route_incomplete" {
 		t.Fatalf("resolveProfileRoute() = (%+v, %q)", got, failure.Code)
 	}
 }
@@ -168,8 +169,8 @@ func TestProfileRouteDefaultPlaceholderRequiresAnAbsentSource(t *testing.T) {
 			root := testProfileRoot(t)
 			tc.setup(t, root)
 			got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.TestRunner, Backend: "pi"})
-			if failure.Code != "" || got.ProfileID != "role-default" || got.Model != "qwen3.6" {
-				t.Fatalf("resolveProfileRoute() = (%+v, %q), want the placeholder route", got, failure.Code)
+			if failure.Code != "route_incomplete" {
+				t.Fatalf("resolveProfileRoute() = (%+v, %q), want route_incomplete", got, failure.Code)
 			}
 		})
 	}

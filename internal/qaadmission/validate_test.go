@@ -142,6 +142,21 @@ func TestValidateAllowsTruthfulPrelaunchWithoutExecutionFacts(t *testing.T) {
 	}
 }
 
+// D1 (#458): a receipt records the owner's profile route as resolved; it is
+// not compared against a policy default, which no longer exists.
+func TestValidateAcceptsAProfileRouteReceipt(t *testing.T) {
+	receipt := testReceipt()
+	receipt.Route.Requested = RequestedIdentity{}
+	receipt.Route.Resolved.Provider, receipt.Route.Resolved.Model, receipt.Route.Resolved.Effort = "openai-codex", "gpt-5.6", "high"
+	receipt.Route.Resolved.ProfileID, receipt.Route.Resolved.ProfileSHA256 = "selected", strings.Repeat("d", 64)
+	receipt.Route.Resolved.OverrideFields = []string{}
+	receipt.Route.Observed.Provider, receipt.Route.Observed.Model = "openai-codex", "gpt-5.6"
+	receipt.ReceiptID = ReceiptID(receipt)
+	if err := Validate(receipt); err != nil {
+		t.Fatalf("Validate() profile route receipt: %v", err)
+	}
+}
+
 func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -159,6 +174,11 @@ func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 		{"runtime-prefixed-version", func(r *Receipt) { r.Versions.Runtime = "pi-0.85.1" }},
 		{"route-policy", func(r *Receipt) { r.Route.Resolved.PolicyVersion = "other" }},
 		{"route-role", func(r *Receipt) { r.Route.Resolved.Role = "other" }},
+		{"route-unknown-role", func(r *Receipt) { r.Role, r.Route.Resolved.Role = "unknown", "unknown" }},
+		{"route-empty-model", func(r *Receipt) {
+			r.Route.Requested, r.Route.Resolved.OverrideFields = RequestedIdentity{}, []string{}
+			r.Route.Resolved.Model = ""
+		}},
 		{"route-profile", func(r *Receipt) {
 			r.Route.Resolved.ProfileID = "role-default"
 			r.Route.Resolved.ProfileSHA256 = strings.Repeat("a", 64)

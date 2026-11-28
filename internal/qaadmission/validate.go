@@ -105,8 +105,7 @@ func validBackendIdentity(receipt Receipt) bool {
 }
 func validateRoute(receipt Receipt) error {
 	route := receipt.Route.Resolved
-	want, failure := qaroute.Resolve(qaroute.Request{Role: receipt.Role, Backend: receipt.Backend}, qaroute.Snapshot{})
-	if failure.Code != "" || route.PolicyVersion != qaroute.PolicyVersion || route.Role != receipt.Role || route.Backend != receipt.Backend || route.Provider != want.Provider || route.Model != want.Model || route.Effort != want.Effort {
+	if !qaroute.KnownRole(receipt.Role) || !qaroute.Admits(receipt.Backend) || route.Provider == "" || route.Model == "" || route.Effort == "" || route.PolicyVersion != qaroute.PolicyVersion || route.Role != receipt.Role || route.Backend != receipt.Backend {
 		return fmt.Errorf("invalid resolved route")
 	}
 	if route.ProfileID == "role-default" {

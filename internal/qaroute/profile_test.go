@@ -39,7 +39,9 @@ func TestResolveUsesOnlyTheExplicitProfile(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", profileID), func(t *testing.T) {
 			got, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: profileID}, Snapshot{Present: true, Bytes: body})
 			if profileID == "" {
-				if failure.Code != "" || got.ProfileID != "role-default" {
+				// The stored defaultProfile is never selected implicitly, and
+				// roles carry no default route (D1, #458).
+				if failure.Code != "route_incomplete" {
 					t.Fatalf("Resolve() = (%+v, %q)", got, failure.Code)
 				}
 				return

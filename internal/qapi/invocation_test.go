@@ -228,12 +228,15 @@ func TestBuildInvocationRefusesUnsafeRouteTokens(t *testing.T) {
 			t.Fatalf("%s: Resolve() failure = %q", id, failure.Code)
 		}
 		for _, unsafe := range []string{"", "-x", "a b", "a\tb", "a\nb", "a\x00b", "a\x7fb"} {
-			for _, field := range []string{"provider", "model"} {
+			for _, field := range []string{"provider", "model", "effort"} {
 				mutated := profile
-				if field == "provider" {
+				switch field {
+				case "provider":
 					mutated.Provider = unsafe
-				} else {
+				case "model":
 					mutated.Model = unsafe
+				default:
+					mutated.Effort = unsafe
 				}
 				if _, err := backend.BuildInvocation(mutated, binding); err == nil {
 					t.Fatalf("%s: BuildInvocation accepted %s %q on a profile route", id, field, unsafe)

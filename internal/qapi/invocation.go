@@ -114,6 +114,7 @@ func validRouteFor(route qaroute.ResolvedRoute, backendID string) bool {
 	// Profile-defined route (issue #298): the user's own routing surface. The
 	// resolved identity is attested by ProfileID + ProfileSHA256 in the frame
 	// and receipt; the pinned model's availability was verified at preflight.
-	// Provider and model reach argv, so both must be safe argv tokens (#465).
-	return qaroute.SafeArgvToken(route.Provider) && qaroute.SafeArgvToken(route.Model) && route.Effort != ""
+	// Provider, model and effort can reach argv, so all must be safe argv
+	// tokens (#465).
+	return qaroute.SafeArgvToken(route.Provider) && qaroute.SafeArgvToken(route.Model) && qaroute.SafeArgvToken(route.Effort)
 }

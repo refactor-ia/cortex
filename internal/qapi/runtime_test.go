@@ -99,7 +99,7 @@ func TestRuntimeAvailability(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cwd := runtimeCWD(t)
 			helper := buildVersionHelper(t, test.behavior, cwd)
-			observed := probeAvailability(context.Background(), runtimeBound(helper, cwd), "nan", "qwen3.6")
+			observed := probeAvailability(context.Background(), runtimeBound(helper, cwd), "example-provider", "example-model")
 			if !observed.modelCapture.complete() || !observed.authCapture.complete() || observed.model.Available != test.modelAvailable || string(observed.model.Code) != test.modelCode || observed.auth.Ready != test.authReady || string(observed.auth.Code) != test.authCode {
 				t.Fatalf("availability = %#v", observed)
 			}
@@ -117,13 +117,13 @@ func TestRuntimeAvailabilityTerminalCaptures(t *testing.T) {
 	}
 	cwd := runtimeCWD(t)
 	t.Run("zero binding", func(t *testing.T) {
-		capture, _ := probeModelAvailability(context.Background(), boundPi{}, "nan", "qwen3.6")
+		capture, _ := probeModelAvailability(context.Background(), boundPi{}, "example-provider", "example-model")
 		if !capture.startFailed || capture.started || capture.complete() {
 			t.Fatalf("capture = %#v", capture)
 		}
 	})
 	t.Run("start failure", func(t *testing.T) {
-		capture, _ := probeModelAvailability(context.Background(), runtimeBound(filepath.Join(cwd, "missing"), cwd), "nan", "qwen3.6")
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(filepath.Join(cwd, "missing"), cwd), "example-provider", "example-model")
 		if !capture.startFailed || capture.started || capture.complete() {
 			t.Fatalf("capture = %#v", capture)
 		}
@@ -132,7 +132,7 @@ func TestRuntimeAvailabilityTerminalCaptures(t *testing.T) {
 		original := availabilityProbeTimeout
 		availabilityProbeTimeout = 20 * time.Millisecond
 		t.Cleanup(func() { availabilityProbeTimeout = original })
-		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-block", cwd), cwd), "nan", "qwen3.6")
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-block", cwd), cwd), "example-provider", "example-model")
 		if !capture.started || !capture.timedOut || capture.complete() {
 			t.Fatalf("capture = %#v", capture)
 		}
@@ -141,13 +141,13 @@ func TestRuntimeAvailabilityTerminalCaptures(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("portable inherited-pipe coverage")
 		}
-		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-drain", cwd), cwd), "nan", "qwen3.6")
+		capture, _ := probeModelAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-drain", cwd), cwd), "example-provider", "example-model")
 		if !capture.started || !capture.waitFailed || capture.complete() {
 			t.Fatalf("capture = %#v", capture)
 		}
 	})
 	t.Run("independent caps", func(t *testing.T) {
-		observed := probeAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-overflow", cwd), cwd), "nan", "qwen3.6")
+		observed := probeAvailability(context.Background(), runtimeBound(buildVersionHelper(t, "availability-overflow", cwd), cwd), "example-provider", "example-model")
 		if !observed.modelCapture.stdoutTruncated || !observed.modelCapture.stderrTruncated || len(observed.modelCapture.stdout) != maxModelOutputBytes || len(observed.modelCapture.stderr) != maxAuthOutputBytes || !observed.authCapture.stdoutTruncated || !observed.authCapture.stderrTruncated || len(observed.authCapture.stdout) != maxAuthOutputBytes || len(observed.authCapture.stderr) != maxAuthOutputBytes {
 			t.Fatalf("captures = %#v", observed)
 		}
@@ -494,7 +494,7 @@ func checkEnvironment() {
  if os.Getenv("LC_ALL") != "C" || os.Getenv("LANG") != "C" || os.Getenv("NO_COLOR") != "1" || os.Getenv("TERM") != "dumb" { os.Exit(6) }
 }
 func record(value string) { file, err := os.OpenFile(os.Args[0]+".trace", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); if err != nil { os.Exit(9) }; defer file.Close(); fmt.Fprintln(file, value) }
-func modelTable(model string) { fmt.Printf("provider      model                context  max-out  thinking  images\nnan           %%s                  1        1        yes       no\n", model) }
+func modelTable(model string) { fmt.Printf("provider      model                context  max-out  thinking  images\nexample-provider           %%s                  1        1        yes       no\n", model) }
 func main() {
  if len(os.Args) == 2 && os.Args[1] == "--child" { time.Sleep(1200*time.Millisecond); return }
  checkEnvironment()
@@ -504,22 +504,22 @@ func main() {
   case "--list-models --no-extensions":
    record("model")
    switch behavior {
-   case "availability-ready", "availability-auth-not-ready", "availability-malformed-auth": modelTable("qwen3.6")
+   case "availability-ready", "availability-auth-not-ready", "availability-malformed-auth": modelTable("example-model")
    case "availability-missing-model": modelTable("other")
    case "availability-malformed-model": fmt.Print("not a model table\n")
-   case "availability-nonzero-model": modelTable("qwen3.6"); os.Exit(7)
+   case "availability-nonzero-model": modelTable("example-model"); os.Exit(7)
    case "availability-block": time.Sleep(2*time.Second)
    case "availability-drain": child := exec.Command(os.Args[0], "--child"); child.Stdout = os.Stdout; child.Stderr = os.Stderr; if child.Start() != nil { os.Exit(8) }
    case "availability-overflow": os.Stdout.Write(bytes.Repeat([]byte("o"), 1048577)); os.Stderr.Write(bytes.Repeat([]byte("e"), 65537))
    default: os.Exit(10)
    }
-  case "auth check --provider nan --json --no-refresh":
+  case "auth check --provider example-provider --json --no-refresh":
    record("auth")
    switch behavior {
    case "availability-auth-not-ready": fmt.Print("{\"status\":\"not_ready\",\"reason\":\"missing credential\"}\n"); os.Exit(1)
    case "availability-malformed-auth": fmt.Print("not json\n")
    case "availability-overflow": os.Stdout.Write(bytes.Repeat([]byte("o"), 65537)); os.Stderr.Write(bytes.Repeat([]byte("e"), 65537))
-   default: fmt.Print("{\"status\":\"ready\",\"provider\":\"nan\",\"authType\":\"api_key\"}\n")
+   default: fmt.Print("{\"status\":\"ready\",\"provider\":\"example-provider\",\"authType\":\"api_key\"}\n")
    }
   default: os.Exit(3)
   }

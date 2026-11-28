@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qarole"
-	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 // openCodeCapture loads one committed OpenCode stream capture. As in the
@@ -37,7 +36,7 @@ func TestOpenCodeBackendIdentity(t *testing.T) {
 // isolation token and is asserted verbatim: without it the invoking operator's
 // external plugins load and inject context into the run.
 func TestOpenCodeArgvContract(t *testing.T) {
-	want := []string{"run", "--format", "json", "--pure", "-m", "nan/qwen3.6"}
+	want := []string{"run", "--format", "json", "--pure", "-m", "example-provider/example-model"}
 	if got := openCodeArgv(availabilityRoute(opencodeBackendID)); !slices.Equal(got, want) {
 		t.Fatalf("opencode argv = %q, want %q", got, want)
 	}
@@ -48,11 +47,11 @@ func TestOpenCodeArgvContract(t *testing.T) {
 // never decide which model answers.
 func TestOpenCodeArgvCarriesTheResolvedModel(t *testing.T) {
 	route := availabilityRoute(opencodeBackendID)
-	route.Provider, route.Model = "nan", "glm5.3"
+	route.Provider, route.Model = "example-provider", "example-model-b"
 	argv := openCodeArgv(route)
 	index := slices.Index(argv, "-m")
-	if index < 0 || index+1 >= len(argv) || argv[index+1] != "nan/glm5.3" {
-		t.Fatalf("opencode argv = %q, want -m nan/glm5.3", argv)
+	if index < 0 || index+1 >= len(argv) || argv[index+1] != "example-provider/example-model-b" {
+		t.Fatalf("opencode argv = %q, want -m example-provider/example-model-b", argv)
 	}
 }
 
@@ -236,7 +235,7 @@ func TestOpenCodeBackendParseReportSuccess(t *testing.T) {
 // or resolved for another backend, still does not: the adapter re-resolves
 // rather than trusting the value it was handed.
 func TestOpenCodeRouteIsAdmitted(t *testing.T) {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "opencode"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "opencode")
 	if failure.Code != "" {
 		t.Fatalf("route policy rejected opencode: %q", failure.Code)
 	}
@@ -252,7 +251,7 @@ func TestOpenCodeRouteIsAdmitted(t *testing.T) {
 		t.Fatalf("EncodeInput rejected an admitted route: %v", err)
 	}
 	mutated := route
-	mutated.Model = "qwen9.9-absent"
+	mutated.ProfileID = "role-default"
 	if _, err := backend.BuildInvocation(mutated, paths); err == nil {
 		t.Fatalf("BuildInvocation accepted a mutated route")
 	}

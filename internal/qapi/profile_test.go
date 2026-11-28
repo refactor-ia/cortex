@@ -15,13 +15,13 @@ import (
 
 func TestProfileRouteHonorsDefaultProfileWithoutFlag(t *testing.T) {
 	root := testProfileRoot(t)
-	data := []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`)
+	data := []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`)
 	writeProfile(t, root, data)
 
 	got, failure := resolveProfileRoute(root, AdmissionRequest{
 		Role: qarole.EvidenceAuditor, Backend: "pi",
 	})
-	if failure.Code != "" || got.Model != "glm5.3" || got.Provider != "nan" || got.ProfileID != "balanced" {
+	if failure.Code != "" || got.Model != "example-model-b" || got.Provider != "example-provider" || got.ProfileID != "balanced" {
 		t.Fatalf("resolveProfileRoute() = (%+v, %q), want the file's defaultProfile route", got, failure.Code)
 	}
 }
@@ -30,14 +30,15 @@ func TestProfileRouteDefaultBypassesProfileSource(t *testing.T) {
 	got, failure := resolveProfileRoute(filepath.Join(t.TempDir(), "missing"), AdmissionRequest{
 		Role: qarole.ExploratoryTester, Backend: "pi",
 	})
-	if failure.Code != "" || got.Model != "glm5.3" || got.ProfileID != "role-default" {
+	// No profile source and no default route (D1, #458): route_incomplete.
+	if failure.Code != "route_incomplete" {
 		t.Fatalf("resolveProfileRoute() = (%+v, %q)", got, failure.Code)
 	}
 }
 
 func TestProfileRouteUsesOneOriginalSnapshot(t *testing.T) {
 	root := testProfileRoot(t)
-	data := []byte("\n {\"schemaVersion\":1,\"defaultProfile\":\"balanced\",\"profiles\":{\"balanced\":{\"routes\":{\"test-runner\":{\"pi\":{\"provider\":\"nan\",\"model\":\"qwen3.6\",\"effort\":\"low\"}}}}}} \n")
+	data := []byte("\n {\"schemaVersion\":1,\"defaultProfile\":\"balanced\",\"profiles\":{\"balanced\":{\"routes\":{\"test-runner\":{\"pi\":{\"provider\":\"example-provider\",\"model\":\"example-model\",\"effort\":\"low\"}}}}}} \n")
 	writeProfile(t, root, data)
 
 	got, failure := resolveProfileRoute(root, AdmissionRequest{
@@ -47,12 +48,12 @@ func TestProfileRouteUsesOneOriginalSnapshot(t *testing.T) {
 		t.Fatalf("resolveProfileRoute() failure = %q", failure.Code)
 	}
 	wantDigest := fmt.Sprintf("%x", sha256.Sum256(data))
-	if got.ProfileSHA256 != wantDigest || got.ProfileID != "balanced" || got.Provider != "nan" || got.Model != "qwen3.6" || got.Effort != "low" {
+	if got.ProfileSHA256 != wantDigest || got.ProfileID != "balanced" || got.Provider != "example-provider" || got.Model != "example-model" || got.Effort != "low" {
 		t.Fatalf("resolveProfileRoute() = %+v", got)
 	}
 }
 
-const validProfileSnapshot = `{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}}}}`
+const validProfileSnapshot = `{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"test-runner":{"pi":{"provider":"example-provider","model":"example-model","effort":"low"}}}}}}`
 
 // profileSourceCase is one profile source that exists but cannot be inspected
 // safely. An explicit --profile selection and a default run must refuse the
@@ -168,8 +169,8 @@ func TestProfileRouteDefaultPlaceholderRequiresAnAbsentSource(t *testing.T) {
 			root := testProfileRoot(t)
 			tc.setup(t, root)
 			got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.TestRunner, Backend: "pi"})
-			if failure.Code != "" || got.ProfileID != "role-default" || got.Model != "qwen3.6" {
-				t.Fatalf("resolveProfileRoute() = (%+v, %q), want the placeholder route", got, failure.Code)
+			if failure.Code != "route_incomplete" {
+				t.Fatalf("resolveProfileRoute() = (%+v, %q), want route_incomplete", got, failure.Code)
 			}
 		})
 	}
@@ -181,10 +182,10 @@ func TestProfileRouteHonorsProfileDefinedModels(t *testing.T) {
 	// each owner routes with their own). Roles a profile does not cover
 	// still fail with route_incomplete — no silent default fallback.
 	root := testProfileRoot(t)
-	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"exploratory-tester":{"pi":{"provider":"nan","model":"qwen3.6","effort":"high"}}}}}}`))
+	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"exploratory-tester":{"pi":{"provider":"example-provider","model":"example-model","effort":"high"}}}}}}`))
 
 	got, failure := resolveProfileRoute(root, AdmissionRequest{Role: qarole.ExploratoryTester, Backend: "pi", Profile: "balanced"})
-	if failure.Code != "" || got.Model != "qwen3.6" || got.ProfileID != "balanced" {
+	if failure.Code != "" || got.Model != "example-model" || got.ProfileID != "balanced" {
 		t.Fatalf("resolveProfileRoute() = (%+v, %q), want the profile-defined route", got, failure.Code)
 	}
 }
@@ -218,7 +219,7 @@ func writeProfile(t *testing.T, root string, data []byte) {
 // policy itself accepts instead of a second, weaker representation.
 func TestProfileSelectionReportsTheSameSnapshotResolutionReads(t *testing.T) {
 	root := testProfileRoot(t)
-	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"fleet":{"routes":{"test-runner":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`))
+	writeProfile(t, root, []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"test-runner":{"pi":{"provider":"example-provider","model":"example-model","effort":"low"}}}},"fleet":{"routes":{"test-runner":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`))
 	defaultID, ids, ok := ProfileSelection(root)
 	if !ok || defaultID != "fleet" {
 		t.Fatalf("ProfileSelection() = (%q, %q, %v), want the file's defaultProfile", defaultID, ids, ok)

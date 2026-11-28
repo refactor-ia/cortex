@@ -19,7 +19,7 @@ import (
 
 // reportAssistantStartLine is the assistant message_start line shared by the
 // report fixtures; negative mutations anchor on it.
-const reportAssistantStartLine = `{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}`
+const reportAssistantStartLine = `{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}`
 
 // reportUserMessage renders the source-derived user prompt shape pi emits for
 // one text input: exactly {role, content, timestamp} with one text block.
@@ -48,7 +48,7 @@ func reportStreamFixture(report, prompt string) []byte {
 	message, err := json.Marshal(map[string]any{
 		"role":     "assistant",
 		"content":  []any{map[string]any{"type": "text", "text": report}},
-		"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+		"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 	})
 	if err != nil {
 		panic(err)
@@ -174,7 +174,7 @@ func TestParseReportStreamDiagnostic(t *testing.T) {
 	message := func(block map[string]any) string {
 		encoded, err := json.Marshal(map[string]any{
 			"role": "assistant", "content": []any{block},
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		if err != nil {
 			panic(err)
@@ -188,7 +188,7 @@ func TestParseReportStreamDiagnostic(t *testing.T) {
 		}
 		encoded, err := json.Marshal(map[string]any{
 			"role": "assistant", "content": items,
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		if err != nil {
 			panic(err)
@@ -250,7 +250,7 @@ func TestParseReportStreamDiagnostic(t *testing.T) {
 // report encoder, mirroring the route resolution used by admission bindings.
 func reportRouteFixture(t *testing.T, role qarole.RoleID) qaroute.ResolvedRoute {
 	t.Helper()
-	route, failure := qaroute.Resolve(qaroute.Request{Role: role, Backend: "pi"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(role, "pi")
 	if failure.Code != "" {
 		t.Fatalf("qaroute.Resolve(%s) failed: %s", role, failure.Code)
 	}
@@ -527,7 +527,7 @@ func TestInlinedSkillFrameCarriesTheSkillText(t *testing.T) {
 	skill := []byte("---\nname: cortex-requirements-analyst\n---\n\nAssess requirements.\n")
 	for _, backend := range []string{"claude", "opencode"} {
 		t.Run(backend, func(t *testing.T) {
-			route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: backend}, qaroute.Snapshot{})
+			route, failure := fixtureResolve(qarole.RequirementsAnalyst, backend)
 			if failure.Code != "" {
 				t.Fatalf("qaroute.Resolve(%s) failed: %s", backend, failure.Code)
 			}
@@ -553,7 +553,7 @@ func TestInlinedSkillFrameCarriesTheSkillText(t *testing.T) {
 // oversized skill fails loudly instead of being truncated into a silently
 // mutilated role definition.
 func TestInlinedSkillFrameRefusesAnUnusableSkill(t *testing.T) {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "claude")
 	if failure.Code != "" {
 		t.Fatalf("qaroute.Resolve failed: %s", failure.Code)
 	}
@@ -676,7 +676,7 @@ func livePiAssistantMessage(text string) string {
 	encoded, err := json.Marshal(map[string]any{
 		"role":    "assistant",
 		"content": []any{map[string]any{"type": "text", "text": text}},
-		"api":     "nan-api", "provider": "nan", "model": "glm5.3",
+		"api":     "example-provider-api", "provider": "example-provider", "model": "example-model-b",
 		"stopReason": "stop", "timestamp": 0,
 		"usage":         map[string]any{"totalTokens": 0},
 		"thinkingLevel": "high",
@@ -797,8 +797,8 @@ func pi140ReasoningStream(text string) []byte {
 		return `{"type":"thinking","thinking":` + quote(content) + `,"thinkingSignature":"c2ln"}`
 	}
 	textBlock := `{"type":"text","text":` + quote(text) + `,"textSignature":"c2ln"}`
-	assistant := `{"role":"assistant","content":[` + thinking("Consider the requirement.") + `,` + thinking("") + `,` + textBlock + `],"api":"fixture-api","provider":"nan","model":"qwen3.6","usage":` + usage + `,"stopReason":"stop","timestamp":0,"responseId":"fixture","rawStopReason":"stop","durationMs":0,"thinkingLevel":"high"}`
-	start := `{"role":"assistant","content":[],"api":"fixture-api","provider":"nan","model":"qwen3.6","stopReason":"pending","timestamp":0,"usage":` + usage + `}`
+	assistant := `{"role":"assistant","content":[` + thinking("Consider the requirement.") + `,` + thinking("") + `,` + textBlock + `],"api":"fixture-api","provider":"example-provider","model":"example-model","usage":` + usage + `,"stopReason":"stop","timestamp":0,"responseId":"fixture","rawStopReason":"stop","durationMs":0,"thinkingLevel":"high"}`
+	start := `{"role":"assistant","content":[],"api":"fixture-api","provider":"example-provider","model":"example-model","stopReason":"pending","timestamp":0,"usage":` + usage + `}`
 	user := reportUserMessage("fixture prompt")
 	lines := []string{
 		`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}`,

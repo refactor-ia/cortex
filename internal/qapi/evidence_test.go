@@ -10,7 +10,6 @@ import (
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qarole"
-	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 func TestEvidenceValidation(t *testing.T) {
@@ -119,7 +118,7 @@ func TestEvidenceFraming(t *testing.T) {
 	for _, role := range qarole.Catalog() {
 		for _, backend := range []string{"pi", "claude", "opencode"} {
 			t.Run(string(role.ID)+"/"+backend, func(t *testing.T) {
-				route, _ := qaroute.Resolve(qaroute.Request{Role: role.ID, Backend: backend}, qaroute.Snapshot{})
+				route, _ := fixtureResolve(role.ID, backend)
 				base, err := encodeReportInput(route, backend, strings.Repeat("a", 64), strings.Repeat("b", 64), []byte("skill fixture"), []byte("plain task"))
 				if err != nil {
 					t.Fatal(err)
@@ -149,7 +148,7 @@ func TestEvidenceFraming(t *testing.T) {
 
 func TestEvidenceFullFrameBound(t *testing.T) {
 	role := qarole.TestRunner
-	route, _ := qaroute.Resolve(qaroute.Request{Role: role, Backend: "claude"}, qaroute.Snapshot{})
+	route, _ := fixtureResolve(role, "claude")
 	// The base frame fits; adding a valid sidecar must still respect 128 KiB.
 	frame, err := encodeReportInput(route, "claude", strings.Repeat("a", 64), strings.Repeat("b", 64), bytes.Repeat([]byte("s"), 60000), bytes.Repeat([]byte("t"), qaadmission.MaxTaskBytes))
 	if err != nil {

@@ -97,9 +97,21 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 // directory has no host to probe, and its presence, writability, and prior
 // ownership are the whole answer to whether an install into it can proceed.
 func runDoctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy, resolveRoots func() ([]skillroot.UninstallRoot, error)) int {
-	targetDir, targetSet := "", false
+	targetDir, targetSet, catalogRoot, catalogSet := "", false, "", false
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
+		case "--catalog":
+			if catalogSet || index+1 >= len(args) || args[index+1] == "" {
+				writeError(stderr, "invalid_command")
+				return exitUsage
+			}
+			absolute, err := filepath.Abs(args[index+1])
+			if err != nil {
+				writeError(stderr, "invalid_command")
+				return exitUsage
+			}
+			catalogRoot, catalogSet = absolute, true
+			index++
 		case "--target-dir":
 			if targetSet || index+1 >= len(args) {
 				writeError(stderr, "invalid_command")
@@ -115,7 +127,11 @@ func runDoctorCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	// A given --target-dir is validated even when empty: an unset shell
 	// variable must not silently turn into the host runtime report.
 	if !targetSet {
-		return runDoctor(ctx, stdout, stderr, runner, policy, resolveRoots)
+		return runDoctor(ctx, stdout, stderr, runner, policy, resolveRoots, catalogRoot)
+	}
+	if catalogSet {
+		writeError(stderr, "invalid_command")
+		return exitUsage
 	}
 	if !validTargetDir(targetDir) {
 		writeError(stderr, "invalid_target")
@@ -180,13 +196,13 @@ func doctorTargetOwnership(targetDir string) string {
 	return "owned"
 }
 
-func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy, resolveRoots func() ([]skillroot.UninstallRoot, error)) int {
+func runDoctor(ctx context.Context, stdout, stderr io.Writer, runner runtimeprobe.Runner, policy runtimecompat.Policy, resolveRoots func() ([]skillroot.UninstallRoot, error), catalogRoot string) int {
 	matrix, err := probeCompatibilityMatrix(ctx, runner, policy)
 	if err != nil {
 		writeError(stderr, "probe_failed")
 		return exitFailure
 	}
-	if _, err := io.WriteString(stdout, doctorReport(ctx, matrix)); err != nil {
+	if _, err := io.WriteString(stdout, doctorReport(ctx, matrix, catalogRoot)); err != nil {
 		writeError(stderr, "output_failed")
 		return exitFailure
 	}
@@ -558,7 +574,7 @@ func qaAuthNotReadyNote() string {
 // unavailable pinned model leads to configuration instead of guessing. The
 // fleet ships no models: each owner routes with their own (issue #298).
 func qaRouteSetupNote(catalogRoot string) string {
-	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`
+	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`
 	return fmt.Sprintf("route_setup=%s/cortex/qa-profiles.json example=%s\n", catalogRoot, example)
 }
 
@@ -661,7 +677,7 @@ func probeCompatibilityMatrix(ctx context.Context, runner runtimeprobe.Runner, p
 // an evaluation of either. The availability lines name the routed pair only
 // when the probe's verdict carried one, which is why the scope belongs here
 // rather than guessed per line.
-const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_probe_role only (not_probed means no probe); qa_route_scope=embedded_default_route means doctor probes the binary's embedded catalog and the policy default route, never a caller catalog or a --profile route; it does not check asset ownership or install/update conflicts; for a separate read-only ownership plan run cortex update --runtime pi --catalog ./catalog\n"
+const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_probe_role only (not_probed means no probe); qa_route_scope=catalog_profile_route means doctor probes the route the --catalog profile resolves (route_incomplete without one; roles carry no default route), never a --profile route; it does not check asset ownership or install/update conflicts; for a separate read-only ownership plan run cortex update --runtime pi --catalog ./catalog\n"
 
 // doctorReport extends the shared per-runtime line with what doctor alone is
 // asked for: whether that runtime's QA backend could actually run a report.
@@ -677,12 +693,12 @@ const doctorScopeNote = "note=qa_availability is backend/model readiness for qa_
 // It stays read-only. Only the runtimes the matrix reports present are probed,
 // and a probe is that backend's own fixed availability commands — never a
 // report run, and never a configuration write.
-func doctorReport(ctx context.Context, matrix runtimematrix.Matrix) string {
+func doctorReport(ctx context.Context, matrix runtimematrix.Matrix, catalogRoot string) string {
 	var output strings.Builder
 	for _, decision := range matrix.Decisions {
 		line := installRuntimeLine(decision.ID, decision.Outcome, decision.Action, false)
 		present := decision.Outcome != runtimematrix.OutcomeAbsent
-		output.WriteString(strings.TrimSuffix(line, "\n") + qaBackendLine(ctx, decision.ID, present) + "\n")
+		output.WriteString(strings.TrimSuffix(line, "\n") + qaBackendLine(ctx, decision.ID, present, catalogRoot) + "\n")
 	}
 	output.WriteString(doctorScopeNote)
 	return output.String()

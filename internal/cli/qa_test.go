@@ -59,9 +59,9 @@ func fakeClaudeQA() int {
 }
 
 func TestQARunClaudeDisablesToolsBeforeLaunch(t *testing.T) {
-	catalogRoot := must(filepath.Abs("../../catalog"))
 	home := canonicalHome(t)
 	cwd := must(filepath.EvalSymlinks(t.TempDir()))
+	catalogRoot := qaRoutedCatalog(t, must(filepath.EvalSymlinks(t.TempDir())), qarole.RequirementsAnalyst, "claude")
 	t.Setenv("HOME", home)
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -140,10 +140,10 @@ func fakePi() int {
 			return 0
 		}
 		fmt.Print("provider      model                context  max-out  thinking  images\n" +
-			"nan           qwen3.6              262.1K   16.4K    yes       no\n" +
-			"nan           glm5.3               262.1K   16.4K    yes       no\n" +
+			"example-provider           example-model              262.1K   16.4K    yes       no\n" +
+			"example-provider           example-model-b               262.1K   16.4K    yes       no\n" +
 			"openai-codex  gpt-5.6-terra        272.0K   128.0K   yes       yes\n" +
-			"nan           deepseek-v4-flash    262.1K   16.4K    yes       no\n")
+			"example-provider           example-model-c    262.1K   16.4K    yes       no\n")
 		return 0
 	}
 	if os.Args[1] == "auth" {
@@ -152,7 +152,14 @@ func fakePi() int {
 			fmt.Print(`{"status":"not_ready","reason":"credential unavailable"}` + "\n")
 			return 1
 		}
-		fmt.Print(`{"status":"ready","provider":"nan","authType":"api_key"}` + "\n")
+		// The real Pi answers about the provider it was asked for (issue #452).
+		provider := "example-provider"
+		for index := 1; index+1 < len(os.Args); index++ {
+			if os.Args[index] == "--provider" {
+				provider = os.Args[index+1]
+			}
+		}
+		fmt.Printf(`{"status":"ready","provider":%q,"authType":"api_key"}`+"\n", provider)
 		return 0
 	}
 	switch scenario, err := os.ReadFile("qa-report-scenario"); {
@@ -168,7 +175,7 @@ func fakePi() int {
 			}
 			_, _ = f.WriteString("run\n")
 			_ = f.Close()
-			failed := `{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"error"}`
+			failed := `{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"error"}`
 			fmt.Print("{\"type\":\"agent_start\"}\n{\"type\":\"turn_start\"}\n")
 			fmt.Printf("{\"type\":\"message_start\",\"message\":%s}\n{\"type\":\"message_end\",\"message\":%s}\n{\"type\":\"turn_end\",\"message\":%s,\"toolResults\":[]}\n{\"type\":\"agent_end\",\"messages\":[%s],\"willRetry\":true}\n", failed, failed, failed, failed)
 			fmt.Print("{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"synthetic failure\"}\n{\"type\":\"entry_appended\",\"entry\":{\"type\":\"context_edit\",\"id\":\"edit\",\"parentId\":\"failed\",\"targetId\":\"failed\",\"timestamp\":\"fixture\",\"replacement\":null}}\n")
@@ -176,13 +183,13 @@ func fakePi() int {
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": fixtureReport}},
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		if !retrying {
 			fmt.Print(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n")
 		}
 		fmt.Print(`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
-			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
+			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}` + "\n")
 		fmt.Printf(`{"type":"message_end","message":%s}`+"\n", message)
 		if retrying {
 			fmt.Print("{\"type\":\"auto_retry_end\",\"attempt\":1,\"success\":true}\n")
@@ -196,11 +203,11 @@ func fakePi() int {
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": "   "}},
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		fmt.Printf(`{"type":"session","version":3,"id":"SENSITIVE-FIXTURE-MARKER","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n" +
 			`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
-			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
+			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}` + "\n")
 		fmt.Printf(`{"type":"message_end","message":%s}`+"\n"+`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message, message)
 		fmt.Printf(`{"type":"agent_end","messages":[%s],"willRetry":false}`+"\n"+`{"type":"agent_settled"}`+"\n", message)
 		return 0
@@ -275,6 +282,30 @@ func reportFixture(t *testing.T) []string {
 	return roleReportFixture(t, qarole.RequirementsAnalyst)
 }
 
+// qaFixtureRoutes are the per-role routes the CLI fixtures were written
+// against. Roles carry no default route (D1, #458), so a fixture run reaches
+// them only through an owner profile.
+var qaFixtureRoutes = map[qarole.RoleID][3]string{
+	qarole.RequirementsAnalyst: {"example-provider", "example-model", "high"},
+	qarole.TestDesigner:        {"example-provider", "example-model", "high"},
+	qarole.ExploratoryTester:   {"example-provider", "example-model-b", "high"},
+	qarole.AdversarialTester:   {"example-provider", "example-model-c", "high"},
+	qarole.TestRunner:          {"example-provider", "example-model", "low"},
+	qarole.EvidenceAuditor:     {"example-provider", "example-model-b", "high"},
+}
+
+// qaRoutedCatalog copies the repository catalog under dir and stores one
+// role's fixture route for one backend as its default profile.
+func qaRoutedCatalog(t *testing.T, dir string, role qarole.RoleID, backend string) string {
+	t.Helper()
+	catalogRoot := filepath.Join(dir, "catalog-fixture")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(repositoryCatalog)))
+	route := qaFixtureRoutes[role]
+	mustOK(os.MkdirAll(filepath.Join(catalogRoot, "cortex"), 0o700))
+	mustOK(os.WriteFile(filepath.Join(catalogRoot, "cortex", "qa-profiles.json"), []byte(fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fixture","profiles":{"fixture":{"routes":{%q:{%q:{"provider":%q,"model":%q,"effort":%q}}}}}}`, role, backend, route[0], route[1], route[2])), 0o600))
+	return catalogRoot
+}
+
 // roleReportFixture materializes one installed QA role from the production
 // catalog — its actor file, its skill file, and the full six-role install
 // state — and points the command at it with the fake Pi binary.
@@ -323,7 +354,7 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	mustOK(os.WriteFile(filepath.Join(installRoot, "skills", "cortex-"+roleName, "SKILL.md"), skill.Content(), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "requirements.txt"), []byte(fixtureTask), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "qa-report-scenario"), []byte("report"), 0o600))
-	catalogRoot := must(filepath.Abs("../../catalog"))
+	catalogRoot := qaRoutedCatalog(t, cwd, role, "pi")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("HOME", root)
 	qaPiResolver = fixturePi{must(os.Executable())}
@@ -490,7 +521,7 @@ func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
 	}
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "nan", "--model", "glm5.3", "--effort", "high"}
+	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "example-provider", "--model", "example-model-b", "--effort", "high"}
 	if code := Run(context.Background(), setup, stdout, stderr, nil); code != exitOK {
 		t.Fatalf("relative qa setup exit = %d stderr = %q", code, stderr.String())
 	}
@@ -502,7 +533,7 @@ func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
 		t.Fatalf("relative qa run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
 	}
 	frame := must(os.ReadFile("qa-report-frame"))
-	for _, want := range []string{"route_profile qa-fleet", "route_model glm5.3", "route_backend pi"} {
+	for _, want := range []string{"route_profile qa-fleet", "route_model example-model-b", "route_backend pi"} {
 		if !bytes.Contains(frame, []byte(want)) {
 			t.Fatalf("relative catalog run ignored the profile setup wrote: frame lost %q", want)
 		}
@@ -695,7 +726,7 @@ func qaCatalogArgument(args []string) string {
 // file already there is still restored, never left mutated.
 func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
 	t.Helper()
-	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
+	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"example-provider","model":"example-model","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
 	qaProfileBodyFixture(t, catalogRoot, profile)
 }
 
@@ -757,7 +788,7 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 			t.Fatalf("default profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
 		}
 		frame := must(os.ReadFile("qa-report-frame"))
-		for _, want := range []string{"route_profile fleet-default", "route_model qwen3.6"} {
+		for _, want := range []string{"route_profile fleet-default", "route_model example-model"} {
 			if !bytes.Contains(frame, []byte(want)) {
 				t.Fatalf("frame does not carry %q: %q", want, frame)
 			}
@@ -788,20 +819,29 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 	})
 }
 
-// TestQARunWithoutAProfileUsesTheDocumentedPlaceholder keeps the legitimate
-// default: with no profile source at all, the policy placeholder still routes
-// the run (issue #298).
-func TestQARunWithoutAProfileUsesTheDocumentedPlaceholder(t *testing.T) {
+// TestQARunWithoutAProfileRouteIsIncomplete pins D1 (#458): with no profile
+// source at all there is no default route, so the run refuses route_incomplete
+// with the cortex qa setup remedy before anything is probed or launched.
+func TestQARunWithoutAProfileRouteIsIncomplete(t *testing.T) {
 	args := reportFixture(t)
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
-		t.Fatalf("placeholder run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
-	}
-	frame := must(os.ReadFile("qa-report-frame"))
-	for _, want := range []string{"route_profile role-default", "route_model qwen3.6"} {
-		if !bytes.Contains(frame, []byte(want)) {
-			t.Fatalf("frame does not carry the placeholder %q: %q", want, frame)
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-bare")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(repositoryCatalog)))
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			args[index+1] = catalogRoot
 		}
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := "error=route_incomplete\n" + qaReportNote + "stage=route_resolution\nroute_missing_backend=pi remedy=cortex qa setup --catalog " + catalogRoot + " --backend pi --provider <p> --model <m>\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("route-less run = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("a route-less run must not launch the backend")
+	}
+	if _, err := os.Stat(filepath.Join(catalogRoot, "cortex")); !os.IsNotExist(err) {
+		t.Fatal("a route-less run must not write a profile")
 	}
 }
 
@@ -833,6 +873,8 @@ func TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack(t *testing.T) 
 			}
 			profileDirectory := filepath.Join(catalogRoot, "cortex")
 			mustOK(os.MkdirAll(profileDirectory, 0o700))
+			// Replace the fixture's own route with the unusable source.
+			mustOK(os.Remove(filepath.Join(profileDirectory, "qa-profiles.json")))
 			testCase.install(t, filepath.Join(profileDirectory, "qa-profiles.json"))
 
 			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -961,7 +1003,7 @@ func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 			args[index+1] = catalogRoot
 		}
 	}
-	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
+	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
 	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
 	stderr, code := runQARefusal(t, args)
 	if code != exitFailure || strings.Contains(stderr, "\x1b") {
@@ -1323,7 +1365,7 @@ func TestQARunModelUnavailableAnnouncesExtensionInvisibility(t *testing.T) {
 	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure {
 		t.Fatalf("model unavailable = %d", code)
 	}
-	for _, want := range []string{"route_provider=nan", "route_model=", "--no-extensions", "models.json"} {
+	for _, want := range []string{"route_provider=example-provider", "route_model=", "--no-extensions", "models.json"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}
@@ -1340,7 +1382,7 @@ func TestQARunAuthNotReadyNamesTheLoginRemedy(t *testing.T) {
 	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure {
 		t.Fatalf("auth not ready = %d", code)
 	}
-	for _, want := range []string{"route_provider=nan", "login"} {
+	for _, want := range []string{"route_provider=example-provider", "login"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}

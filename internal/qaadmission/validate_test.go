@@ -27,11 +27,13 @@ func TestValidateAcceptsEveryClosedTerminalCode(t *testing.T) {
 
 func TestValidateKeepsRequestedResolvedAndObservedFactsSeparate(t *testing.T) {
 	receipt := testReceipt()
-	receipt.Route.Requested = RequestedIdentity{Provider: "nan"}
+	// A partial override is only resolvable over a profile route (#458).
+	receipt.Route.Resolved.ProfileID, receipt.Route.Resolved.ProfileSHA256 = "balanced", strings.Repeat("a", 64)
+	receipt.Route.Requested = RequestedIdentity{Provider: "example-provider"}
 	receipt.Route.Resolved.OverrideFields = []string{"provider"}
 	receipt.ReceiptID = ReceiptID(receipt)
 	if err := Validate(receipt); err != nil {
-		t.Fatalf("Validate() partial requested default: %v", err)
+		t.Fatalf("Validate() partial requested override over a profile: %v", err)
 	}
 
 	receipt = testReceipt()
@@ -142,6 +144,21 @@ func TestValidateAllowsTruthfulPrelaunchWithoutExecutionFacts(t *testing.T) {
 	}
 }
 
+// D1 (#458): a receipt records the owner's profile route as resolved; it is
+// not compared against a policy default, which no longer exists.
+func TestValidateAcceptsAProfileRouteReceipt(t *testing.T) {
+	receipt := testReceipt()
+	receipt.Route.Requested = RequestedIdentity{}
+	receipt.Route.Resolved.Provider, receipt.Route.Resolved.Model, receipt.Route.Resolved.Effort = "openai-codex", "gpt-5.6", "high"
+	receipt.Route.Resolved.ProfileID, receipt.Route.Resolved.ProfileSHA256 = "selected", strings.Repeat("d", 64)
+	receipt.Route.Resolved.OverrideFields = []string{}
+	receipt.Route.Observed.Provider, receipt.Route.Observed.Model = "openai-codex", "gpt-5.6"
+	receipt.ReceiptID = ReceiptID(receipt)
+	if err := Validate(receipt); err != nil {
+		t.Fatalf("Validate() profile route receipt: %v", err)
+	}
+}
+
 func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -159,6 +176,11 @@ func TestValidateRejectsMalformedTerminalAndTypedFacts(t *testing.T) {
 		{"runtime-prefixed-version", func(r *Receipt) { r.Versions.Runtime = "pi-0.85.1" }},
 		{"route-policy", func(r *Receipt) { r.Route.Resolved.PolicyVersion = "other" }},
 		{"route-role", func(r *Receipt) { r.Route.Resolved.Role = "other" }},
+		{"route-unknown-role", func(r *Receipt) { r.Role, r.Route.Resolved.Role = "unknown", "unknown" }},
+		{"route-empty-model", func(r *Receipt) {
+			r.Route.Requested, r.Route.Resolved.OverrideFields = RequestedIdentity{}, []string{}
+			r.Route.Resolved.Model = ""
+		}},
 		{"route-profile", func(r *Receipt) {
 			r.Route.Resolved.ProfileID = "role-default"
 			r.Route.Resolved.ProfileSHA256 = strings.Repeat("a", 64)
@@ -254,5 +276,20 @@ func TestCanonicalJSONBindsBinaryWithoutPath(t *testing.T) {
 	receipt.Binary.SHA256 = strings.Repeat("b", 64)
 	if ReceiptID(receipt) == baseline {
 		t.Fatal("binary identity was not framed")
+	}
+}
+
+// A role-default route only exists as a full provider/model/effort override
+// since the policy ships no models (#458); a receipt claiming one without that
+// override names a route nothing can resolve.
+func TestValidateRejectsRoleDefaultWithoutFullOverride(t *testing.T) {
+	r := testReceipt()
+	r.Route.Requested = RequestedIdentity{}
+	r.Route.Resolved.Provider, r.Route.Resolved.Model, r.Route.Resolved.Effort = "evil", "m", "xhigh"
+	r.Route.Resolved.OverrideFields = []string{}
+	r.Route.Observed.Provider, r.Route.Observed.Model = "evil", "m"
+	r.ReceiptID = ReceiptID(r)
+	if Validate(r) == nil {
+		t.Fatal("role-default receipt without a full override must be rejected")
 	}
 }

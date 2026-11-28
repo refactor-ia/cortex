@@ -9,7 +9,7 @@ import (
 )
 
 func TestResolveRejectsMalformedProfiles(t *testing.T) {
-	valid := `{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"high"}}}}}}`
+	valid := `{"schemaVersion":1,"defaultProfile":"balanced","profiles":{"balanced":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model","effort":"high"}}}}}}`
 	for _, tc := range []struct {
 		name string
 		body []byte
@@ -34,12 +34,14 @@ func TestResolveRejectsMalformedProfiles(t *testing.T) {
 }
 
 func TestResolveUsesOnlyTheExplicitProfile(t *testing.T) {
-	body := []byte(`{"schemaVersion":1,"defaultProfile":"first","profiles":{"first":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"high"}}}},"second":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`)
+	body := []byte(`{"schemaVersion":1,"defaultProfile":"first","profiles":{"first":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model","effort":"high"}}}},"second":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`)
 	for _, profileID := range []string{"missing", ""} {
 		t.Run(fmt.Sprintf("%q", profileID), func(t *testing.T) {
 			got, failure := Resolve(Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: profileID}, Snapshot{Present: true, Bytes: body})
 			if profileID == "" {
-				if failure.Code != "" || got.ProfileID != "role-default" {
+				// The stored defaultProfile is never selected implicitly, and
+				// roles carry no default route (D1, #458).
+				if failure.Code != "route_incomplete" {
 					t.Fatalf("Resolve() = (%+v, %q)", got, failure.Code)
 				}
 				return
@@ -89,7 +91,7 @@ func TestResolvePerBackendRoutes(t *testing.T) {
 // existing decoder, so an id this function lists is an id Resolve accepts, and
 // the order is sorted rather than the file's or Go's map order.
 func TestProfileIDsListsSortedAdmittedIDs(t *testing.T) {
-	body := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}},"alpha":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"deepseek-v4-flash","effort":"low"}}}}}}`)
+	body := []byte(`{"schemaVersion":1,"defaultProfile":"fleet","profiles":{"qa-fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model","effort":"low"}}}},"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}},"alpha":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model-c","effort":"low"}}}}}}`)
 	ids, ok := ProfileIDs(body)
 	if !ok {
 		t.Fatal("ProfileIDs rejected a snapshot the route policy accepts")
@@ -108,7 +110,7 @@ func TestProfileIDsListsSortedAdmittedIDs(t *testing.T) {
 	}
 	for name, invalid := range map[string][]byte{
 		"malformed":      []byte(`{"schemaVersion":1,"defaultProfile":"9bad","profiles":{}}`),
-		"default absent": []byte(`{"schemaVersion":1,"defaultProfile":"missing","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`),
+		"default absent": []byte(`{"schemaVersion":1,"defaultProfile":"missing","profiles":{"fleet":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`),
 		"not an object":  []byte(`[]`),
 	} {
 		if ids, ok := ProfileIDs(invalid); ok || ids != nil {

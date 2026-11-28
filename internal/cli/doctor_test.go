@@ -81,7 +81,7 @@ func stubQABackendProbe(t *testing.T, answers map[string]string) {
 	originalAssetCheck := qaAssetCheck
 	qaAssetCheck = func(_ string) error { return nil }
 	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
-	qaBackendProbe = func(_ context.Context, backend string) qapi.AvailabilityVerdict {
+	qaBackendProbe = func(_ context.Context, backend, _ string) qapi.AvailabilityVerdict {
 		answer, known := answers[backend]
 		if !known {
 			t.Fatalf("doctor probed an unexpected backend: %q", backend)
@@ -142,7 +142,7 @@ func TestRunDoctorReportsUnsupportedPriorInstallState(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	code := runDoctor(context.Background(), stdout, stderr, certifiedRunner(), runtimecompat.BuiltInPolicy(), func() ([]skillroot.UninstallRoot, error) {
 		return skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home})
-	})
+	}, "")
 	if code != exitConflict {
 		t.Fatalf("doctor exit = %d, want %d for unsupported prior install state", code, exitConflict)
 	}
@@ -161,7 +161,7 @@ func TestRunDoctorStaysOKWithoutPriorState(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	code := runDoctor(context.Background(), stdout, stderr, certifiedRunner(), runtimecompat.BuiltInPolicy(), func() ([]skillroot.UninstallRoot, error) {
 		return skillroot.ResolveUninstallRoots(skillroot.Inputs{Home: home})
-	})
+	}, "")
 	if code != exitOK {
 		t.Fatalf("doctor exit = %d, want %d with no prior install state", code, exitOK)
 	}
@@ -211,13 +211,13 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 	originalProbe := qaBackendProbe
 	originalCheck := qaAssetCheck
 	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
-	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
+	qaBackendProbe = func(_ context.Context, _, _ string) qapi.AvailabilityVerdict {
 		return qapi.AvailabilityVerdict{Available: true}
 	}
 	qaAssetCheck = func(_ string) error {
 		return &installobserve.AdmissionUnavailableError{Stage: "catalog_fingerprint", Expected: "cc11", Found: "ff22"}
 	}
-	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
 	if !strings.Contains(line, "qa_availability=assets_mismatch") {
 		t.Fatalf("line = %q, want assets_mismatch availability", line)
 	}
@@ -225,7 +225,7 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 		t.Fatalf("line = %q, want the asset diagnostic", line)
 	}
 	qaAssetCheck = func(_ string) error { return errors.New("snapshot unavailable") }
-	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
 	if !strings.Contains(line, "qa_availability=assets_check_failed") || strings.Contains(line, "qa_availability=ready") {
 		t.Fatalf("line = %q, want assets_check_failed availability on untyped check failure", line)
 	}
@@ -233,14 +233,14 @@ func TestDoctorQALineGatesReadyOnInstalledAssets(t *testing.T) {
 		t.Fatalf("line = %q, want the fail-closed diagnostic", line)
 	}
 	qaAssetCheck = func(_ string) error { return nil }
-	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
 	if !strings.Contains(line, "qa_availability=ready") || strings.Contains(line, "qa_assets_stage") {
 		t.Fatalf("line = %q, want plain ready when assets match", line)
 	}
 }
 
 // TestDoctorNamesTheProbedRouteAndItsScope pins #374 S7: doctor probes the
-// binary's embedded catalog and the policy default route, so the line names the
+// route the --catalog profile resolves (D1, #458), so the line names the
 // routed pair its verdict answered about (which doctor used to discard) and the
 // note discloses that scope instead of implying a caller catalog or `--profile`
 // route was evaluated.
@@ -249,24 +249,24 @@ func TestDoctorNamesTheProbedRouteAndItsScope(t *testing.T) {
 	originalCheck := qaAssetCheck
 	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
 	qaAssetCheck = func(_ string) error { return nil }
-	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
-		return qapi.AvailabilityVerdict{Code: qaadmission.CodeModelUnavailable, Provider: "nan", Model: "glm5.3"}
+	qaBackendProbe = func(_ context.Context, _, _ string) qapi.AvailabilityVerdict {
+		return qapi.AvailabilityVerdict{Code: qaadmission.CodeModelUnavailable, Provider: "example-provider", Model: "example-model-b"}
 	}
-	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
-	for _, want := range []string{"qa_availability=model_unavailable", "qa_route_provider=nan qa_route_model=glm5.3"} {
+	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
+	for _, want := range []string{"qa_availability=model_unavailable", "qa_route_provider=example-provider qa_route_model=example-model-b"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line = %q, want it to name %q", line, want)
 		}
 	}
 	// A ready verdict names no pair, so the line must not invent one.
-	qaBackendProbe = func(_ context.Context, _ string) qapi.AvailabilityVerdict {
+	qaBackendProbe = func(_ context.Context, _, _ string) qapi.AvailabilityVerdict {
 		return qapi.AvailabilityVerdict{Available: true}
 	}
-	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true)
+	line = qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
 	if strings.Contains(line, "qa_route_provider") || strings.Contains(line, "qa_route_model") {
 		t.Fatalf("line = %q, want no claimed route pair for a ready verdict", line)
 	}
-	for _, want := range []string{"qa_route_scope=embedded_default_route", "never a caller catalog", "--profile"} {
+	for _, want := range []string{"qa_route_scope=catalog_profile_route", "--catalog profile", "route_incomplete", "never a --profile route"} {
 		if !strings.Contains(doctorScopeNote, want) {
 			t.Fatalf("doctor note = %q, want it to disclose %q", doctorScopeNote, want)
 		}
@@ -277,7 +277,7 @@ func TestQARouteSetupNoteNamesProfilePathAndShape(t *testing.T) {
 	note := qaRouteSetupNote("/home/user/fleet-catalog")
 	for _, want := range []string{
 		"route_setup=/home/user/fleet-catalog/cortex/qa-profiles.json",
-		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`,
+		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want it to contain %q", note, want)
@@ -336,6 +336,63 @@ func TestRunDoctorExplainsProbeAndOwnershipBoundary(t *testing.T) {
 	}
 }
 
+// D1 (#458): roles carry no default route, so doctor without a catalog
+// profile route probes nothing and reports route_incomplete with the
+// cortex qa setup remedy, through the production probe.
+func TestDoctorWithoutAProfileRouteReportsRouteIncomplete(t *testing.T) {
+	originalCheck := qaAssetCheck
+	t.Cleanup(func() { qaAssetCheck = originalCheck })
+	qaAssetCheck = func(_ string) error { t.Fatal("asset check ran without a route"); return nil }
+	catalogRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args   []string
+		remedy string
+	}{
+		{[]string{"doctor"}, "<catalog-root>"},
+		{[]string{"doctor", "--catalog", catalogRoot}, catalogRoot},
+	} {
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		if code := Run(context.Background(), tc.args, stdout, stderr, certifiedRunner()); code != exitOK {
+			t.Fatalf("%v = %d, stderr %q", tc.args, code, stderr.String())
+		}
+		want := "runtime=pi presence=present compatibility=compatible action=configure touch=denied qa_backend=pi qa_identity=named qa_probe_role=requirements-analyst qa_availability=route_incomplete remedy=cortex qa setup --catalog " + tc.remedy + " --backend pi --provider <p> --model <m>\n"
+		if !strings.HasPrefix(stdout.String(), want) || stderr.Len() != 0 {
+			t.Fatalf("%v = (%q, %q), want prefix %q", tc.args, stdout.String(), stderr.String(), want)
+		}
+	}
+}
+
+// With --catalog, doctor probes the route that catalog's profile resolves.
+func TestDoctorProbesTheCatalogProfileRoute(t *testing.T) {
+	var catalogs []string
+	original, originalCheck := qaBackendProbe, qaAssetCheck
+	t.Cleanup(func() { qaBackendProbe, qaAssetCheck = original, originalCheck })
+	qaAssetCheck = func(_ string) error { return nil }
+	qaBackendProbe = func(_ context.Context, _, catalogRoot string) qapi.AvailabilityVerdict {
+		catalogs = append(catalogs, catalogRoot)
+		return qapi.AvailabilityVerdict{Available: true}
+	}
+	catalogRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Run(context.Background(), []string{"doctor", "--catalog", catalogRoot}, stdout, stderr, certifiedRunner()); code != exitOK {
+		t.Fatalf("doctor = %d, stderr %q", code, stderr.String())
+	}
+	if len(catalogs) != 3 || catalogs[0] != catalogRoot || catalogs[1] != catalogRoot || catalogs[2] != catalogRoot {
+		t.Fatalf("probed catalogs = %q, want %q for every present runtime", catalogs, catalogRoot)
+	}
+	for _, args := range [][]string{{"doctor", "--catalog"}, {"doctor", "--catalog", catalogRoot, "--target-dir", catalogRoot}} {
+		if code := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}, certifiedRunner()); code != exitUsage {
+			t.Fatalf("%v = %d, want usage", args, code)
+		}
+	}
+}
+
 // TestDoctorDoesNotProbeAbsentRuntimes pins doctor's subprocess bound. An
 // absent runtime has nothing to ask, and "not_probed" is the absence of a
 // claim rather than a claim of unavailability.
@@ -345,7 +402,7 @@ func TestDoctorDoesNotProbeAbsentRuntimes(t *testing.T) {
 	originalAssetCheck := qaAssetCheck
 	qaAssetCheck = func(_ string) error { return nil }
 	t.Cleanup(func() { qaAssetCheck = originalAssetCheck })
-	qaBackendProbe = func(_ context.Context, backend string) qapi.AvailabilityVerdict {
+	qaBackendProbe = func(_ context.Context, backend, _ string) qapi.AvailabilityVerdict {
 		probed = append(probed, backend)
 		return qapi.AvailabilityVerdict{Available: true}
 	}

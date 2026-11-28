@@ -245,6 +245,22 @@ includes the system temporary directory: `/tmp` is a symlink to `/private/tmp`, 
 a catalog under `/tmp/...` is refused until it is addressed through its canonical
 `/private/tmp/...` path (`cd` into it and use `pwd -P`).
 
+## See the effective QA routes
+
+`cortex qa routes --catalog <dir> [--profile <id>]` prints one line per role and
+backend (`pi`, `claude`, `opencode`), in role-registry order, and exits 0:
+
+```text
+role=test-runner backend=claude provider=acme model=m1 effort=low source=profile:mine
+```
+
+`source` is `profile:<id>` when the profile defines the route, `role-default` when
+no profile file exists and the policy default applies, or `unset` (with `-` for
+provider, model and effort) when the profile has no route for that role and
+backend. It reads through the same resolution `qa run` uses and writes nothing; a
+missing or invalid profile ends in the same `profile_invalid` diagnostic and exit
+code as `qa run`.
+
 ## Read a qa run refusal
 
 A `qa run` refusal names the preflight question that refused it (#374), using one
@@ -322,7 +338,7 @@ run looks like, and where it currently stops:
    when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run
-   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]`.
+   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>] [--role <role-id>]`.
    On a machine whose pi backend is unavailable, pass `--backend claude` or
    `--backend opencode`; without `--backend` the route is written for `pi`. Relative and
    absolute roots are both accepted: the command resolves the path before it writes,
@@ -335,7 +351,12 @@ run looks like, and where it currently stops:
    running it once per backend routes the whole fleet on each (#328). Only the `pi`
    pair is checked against the runtime's model table at setup; a `claude` or
    `opencode` pair is written as given and an unavailable model is refused at the
-   run's `model_probe` preflight. `--effort` defaults to `high`.
+   run's `model_probe` preflight. `--effort` defaults to `high`. Pass `--role <role-id>`
+   to write only that role's route for the selected backend: every other role, every
+   other backend route, and the rest of the profile are preserved, so roles can be
+   routed to different models (#453). An unknown role is refused with
+   `error=unknown_role`, the valid role ids are listed, and the profile is left
+   unchanged. Without `--role` all roles are written as above.
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh

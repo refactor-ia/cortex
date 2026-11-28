@@ -152,7 +152,14 @@ func fakePi() int {
 			fmt.Print(`{"status":"not_ready","reason":"credential unavailable"}` + "\n")
 			return 1
 		}
-		fmt.Print(`{"status":"ready","provider":"nan","authType":"api_key"}` + "\n")
+		// The real Pi answers about the provider it was asked for (issue #452).
+		provider := "nan"
+		for index := 1; index+1 < len(os.Args); index++ {
+			if os.Args[index] == "--provider" {
+				provider = os.Args[index+1]
+			}
+		}
+		fmt.Printf(`{"status":"ready","provider":%q,"authType":"api_key"}`+"\n", provider)
 		return 0
 	}
 	switch scenario, err := os.ReadFile("qa-report-scenario"); {
@@ -457,7 +464,7 @@ func TestQAHelpDocumentsEvidenceSidecarSchema(t *testing.T) {
 }
 
 func TestQAHelpDocumentsSetupBackendLikeSetupUsage(t *testing.T) {
-	const setupLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n"
+	const setupLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>] [--role <role-id>]\n"
 	help, helpErr := &bytes.Buffer{}, &bytes.Buffer{}
 	if code := Run(context.Background(), []string{"qa", "--help"}, help, helpErr, nil); code != exitOK || helpErr.Len() != 0 {
 		t.Fatalf("qa --help exit=%d stderr=%q", code, helpErr)

@@ -272,3 +272,24 @@ func TestResponseUpdateShape(t *testing.T) {
 		})
 	}
 }
+
+// Issue #466: classification compares the observed provider with the resolved
+// route provider; no provider is privileged.
+func TestResponseClassificationFollowsResolvedRoute(t *testing.T) {
+	binding := inputBinding(qarole.RequirementsAnalyst)
+	binding.Route.Provider, binding.Route.Model = "openai-codex", "gpt-5.6-terra"
+	binding.Route.ProfileID, binding.Route.ProfileSHA256 = "terra", strings.Repeat("e", 64)
+	routed := bytes.ReplaceAll(responseFixture(t), []byte(`"provider":"nan"`), []byte(`"provider":"openai-codex"`))
+	routed = bytes.ReplaceAll(routed, []byte(`"model":"qwen3.6"`), []byte(`"model":"gpt-5.6-terra"`))
+	routed = replaceResult(t, routed, inputBinding(qarole.RequirementsAnalyst), func(text string) string {
+		original, _ := json.Marshal(resultFor(binding))
+		return string(original)
+	})
+	if got := normalizeResponse(runFacts{stdout: routed}, binding); got.code != "" || got.provider != "openai-codex" || got.model != "gpt-5.6-terra" {
+		t.Fatalf("matching route = %#v, want admitted", got)
+	}
+	other := bytes.ReplaceAll(routed, []byte(`"provider":"openai-codex"`), []byte(`"provider":"nan"`))
+	if got := normalizeResponse(runFacts{stdout: other}, binding); got.code != qaadmission.CodeNonNaNRoute {
+		t.Fatalf("provider differs from route = %#v, want %q", got, qaadmission.CodeNonNaNRoute)
+	}
+}

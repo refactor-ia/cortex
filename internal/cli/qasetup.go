@@ -51,6 +51,17 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if _, admitted := qaroute.RuntimeFor(backend); !admitted {
 		return qaSetupUsage(stderr)
 	}
+	// --role narrows the write to one fleet role (#453); an unknown id is
+	// refused before anything is probed or written.
+	role, roleSet := values["--role"]
+	if roleSet && !knownQARole(role) {
+		writeError(stderr, "unknown_role")
+		_, _ = fmt.Fprintf(stderr, "role=%s\nvalid roles:\n", role)
+		for _, contract := range qarole.Catalog() {
+			_, _ = fmt.Fprintf(stderr, "%s\n", contract.ID)
+		}
+		return exitUsage
+	}
 	catalogRoot, err := filepath.Abs(catalog)
 	if err != nil {
 		writeError(stderr, "setup_failed")
@@ -90,6 +101,16 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			return exitFailure
 		}
 	}
+	if roleSet {
+		if err := writeQAProfileRole(catalogRoot, role, backend, provider, model, effort); err != nil {
+			writeError(stderr, "setup_failed")
+			_, _ = fmt.Fprintf(stderr, "%v\n", err)
+			return exitFailure
+		}
+		_, _ = fmt.Fprintf(stdout, "qa route profile written to %s (role %s -> %s: %s/%s effort=%s)\n",
+			filepath.Join(catalogRoot, "cortex", "qa-profiles.json"), role, backend, provider, model, effort)
+		return exitOK
+	}
 	if err := writeQAProfile(catalogRoot, backend, provider, model, effort); err != nil {
 		writeError(stderr, "setup_failed")
 		_, _ = fmt.Fprintf(stderr, "%v\n", err)
@@ -102,7 +123,7 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 
 // qaSetupUsageLine is the single setup usage line shared by the setup refusal
 // and qa --help, so both surfaces name --backend identically (#336).
-const qaSetupUsageLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]\n"
+const qaSetupUsageLine = "usage: cortex qa setup --catalog <dir> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>] [--role <role-id>]\n"
 
 func qaSetupUsage(stderr io.Writer) int {
 	writeError(stderr, "invalid_arguments")
@@ -164,6 +185,61 @@ func writeQAProfile(catalog, backend, provider, model, effort string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(directory, "qa-profiles.json"), append(encoded, '\n'), 0o600)
+}
+
+func knownQARole(role string) bool {
+	for _, contract := range qarole.Catalog() {
+		if string(contract.ID) == role {
+			return true
+		}
+	}
+	return false
+}
+
+// writeQAProfileRole sets one role's route for one backend in the existing
+// user-owned profile and preserves everything else in the file: other roles,
+// other backends, other profiles and unknown fields (#453). A missing profile
+// starts as the qa-fleet profile writeQAProfile would create.
+func writeQAProfileRole(catalog, role, backend, provider, model, effort string) error {
+	path := filepath.Join(catalog, "cortex", "qa-profiles.json")
+	document := map[string]any{}
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(existing, &document); err != nil {
+			return fmt.Errorf("existing profile %s is not valid JSON: %w", path, err)
+		}
+	case os.IsNotExist(err):
+		document = map[string]any{"schemaVersion": 1, "defaultProfile": "qa-fleet"}
+	default:
+		return err
+	}
+	name, _ := document["defaultProfile"].(string)
+	if name == "" {
+		return fmt.Errorf("existing profile %s has no defaultProfile", path)
+	}
+	profiles := qaJSONObject(document, "profiles")
+	routes := qaJSONObject(qaJSONObject(profiles, name), "routes")
+	qaJSONObject(routes, role)[backend] = map[string]any{"provider": provider, "model": model, "effort": effort}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(encoded, '\n'), 0o600)
+}
+
+// qaJSONObject returns parent[key] as an object, creating it when absent or
+// not an object.
+func qaJSONObject(parent map[string]any, key string) map[string]any {
+	if child, ok := parent[key].(map[string]any); ok {
+		return child
+	}
+	child := map[string]any{}
+	parent[key] = child
+	return child
 }
 
 type qaProfileRoute struct {

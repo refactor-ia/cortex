@@ -63,17 +63,21 @@ func TestProbeAuth(t *testing.T) {
 		{"not ready with source reason is not ready", authInput([]byte(`{"status":"not_ready","reason":"credential unavailable"}`), 1), false, qaadmission.CodeAuthNotReady},
 		{"not ready wrong exit fails normalization", authInput([]byte(`{"status":"not_ready","reason":"credential unavailable"}`), 0), false, qaadmission.CodeNormalizationFailed},
 		{"wrong provider fails normalization", authInput([]byte(`{"status":"ready","provider":"other","authType":"api_key"}`), 0), false, qaadmission.CodeNormalizationFailed},
-		{"unknown auth type fails normalization", authInput([]byte(`{"status":"ready","provider":"nan","authType":"oauth"}`), 0), false, qaadmission.CodeNormalizationFailed},
+		{"unknown auth type fails normalization", authInput([]byte(`{"status":"ready","provider":"nan","authType":"token"}`), 0), false, qaadmission.CodeNormalizationFailed},
 		{"invalid status fails normalization", authInput([]byte(`{"status":"invalid","reason":"invalid credential"}`), 2), false, qaadmission.CodeNormalizationFailed},
-		{"missing no refresh evidence fails normalization", AuthProbeInput{Stdout: ready, Complete: true, ExitCode: 0}, false, qaadmission.CodeNormalizationFailed},
+		{"missing no refresh evidence fails normalization", AuthProbeInput{Provider: "nan", Stdout: ready, Complete: true, ExitCode: 0}, false, qaadmission.CodeNormalizationFailed},
 		{"duplicate JSON key fails normalization", authInput([]byte(`{"status":"ready","status":"ready","provider":"nan","authType":"api_key"}`), 0), false, qaadmission.CodeNormalizationFailed},
 		{"unknown JSON field fails normalization", authInput([]byte(`{"status":"ready","provider":"nan","authType":"api_key","extra":"x"}`), 0), false, qaadmission.CodeNormalizationFailed},
 		{"trailing JSON fails normalization", authInput(append(append([]byte{}, ready...), []byte(` {}`)...), 0), false, qaadmission.CodeNormalizationFailed},
 		{"primitive JSON fails normalization", authInput([]byte(`true`), 0), false, qaadmission.CodeNormalizationFailed},
 		{"invalid UTF-8 fails normalization", authInput([]byte{0xff}, 0), false, qaadmission.CodeNormalizationFailed},
 		{"overflow fails normalization", authInput(bytes.Repeat([]byte("x"), maxAuthOutputBytes+1), 0), false, qaadmission.CodeNormalizationFailed},
-		{"truncated capture fails normalization", AuthProbeInput{Stdout: ready, ExitCode: 0, NoRefresh: true}, false, qaadmission.CodeNormalizationFailed},
+		{"truncated capture fails normalization", AuthProbeInput{Provider: "nan", Stdout: ready, ExitCode: 0, NoRefresh: true}, false, qaadmission.CodeNormalizationFailed},
 		{"silent output fails normalization", authInput(nil, 0), false, qaadmission.CodeNormalizationFailed},
+		{"oauth ready for the route provider passes", routeAuthInput("openai-codex", []byte(`{"status":"ready","provider":"openai-codex","authType":"oauth"}`), 0), true, ""},
+		{"ready for another provider than the route fails normalization", routeAuthInput("openai-codex", ready, 0), false, qaadmission.CodeNormalizationFailed},
+		{"not ready for the route provider is not ready", routeAuthInput("openai-codex", []byte(`{"status":"not_ready","provider":"openai-codex","reason":"credentials_not_configured"}`), 1), false, qaadmission.CodeAuthNotReady},
+		{"missing route provider fails normalization", AuthProbeInput{Stdout: ready, Complete: true, NoRefresh: true}, false, qaadmission.CodeNormalizationFailed},
 	}
 
 	for _, tt := range tests {
@@ -91,7 +95,11 @@ func modelInput(stdout []byte) ModelProbeInput {
 }
 
 func authInput(stdout []byte, exitCode int) AuthProbeInput {
-	return AuthProbeInput{Stdout: stdout, ExitCode: exitCode, Complete: true, NoRefresh: true}
+	return routeAuthInput("nan", stdout, exitCode)
+}
+
+func routeAuthInput(provider string, stdout []byte, exitCode int) AuthProbeInput {
+	return AuthProbeInput{Provider: provider, Stdout: stdout, ExitCode: exitCode, Complete: true, NoRefresh: true}
 }
 
 func readProbeFixture(t *testing.T, name string) []byte {

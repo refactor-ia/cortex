@@ -29,7 +29,9 @@ type ModelProbeInput struct {
 }
 
 // AuthProbeInput is one complete, bounded no-refresh auth capture.
+// Provider is the resolved route provider the capture was asked about.
 type AuthProbeInput struct {
+	Provider  string
 	Stdout    []byte
 	ExitCode  int
 	Complete  bool
@@ -95,9 +97,11 @@ func parseModelTable(table string) (map[string]bool, bool) {
 	return rows, true
 }
 
-// ProbeAuth parses one complete Pi 0.85.1 no-refresh auth-status document.
+// ProbeAuth parses one complete Pi 0.85.1 no-refresh auth-status document for
+// the route provider. Pi reports api_key or oauth credentials; a document about
+// any other provider than the one asked for is not an answer (issue #452).
 func ProbeAuth(input AuthProbeInput) AuthProbeResult {
-	if !input.NoRefresh || !input.Complete || len(input.Stdout) == 0 || len(input.Stdout) > maxAuthOutputBytes || !utf8.Valid(input.Stdout) {
+	if input.Provider == "" || !input.NoRefresh || !input.Complete || len(input.Stdout) == 0 || len(input.Stdout) > maxAuthOutputBytes || !utf8.Valid(input.Stdout) {
 		return AuthProbeResult{Code: qaadmission.CodeNormalizationFailed}
 	}
 
@@ -107,15 +111,19 @@ func ProbeAuth(input AuthProbeInput) AuthProbeResult {
 	}
 	switch observed.status {
 	case "ready":
-		if input.ExitCode == 0 && observed.provider == "nan" && observed.authType == "api_key" && observed.reason == "" {
+		if input.ExitCode == 0 && observed.provider == input.Provider && knownAuthType(observed.authType) && observed.reason == "" {
 			return AuthProbeResult{Ready: true}
 		}
 	case "not_ready":
-		if input.ExitCode == 1 && observed.reason != "" && (observed.provider == "" || observed.provider == "nan") && (observed.authType == "" || observed.authType == "api_key") {
+		if input.ExitCode == 1 && observed.reason != "" && (observed.provider == "" || observed.provider == input.Provider) && (observed.authType == "" || knownAuthType(observed.authType)) {
 			return AuthProbeResult{Code: qaadmission.CodeAuthNotReady}
 		}
 	}
 	return AuthProbeResult{Code: qaadmission.CodeNormalizationFailed}
+}
+
+func knownAuthType(authType string) bool {
+	return authType == "api_key" || authType == "oauth"
 }
 
 type authObservation struct {
@@ -337,7 +345,7 @@ func AvailableModels(ctx context.Context, resolver PathResolver) (map[string]boo
 	if err != nil {
 		return nil, err
 	}
-	capture := runAvailabilityCommand(ctx, bound, availabilityModel)
+	capture := runAvailabilityCommand(ctx, bound, availabilityModel, "")
 	rows, valid := parseModelTable(string(capture.stdout))
 	if !valid {
 		return nil, fmt.Errorf("qa setup: runtime model table unreadable")

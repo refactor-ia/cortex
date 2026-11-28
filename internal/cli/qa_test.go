@@ -140,10 +140,10 @@ func fakePi() int {
 			return 0
 		}
 		fmt.Print("provider      model                context  max-out  thinking  images\n" +
-			"nan           qwen3.6              262.1K   16.4K    yes       no\n" +
-			"nan           glm5.3               262.1K   16.4K    yes       no\n" +
+			"example-provider           example-model              262.1K   16.4K    yes       no\n" +
+			"example-provider           example-model-b               262.1K   16.4K    yes       no\n" +
 			"openai-codex  gpt-5.6-terra        272.0K   128.0K   yes       yes\n" +
-			"nan           deepseek-v4-flash    262.1K   16.4K    yes       no\n")
+			"example-provider           example-model-c    262.1K   16.4K    yes       no\n")
 		return 0
 	}
 	if os.Args[1] == "auth" {
@@ -153,7 +153,7 @@ func fakePi() int {
 			return 1
 		}
 		// The real Pi answers about the provider it was asked for (issue #452).
-		provider := "nan"
+		provider := "example-provider"
 		for index := 1; index+1 < len(os.Args); index++ {
 			if os.Args[index] == "--provider" {
 				provider = os.Args[index+1]
@@ -175,7 +175,7 @@ func fakePi() int {
 			}
 			_, _ = f.WriteString("run\n")
 			_ = f.Close()
-			failed := `{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"error"}`
+			failed := `{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"error"}`
 			fmt.Print("{\"type\":\"agent_start\"}\n{\"type\":\"turn_start\"}\n")
 			fmt.Printf("{\"type\":\"message_start\",\"message\":%s}\n{\"type\":\"message_end\",\"message\":%s}\n{\"type\":\"turn_end\",\"message\":%s,\"toolResults\":[]}\n{\"type\":\"agent_end\",\"messages\":[%s],\"willRetry\":true}\n", failed, failed, failed, failed)
 			fmt.Print("{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"synthetic failure\"}\n{\"type\":\"entry_appended\",\"entry\":{\"type\":\"context_edit\",\"id\":\"edit\",\"parentId\":\"failed\",\"targetId\":\"failed\",\"timestamp\":\"fixture\",\"replacement\":null}}\n")
@@ -183,13 +183,13 @@ func fakePi() int {
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": fixtureReport}},
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		if !retrying {
 			fmt.Print(`{"type":"session","version":3,"id":"fixture","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n")
 		}
 		fmt.Print(`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
-			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
+			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}` + "\n")
 		fmt.Printf(`{"type":"message_end","message":%s}`+"\n", message)
 		if retrying {
 			fmt.Print("{\"type\":\"auto_retry_end\",\"attempt\":1,\"success\":true}\n")
@@ -203,11 +203,11 @@ func fakePi() int {
 		message, _ := json.Marshal(map[string]any{
 			"role":     "assistant",
 			"content":  []any{map[string]any{"type": "text", "text": "   "}},
-			"provider": "nan", "model": "qwen3.6", "stopReason": "stop",
+			"provider": "example-provider", "model": "example-model", "stopReason": "stop",
 		})
 		fmt.Printf(`{"type":"session","version":3,"id":"SENSITIVE-FIXTURE-MARKER","timestamp":"1970-01-01T00:00:00.000Z","cwd":"fixture"}` + "\n" +
 			`{"type":"agent_start"}` + "\n" + `{"type":"turn_start"}` + "\n" +
-			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}` + "\n")
+			`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}` + "\n")
 		fmt.Printf(`{"type":"message_end","message":%s}`+"\n"+`{"type":"turn_end","message":%s,"toolResults":[]}`+"\n", message, message)
 		fmt.Printf(`{"type":"agent_end","messages":[%s],"willRetry":false}`+"\n"+`{"type":"agent_settled"}`+"\n", message)
 		return 0
@@ -286,12 +286,12 @@ func reportFixture(t *testing.T) []string {
 // against. Roles carry no default route (D1, #458), so a fixture run reaches
 // them only through an owner profile.
 var qaFixtureRoutes = map[qarole.RoleID][3]string{
-	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
-	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
-	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
-	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
-	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
-	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
+	qarole.RequirementsAnalyst: {"example-provider", "example-model", "high"},
+	qarole.TestDesigner:        {"example-provider", "example-model", "high"},
+	qarole.ExploratoryTester:   {"example-provider", "example-model-b", "high"},
+	qarole.AdversarialTester:   {"example-provider", "example-model-c", "high"},
+	qarole.TestRunner:          {"example-provider", "example-model", "low"},
+	qarole.EvidenceAuditor:     {"example-provider", "example-model-b", "high"},
 }
 
 // qaRoutedCatalog copies the repository catalog under dir and stores one
@@ -521,7 +521,7 @@ func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
 	}
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "nan", "--model", "glm5.3", "--effort", "high"}
+	setup := []string{"qa", "setup", "--catalog", "catalog", "--provider", "example-provider", "--model", "example-model-b", "--effort", "high"}
 	if code := Run(context.Background(), setup, stdout, stderr, nil); code != exitOK {
 		t.Fatalf("relative qa setup exit = %d stderr = %q", code, stderr.String())
 	}
@@ -533,7 +533,7 @@ func TestQASetupAndRunAgreeOnARelativeCatalog(t *testing.T) {
 		t.Fatalf("relative qa run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
 	}
 	frame := must(os.ReadFile("qa-report-frame"))
-	for _, want := range []string{"route_profile qa-fleet", "route_model glm5.3", "route_backend pi"} {
+	for _, want := range []string{"route_profile qa-fleet", "route_model example-model-b", "route_backend pi"} {
 		if !bytes.Contains(frame, []byte(want)) {
 			t.Fatalf("relative catalog run ignored the profile setup wrote: frame lost %q", want)
 		}
@@ -726,7 +726,7 @@ func qaCatalogArgument(args []string) string {
 // file already there is still restored, never left mutated.
 func qaProfileFileFixture(t *testing.T, catalogRoot string, role qarole.RoleID) {
 	t.Helper()
-	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"nan","model":"qwen3.6","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
+	profile := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"%s":{"pi":{"provider":"example-provider","model":"example-model","effort":"low"}}}},"qa-fleet":{"routes":{"%s":{"pi":{"provider":"openai-codex","model":"gpt-5.6-terra","effort":"high"}}}}}}`, role, role)
 	qaProfileBodyFixture(t, catalogRoot, profile)
 }
 
@@ -788,7 +788,7 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 			t.Fatalf("default profile = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
 		}
 		frame := must(os.ReadFile("qa-report-frame"))
-		for _, want := range []string{"route_profile fleet-default", "route_model qwen3.6"} {
+		for _, want := range []string{"route_profile fleet-default", "route_model example-model"} {
 			if !bytes.Contains(frame, []byte(want)) {
 				t.Fatalf("frame does not carry %q: %q", want, frame)
 			}
@@ -1003,7 +1003,7 @@ func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 			args[index+1] = catalogRoot
 		}
 	}
-	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
+	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
 	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
 	stderr, code := runQARefusal(t, args)
 	if code != exitFailure || strings.Contains(stderr, "\x1b") {
@@ -1365,7 +1365,7 @@ func TestQARunModelUnavailableAnnouncesExtensionInvisibility(t *testing.T) {
 	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure {
 		t.Fatalf("model unavailable = %d", code)
 	}
-	for _, want := range []string{"route_provider=nan", "route_model=", "--no-extensions", "models.json"} {
+	for _, want := range []string{"route_provider=example-provider", "route_model=", "--no-extensions", "models.json"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}
@@ -1382,7 +1382,7 @@ func TestQARunAuthNotReadyNamesTheLoginRemedy(t *testing.T) {
 	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitFailure {
 		t.Fatalf("auth not ready = %d", code)
 	}
-	for _, want := range []string{"route_provider=nan", "login"} {
+	for _, want := range []string{"route_provider=example-provider", "login"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}

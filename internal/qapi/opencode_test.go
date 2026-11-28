@@ -36,7 +36,7 @@ func TestOpenCodeBackendIdentity(t *testing.T) {
 // isolation token and is asserted verbatim: without it the invoking operator's
 // external plugins load and inject context into the run.
 func TestOpenCodeArgvContract(t *testing.T) {
-	want := []string{"run", "--format", "json", "--pure", "-m", "nan/qwen3.6"}
+	want := []string{"run", "--format", "json", "--pure", "-m", "example-provider/example-model"}
 	if got := openCodeArgv(availabilityRoute(opencodeBackendID)); !slices.Equal(got, want) {
 		t.Fatalf("opencode argv = %q, want %q", got, want)
 	}
@@ -47,11 +47,11 @@ func TestOpenCodeArgvContract(t *testing.T) {
 // never decide which model answers.
 func TestOpenCodeArgvCarriesTheResolvedModel(t *testing.T) {
 	route := availabilityRoute(opencodeBackendID)
-	route.Provider, route.Model = "nan", "glm5.3"
+	route.Provider, route.Model = "example-provider", "example-model-b"
 	argv := openCodeArgv(route)
 	index := slices.Index(argv, "-m")
-	if index < 0 || index+1 >= len(argv) || argv[index+1] != "nan/glm5.3" {
-		t.Fatalf("opencode argv = %q, want -m nan/glm5.3", argv)
+	if index < 0 || index+1 >= len(argv) || argv[index+1] != "example-provider/example-model-b" {
+		t.Fatalf("opencode argv = %q, want -m example-provider/example-model-b", argv)
 	}
 }
 

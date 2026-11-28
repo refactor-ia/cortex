@@ -78,8 +78,8 @@ func TestBuildInvocationRejectsInvalidInput(t *testing.T) {
 		binding BoundInvocationPaths
 	}{
 		{"unbound paths", resolvedRoute(t, qarole.RequirementsAnalyst), BoundInvocationPaths{}},
-		{"invalid role route", qaroute.ResolvedRoute{Role: "unknown", Backend: "pi", Provider: "nan", Model: "qwen3.6", Effort: "high", PolicyVersion: qaroute.PolicyVersion}, valid()},
-		{"invalid route model", qaroute.ResolvedRoute{Role: qarole.RequirementsAnalyst, Backend: "pi", Provider: "nan", Model: "glm5.3", Effort: "high", PolicyVersion: qaroute.PolicyVersion}, valid()},
+		{"invalid role route", qaroute.ResolvedRoute{Role: "unknown", Backend: "pi", Provider: "example-provider", Model: "example-model", Effort: "high", PolicyVersion: qaroute.PolicyVersion}, valid()},
+		{"invalid route model", qaroute.ResolvedRoute{Role: qarole.RequirementsAnalyst, Backend: "pi", Provider: "example-provider", Model: "example-model-b", Effort: "high", PolicyVersion: qaroute.PolicyVersion}, valid()},
 		{"route does not match bound role", resolvedRoute(t, qarole.TestRunner), valid()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,12 +120,12 @@ func TestBuildInvocationAcceptsAFullOverrideRoleDefaultRoute(t *testing.T) {
 // written against. Roles carry no default route (D1, #458), so fixtures reach
 // them only through an owner profile.
 var fixtureRoutes = map[qarole.RoleID][3]string{
-	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
-	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
-	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
-	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
-	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
-	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
+	qarole.RequirementsAnalyst: {"example-provider", "example-model", "high"},
+	qarole.TestDesigner:        {"example-provider", "example-model", "high"},
+	qarole.ExploratoryTester:   {"example-provider", "example-model-b", "high"},
+	qarole.AdversarialTester:   {"example-provider", "example-model-c", "high"},
+	qarole.TestRunner:          {"example-provider", "example-model", "low"},
+	qarole.EvidenceAuditor:     {"example-provider", "example-model-b", "high"},
 }
 
 // fixtureResolve resolves one role's fixture route through a profile snapshot.

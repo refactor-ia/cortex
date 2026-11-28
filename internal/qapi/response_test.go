@@ -25,9 +25,9 @@ func TestResponseTransport(t *testing.T) {
 		{"control character", append([]byte{'\x01'}, valid...)},
 		{"duplicate key", bytes.Replace(valid, []byte(`{"type":"agent_start"}`), []byte(`{"type":"agent_start","type":"agent_start"}`), 1)},
 		{"unknown event", bytes.Replace(valid, []byte(`{"type":"agent_start"}`), []byte(`{"type":"other"}`), 1)},
-		{"reordered event", bytes.Replace(valid, []byte(`{"type":"turn_start"}`), []byte(`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"nan","model":"qwen3.6","stopReason":"pending"}}`), 1)},
+		{"reordered event", bytes.Replace(valid, []byte(`{"type":"turn_start"}`), []byte(`{"type":"message_start","message":{"role":"assistant","content":[],"provider":"example-provider","model":"example-model","stopReason":"pending"}}`), 1)},
 		{"tool update", bytes.Replace(valid, []byte(`{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x"}}`), []byte(`{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":0,"id":"x","toolName":"read"}}`), 1)},
-		{"duplicate end", bytes.Replace(valid, []byte(`{"type":"turn_end"`), []byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{}"}],"provider":"nan","model":"qwen3.6","stopReason":"stop"}}\n{"type":"turn_end"`), 1)},
+		{"duplicate end", bytes.Replace(valid, []byte(`{"type":"turn_end"`), []byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{}"}],"provider":"example-provider","model":"example-model","stopReason":"stop"}}\n{"type":"turn_end"`), 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := normalizeResponse(runFacts{stdout: tc.stream}, inputBinding(qarole.RequirementsAnalyst)); got.code != qaadmission.CodeNormalizationFailed {
@@ -63,10 +63,10 @@ func TestResponseTerminalAndProcessPrecedence(t *testing.T) {
 		t.Fatalf("optional transport events = %#v", got)
 	}
 	got := normalizeResponse(runFacts{stdout: valid, stderr: []byte("Authorization: Bearer abcdefgh")}, binding)
-	if got.code != "" || got.provider != "nan" || got.model != "qwen3.6" || got.stopReason != "stop" || got.diagnostic == nil || got.diagnostic.Redaction != "authorization-bearer" {
+	if got.code != "" || got.provider != "example-provider" || got.model != "example-model" || got.stopReason != "stop" || got.diagnostic == nil || got.diagnostic.Redaction != "authorization-bearer" {
 		t.Fatalf("terminal outcome = %#v", got)
 	}
-	mismatch := bytes.Replace(valid, []byte(`"model":"qwen3.6","stopReason":"stop"},"toolResults"`), []byte(`"model":"other","stopReason":"stop"},"toolResults"`), 1)
+	mismatch := bytes.Replace(valid, []byte(`"model":"example-model","stopReason":"stop"},"toolResults"`), []byte(`"model":"other","stopReason":"stop"},"toolResults"`), 1)
 	if got := normalizeResponse(runFacts{stdout: mismatch}, binding); got.code != qaadmission.CodeNormalizationFailed {
 		t.Fatalf("turn mismatch = %#v", got)
 	}
@@ -126,19 +126,19 @@ func TestResponseSemanticClassification(t *testing.T) {
 		code qaadmission.Code
 	}{
 		{"non NaN", func(data []byte) []byte {
-			return bytes.ReplaceAll(data, []byte(`"provider":"nan"`), []byte(`"provider":"other"`))
+			return bytes.ReplaceAll(data, []byte(`"provider":"example-provider"`), []byte(`"provider":"other"`))
 		}, qaadmission.CodeNonNaNRoute},
 		{"terminal model", func(data []byte) []byte {
-			return bytes.ReplaceAll(data, []byte(`"model":"qwen3.6"`), []byte(`"model":"other"`))
+			return bytes.ReplaceAll(data, []byte(`"model":"example-model"`), []byte(`"model":"other"`))
 		}, qaadmission.CodeObservedIdentityMismatch},
 		{"tool content", responseToolContent, qaadmission.CodePolicyViolation},
 		{"multiple categories", func(data []byte) []byte {
-			data = bytes.ReplaceAll(data, []byte(`"provider":"nan"`), []byte(`"provider":"other"`))
-			return bytes.ReplaceAll(data, []byte(`"model":"qwen3.6"`), []byte(`"model":"other"`))
+			data = bytes.ReplaceAll(data, []byte(`"provider":"example-provider"`), []byte(`"provider":"other"`))
+			return bytes.ReplaceAll(data, []byte(`"model":"example-model"`), []byte(`"model":"other"`))
 		}, qaadmission.CodeNormalizationFailed},
 		{"non NaN and distinct echo", func(data []byte) []byte {
 			return replaceResult(t, data, binding, func(text string) string {
-				text = strings.Replace(text, `"route_provider":"nan"`, `"route_provider":"other"`, 1)
+				text = strings.Replace(text, `"route_provider":"example-provider"`, `"route_provider":"other"`, 1)
 				return strings.Replace(text, `"role":"requirements-analyst"`, `"role":"test-runner"`, 1)
 			})
 		}, qaadmission.CodeNormalizationFailed},
@@ -279,8 +279,8 @@ func TestResponseClassificationFollowsResolvedRoute(t *testing.T) {
 	binding := inputBinding(qarole.RequirementsAnalyst)
 	binding.Route.Provider, binding.Route.Model = "openai-codex", "gpt-5.6-terra"
 	binding.Route.ProfileID, binding.Route.ProfileSHA256 = "terra", strings.Repeat("e", 64)
-	routed := bytes.ReplaceAll(responseFixture(t), []byte(`"provider":"nan"`), []byte(`"provider":"openai-codex"`))
-	routed = bytes.ReplaceAll(routed, []byte(`"model":"qwen3.6"`), []byte(`"model":"gpt-5.6-terra"`))
+	routed := bytes.ReplaceAll(responseFixture(t), []byte(`"provider":"example-provider"`), []byte(`"provider":"openai-codex"`))
+	routed = bytes.ReplaceAll(routed, []byte(`"model":"example-model"`), []byte(`"model":"gpt-5.6-terra"`))
 	routed = replaceResult(t, routed, inputBinding(qarole.RequirementsAnalyst), func(text string) string {
 		original, _ := json.Marshal(resultFor(binding))
 		return string(original)
@@ -288,7 +288,7 @@ func TestResponseClassificationFollowsResolvedRoute(t *testing.T) {
 	if got := normalizeResponse(runFacts{stdout: routed}, binding); got.code != "" || got.provider != "openai-codex" || got.model != "gpt-5.6-terra" {
 		t.Fatalf("matching route = %#v, want admitted", got)
 	}
-	other := bytes.ReplaceAll(routed, []byte(`"provider":"openai-codex"`), []byte(`"provider":"nan"`))
+	other := bytes.ReplaceAll(routed, []byte(`"provider":"openai-codex"`), []byte(`"provider":"example-provider"`))
 	if got := normalizeResponse(runFacts{stdout: other}, binding); got.code != qaadmission.CodeNonNaNRoute {
 		t.Fatalf("provider differs from route = %#v, want %q", got, qaadmission.CodeNonNaNRoute)
 	}

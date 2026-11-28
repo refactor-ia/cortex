@@ -3,7 +3,7 @@ binary=/synthetic/bin/pi
 cwd=/synthetic/worktree
 argv:
 --model
-nan/qwen3.6
+example-provider/example-model
 --thinking
 high
 --append-system-prompt

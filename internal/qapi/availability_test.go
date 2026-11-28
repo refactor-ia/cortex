@@ -69,7 +69,7 @@ func TestProbeClaudeAuth(t *testing.T) {
 }
 
 // TestProbeOpenCodeModel reads the two committed `opencode models` captures.
-// The authenticated capture lists the route's nan models; the unauthenticated
+// The authenticated capture lists the route's nan models (a real capture, kept verbatim); the unauthenticated
 // one lists only the provider-free models, which is what makes this command an
 // honest answer to "can this install reach the resolved route".
 func TestProbeOpenCodeModel(t *testing.T) {
@@ -87,12 +87,12 @@ func TestProbeOpenCodeModel(t *testing.T) {
 		{"absent model is unavailable", BackendProbeInput{Stdout: available, Complete: true}, "nan", "qwen9.9-absent", false, qaadmission.CodeModelUnavailable},
 		{"wrong provider does not match", BackendProbeInput{Stdout: available, Complete: true}, "openai", "qwen3.6", false, qaadmission.CodeModelUnavailable},
 		{"duplicate row fails normalization", BackendProbeInput{Stdout: append(append([]byte{}, available...), []byte("nan/qwen3.6\n")...), Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
-		{"unqualified row fails normalization", BackendProbeInput{Stdout: []byte("qwen3.6\n"), Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
-		{"unterminated capture fails normalization", BackendProbeInput{Stdout: []byte("nan/qwen3.6"), Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
+		{"unqualified row fails normalization", BackendProbeInput{Stdout: []byte("example-model\n"), Complete: true}, "example-provider", "example-model", false, qaadmission.CodeNormalizationFailed},
+		{"unterminated capture fails normalization", BackendProbeInput{Stdout: []byte("example-provider/example-model"), Complete: true}, "example-provider", "example-model", false, qaadmission.CodeNormalizationFailed},
 		{"nonzero exit fails normalization", BackendProbeInput{Stdout: available, ExitCode: 1, Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
 		{"truncated capture fails normalization", BackendProbeInput{Stdout: available}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
-		{"invalid UTF-8 fails normalization", BackendProbeInput{Stdout: []byte{0xff}, Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
-		{"silent output fails normalization", BackendProbeInput{Complete: true}, "nan", "qwen3.6", false, qaadmission.CodeNormalizationFailed},
+		{"invalid UTF-8 fails normalization", BackendProbeInput{Stdout: []byte{0xff}, Complete: true}, "example-provider", "example-model", false, qaadmission.CodeNormalizationFailed},
+		{"silent output fails normalization", BackendProbeInput{Complete: true}, "example-provider", "example-model", false, qaadmission.CodeNormalizationFailed},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -165,7 +165,7 @@ func completeCapture(stdout []byte, exitCode int) probeCapture {
 func availabilityRoute(backend string) qaroute.ResolvedRoute {
 	return qaroute.ResolvedRoute{
 		PolicyVersion: qaroute.PolicyVersion, Role: qarole.RequirementsAnalyst, Backend: backend,
-		Provider: "nan", Model: "qwen3.6", Effort: "high", ProfileID: "role-default",
+		Provider: "example-provider", Model: "example-model", Effort: "high", ProfileID: "role-default",
 	}
 }
 
@@ -184,8 +184,8 @@ func availabilityCWD(t *testing.T) string {
 func TestPiAvailabilityProbeIsUnchanged(t *testing.T) {
 	cwd := availabilityCWD(t)
 	recorder := &probeRecorder{captures: []probeCapture{
-		completeCapture([]byte(modelTableHeader+"\nnan           qwen3.6              1        1        yes       no\n"), 0),
-		completeCapture([]byte(`{"status":"ready","provider":"nan","authType":"api_key"}`+"\n"), 0),
+		completeCapture([]byte(modelTableHeader+"\nexample-provider           example-model              1        1        yes       no\n"), 0),
+		completeCapture([]byte(`{"status":"ready","provider":"example-provider","authType":"api_key"}`+"\n"), 0),
 	}}
 	recorder.install(t)
 	bound := boundPi{path: filepath.Join(cwd, "pi"), cwd: cwd, version: PiSDKVersion, versionCapture: successfulVersion()}
@@ -195,7 +195,7 @@ func TestPiAvailabilityProbeIsUnchanged(t *testing.T) {
 	}
 	want := [][]string{
 		{"--list-models", "--no-extensions"},
-		{"auth", "check", "--provider", "nan", "--json", "--no-refresh"},
+		{"auth", "check", "--provider", "example-provider", "--json", "--no-refresh"},
 	}
 	if len(recorder.issued) != len(want) {
 		t.Fatalf("issued %d probe commands, want %d: %v", len(recorder.issued), len(want), recorder.issued)
@@ -270,6 +270,9 @@ func TestClaudeAvailabilityProbe(t *testing.T) {
 // issues before a run, in order, and the verdict each capture produces.
 func TestOpenCodeAvailabilityProbe(t *testing.T) {
 	cwd := availabilityCWD(t)
+	// The committed captures are real `opencode models` output listing nan/* models.
+	route := availabilityRoute(opencodeBackendID)
+	route.Provider, route.Model = "nan", "qwen3.6"
 	bound := boundOpenCode{executable: executableIdentity{path: filepath.Join(cwd, "opencode")}, cwd: cwd, version: opencodeFixtureVersion}
 	t.Run("available", func(t *testing.T) {
 		recorder := &probeRecorder{captures: []probeCapture{
@@ -277,7 +280,7 @@ func TestOpenCodeAvailabilityProbe(t *testing.T) {
 			completeCapture(openCodeFixture(t, "auth", "credentials-present.txt"), 0),
 		}}
 		recorder.install(t)
-		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, availabilityRoute(opencodeBackendID))
+		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, route)
 		if !verdict.Available || verdict.Code != "" {
 			t.Fatalf("verdict = %#v", verdict)
 		}
@@ -299,7 +302,7 @@ func TestOpenCodeAvailabilityProbe(t *testing.T) {
 	t.Run("model unavailable stops before the auth probe", func(t *testing.T) {
 		recorder := &probeRecorder{captures: []probeCapture{completeCapture(openCodeFixture(t, "models", "unavailable.txt"), 0)}}
 		recorder.install(t)
-		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, availabilityRoute(opencodeBackendID))
+		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, route)
 		if verdict.Available || verdict.Code != qaadmission.CodeModelUnavailable {
 			t.Fatalf("verdict = %#v", verdict)
 		}
@@ -313,7 +316,7 @@ func TestOpenCodeAvailabilityProbe(t *testing.T) {
 			completeCapture(openCodeFixture(t, "auth", "credentials-absent.txt"), 0),
 		}}
 		recorder.install(t)
-		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, availabilityRoute(opencodeBackendID))
+		verdict := NewOpenCodeBackend(nil).ProbeAvailability(context.Background(), bound, route)
 		if verdict.Available || verdict.Code != qaadmission.CodeAuthNotReady {
 			t.Fatalf("verdict = %#v", verdict)
 		}

@@ -109,7 +109,8 @@ func validateRoute(receipt Receipt) error {
 		return fmt.Errorf("invalid resolved route")
 	}
 	if route.ProfileID == "role-default" {
-		if route.ProfileSHA256 != "" {
+		fields := route.OverrideFields
+		if route.ProfileSHA256 != "" || len(fields) != 3 || fields[0] != "provider" || fields[1] != "model" || fields[2] != "effort" {
 			return fmt.Errorf("invalid default profile")
 		}
 	} else if !profileID.MatchString(route.ProfileID) || !hex64.MatchString(route.ProfileSHA256) {

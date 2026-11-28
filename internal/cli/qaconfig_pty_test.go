@@ -48,10 +48,10 @@ func TestNonConfiguratorCommandOnSilentPtyIsFast(t *testing.T) {
 	go func() { done <- command.Wait() }()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second): // well under the 5s terminal-query wait it guards; -race slows startup
 		_ = command.Process.Kill()
 		<-done
-		t.Fatalf("cortex --help on a silent pty took more than 1s")
+		t.Fatalf("cortex --help on a silent pty took more than 3s")
 	}
 	elapsed := time.Since(started)
 	text := string(<-output)

@@ -20,6 +20,7 @@ Cortex writes a curated set of agent capabilities (skills, and on Pi also agents
 | `cortex doctor` | Never | Probes present runtimes, reports compatibility, and tells you whether an install can proceed. |
 | `cortex install` | Yes, transactional | Configures every compatible present runtime in one all-or-nothing transaction. `--target-dir <dir>` projects the catalog into an existing directory instead. |
 | `cortex update --runtime <id> --catalog <dir>` | Only with `--apply` | Plans (default) or applies (with `--apply`) a single-runtime update. |
+| `cortex doctor --catalog <dir>` | Never | Probes each present backend with the route that catalog's profile resolves. |
 | `cortex doctor --target-dir <dir>` | Never | Reports a directory target's presence, writability, and ownership. |
 | `cortex uninstall` | Yes, conservative | Removes exactly the verified Cortex-owned material; refuses on conflict. |
 | `cortex qa run --role <role> --request <file> --catalog <dir>` | Never | Evaluates a bounded request (and optional evidence file) and writes a QA report. Report-only; it does not execute tests. |
@@ -203,8 +204,8 @@ never deletion.
 
 ## Configure your QA route
 
-The QA fleet ships no models: the route policy's `nan` provider is a placeholder, and
-Cortex applies no model fallback. Each owner configures their own route through a
+The QA fleet ships no models: no role has a default route, and Cortex applies no
+model fallback. Each owner configures their own route through a
 user-owned profile file in the catalog root:
 
 ```json
@@ -225,10 +226,14 @@ absent from the runtime's effective catalog, `qa run` refuses at preflight with
 `model_unavailable` and prints this setup path — no launch, no silent fallback.
 
 A profile source that exists but cannot be read safely is refused, never silently
-replaced: a catalog root reached through a symlink, a symlinked or non-regular
-profile file, an oversized or malformed file, or an unreadable `defaultProfile`
-all end in `profile_invalid` before anything is launched. Only a catalog with no
-`cortex/qa-profiles.json` file at all uses the placeholder `nan` route. A refused
+replaced: a symlinked or non-regular profile file, an oversized or malformed
+file, or an unreadable `defaultProfile` all end in `profile_invalid` before
+anything is launched. A catalog root reached through a symlink is refused one
+stage earlier, when the catalog loads, as `adapter_unavailable` with
+`stage=catalog`; the catalog stage always precedes the profile, so a run whose
+catalog and profile are both unusable names the catalog. A catalog with no
+`cortex/qa-profiles.json` file at all has no route: `qa run` refuses with
+`route_incomplete` and the `qa setup` remedy before anything is probed. A refused
 `profile_invalid` prints `profile_selected` (when `--profile` was passed), the
 source's `profile_default` and `profile_valid_ids` once the file is readable, and
 the `route_setup` path to edit, so an unknown id points at the file instead of
@@ -312,9 +317,11 @@ run looks like, and where it currently stops:
    from an empty directory. Expect `status=completed`, per-runtime lines, and the
    `warning=uncertified_admission` disclosure. Verify readiness with `cortex doctor`:
    every runtime reports `qa_availability` for the probe role only — it is a model
-   availability probe, not an admission guarantee. `qa_route_scope=embedded_default_route`
-   states what was probed: the binary's embedded catalog and the policy default route.
-   Doctor reads no caller catalog and no `--profile` route, names the routed pair only
+   availability probe, not an admission guarantee. `qa_route_scope=catalog_profile_route`
+   states what was probed: the route the `cortex doctor --catalog <catalog-root>` profile
+   resolves for the probe role. Without `--catalog`, or without a route for that backend,
+   doctor reports `qa_availability=route_incomplete` with the `cortex qa setup` remedy and
+   probes nothing. Doctor reads no `--profile` route, names the routed pair only
    when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run

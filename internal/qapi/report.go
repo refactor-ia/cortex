@@ -123,13 +123,15 @@ func runLocalReport(ctx context.Context, request ReportRequest, backend Backend)
 	if err := validateEvidence(request.Evidence); err != nil {
 		return "", qaadmission.CodeInvalidRequest, err
 	}
-	route, failure := resolveProfileRoute(request.CatalogRoot, AdmissionRequest{Role: request.Role, Backend: backend.ID(), Profile: request.Profile})
-	if failure.Code != "" {
-		return "", qaadmission.Code(failure.Code), fmt.Errorf("report route: %s", failure.Code)
-	}
+	// The catalog loads first: a missing or unloadable catalog root cannot
+	// hold the profile the route resolves from, so it is named as itself.
 	snapshot, err := catalog.BuildCatalogSnapshot(request.CatalogRoot, "catalog.json", catalog.AdmissionPolicy{})
 	if err != nil {
 		return "", qaadmission.CodeAdapterUnavailable, &CatalogLoadError{Cause: err}
+	}
+	route, failure := resolveProfileRoute(request.CatalogRoot, AdmissionRequest{Role: request.Role, Backend: backend.ID(), Profile: request.Profile})
+	if failure.Code != "" {
+		return "", qaadmission.Code(failure.Code), fmt.Errorf("report route: %s", failure.Code)
 	}
 	expected, err := CatalogAdmissionBinding(snapshot, request.Role, backend.ID())
 	if err != nil {

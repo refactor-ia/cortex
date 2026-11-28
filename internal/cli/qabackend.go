@@ -75,7 +75,7 @@ func qaBackendIdentity(backend string) string {
 // the production probe. It answers with the whole verdict and not its code
 // alone: a refusal carries the routed pair it was about (#339, #374 S7), and
 // discarding that here is what left doctor unable to name it.
-var qaBackendProbe func(ctx context.Context, backend string) qapi.AvailabilityVerdict
+var qaBackendProbe func(ctx context.Context, backend, catalogRoot string) qapi.AvailabilityVerdict
 
 // qaAssetCheck is the installed-asset seam for the doctor QA line. It runs the
 // same read-only admission check qa run performs: the binary's embedded catalog
@@ -153,12 +153,12 @@ func qaAssetStageDiagnostic(unavailable *installobserve.AdmissionUnavailableErro
 // running one. It binds the runtime and issues that backend's own fixed,
 // bounded availability probes — the read-only prefix of a report run, and
 // nothing past it.
-func probeQABackend(ctx context.Context, backend string) qapi.AvailabilityVerdict {
+func probeQABackend(ctx context.Context, backend, catalogRoot string) qapi.AvailabilityVerdict {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return qapi.AvailabilityVerdict{Code: qaadmission.CodeUnsupportedRuntime}
 	}
-	return qapi.ProbeBackendAvailability(ctx, backend, qaProbeRole, cwd, nil)
+	return qapi.ProbeBackendAvailability(ctx, backend, qaProbeRole, catalogRoot, cwd, nil)
 }
 
 // qaAvailabilityToken renders one verdict as the doctor availability token:
@@ -180,7 +180,7 @@ func qaAvailabilityToken(verdict qapi.AvailabilityVerdict) string {
 // installed, detected and version-bound while its backend has no usable
 // credentials, and collapsing the two would report the second as settled by
 // the first.
-func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool) string {
+func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool, catalogRoot string) string {
 	backend, known := qaRuntimeBackends[id]
 	if !known {
 		return ""
@@ -192,7 +192,7 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 		if probe == nil {
 			probe = probeQABackend
 		}
-		verdict := probe(ctx, backend)
+		verdict := probe(ctx, backend, catalogRoot)
 		availability = qaAvailabilityToken(verdict)
 		if verdict.Available {
 			check := qaAssetCheck
@@ -207,6 +207,14 @@ func qaBackendLine(ctx context.Context, id runtimematrix.RuntimeID, present bool
 		}
 		if diagnostic == "" {
 			diagnostic = qaRouteIdentity(verdict)
+		}
+		if verdict.Code == qaadmission.CodeRouteIncomplete {
+			// No profile route to probe (D1, #458): name the setup remedy.
+			root := catalogRoot
+			if root == "" {
+				root = "<catalog-root>"
+			}
+			diagnostic += " remedy=cortex qa setup --catalog " + root + " --backend " + backend + " --provider <p> --model <m>"
 		}
 	}
 	return " qa_backend=" + backend + " qa_identity=" + qaBackendIdentity(backend) +

@@ -1,6 +1,7 @@
 package qapi
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -89,12 +90,65 @@ func TestBuildInvocationRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// D1 (#458): with no profile, a complete provider/model/effort override is the
+// only role-default route, and it still builds an invocation; a partial one
+// carries no default to fill the rest.
+func TestBuildInvocationAcceptsAFullOverrideRoleDefaultRoute(t *testing.T) {
+	binding, err := BindInvocationPaths(qarole.TestRunner, "/synthetic/bin/pi", "/synthetic/actor.md", "/synthetic/skill/SKILL.md", "/synthetic/worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.TestRunner, Backend: "pi", Override: qaroute.Override{Provider: "openai-codex", Model: "gpt-5.6", Effort: "low"}}, qaroute.Snapshot{})
+	if failure.Code != "" {
+		t.Fatalf("Resolve() failure = %q", failure.Code)
+	}
+	invocation, err := BuildInvocation(route, binding)
+	if err != nil {
+		t.Fatalf("BuildInvocation() = %v", err)
+	}
+	if got := strings.Join(invocation.Argv()[:2], " "); got != "--model openai-codex/gpt-5.6" {
+		t.Fatalf("argv = %v", invocation.Argv())
+	}
+	partial := route
+	partial.OverrideFields = []string{"provider", "model"}
+	if _, err := BuildInvocation(partial, binding); err == nil {
+		t.Fatal("BuildInvocation() accepted a role-default route without a full override")
+	}
+}
+
+// fixtureRoutes are the per-role routes the qapi fixtures and goldens were
+// written against. Roles carry no default route (D1, #458), so fixtures reach
+// them only through an owner profile.
+var fixtureRoutes = map[qarole.RoleID][3]string{
+	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
+	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
+	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
+	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
+	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
+	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
+}
+
+// fixtureResolve resolves one role's fixture route through a profile snapshot.
+func fixtureResolve(role qarole.RoleID, backend string) (qaroute.ResolvedRoute, qaroute.Failure) {
+	route := fixtureRoutes[role]
+	snapshot := fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fixture","profiles":{"fixture":{"routes":{%q:{%q:{"provider":%q,"model":%q,"effort":%q}}}}}}`, role, backend, route[0], route[1], route[2])
+	return qaroute.Resolve(qaroute.Request{Role: role, Backend: backend, ProfileID: "fixture"}, qaroute.Snapshot{Present: true, Bytes: []byte(snapshot)})
+}
+
+// writeFixtureProfile stores one role's fixture route as the catalog root's
+// default profile.
+func writeFixtureProfile(t *testing.T, root string, role qarole.RoleID, backend string) {
+	t.Helper()
+	route := fixtureRoutes[role]
+	writeProfile(t, root, []byte(fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fixture","profiles":{"fixture":{"routes":{%q:{%q:{"provider":%q,"model":%q,"effort":%q}}}}}}`, role, backend, route[0], route[1], route[2])))
+}
+
 // This signature has no custom-tool parameter; the fixed token is the only API.
 var _ func(qaroute.ResolvedRoute, BoundInvocationPaths) (Invocation, error) = BuildInvocation
 
 func resolvedRoute(t *testing.T, role qarole.RoleID) qaroute.ResolvedRoute {
 	t.Helper()
-	route, failure := qaroute.Resolve(qaroute.Request{Role: role, Backend: "pi"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(role, "pi")
 	if failure.Code != "" {
 		t.Fatalf("Resolve() failure = %q", failure.Code)
 	}
@@ -139,7 +193,7 @@ func TestBindInvocationPathsAcceptsNoInstalledActor(t *testing.T) {
 // TestPiInvocationStillRequiresTheActorPath pins that Pi, whose argv carries
 // the actor file, cannot be built from a binding that has none.
 func TestPiInvocationStillRequiresTheActorPath(t *testing.T) {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "pi"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "pi")
 	if failure.Code != "" {
 		t.Fatalf("route failure = %q", failure.Code)
 	}
@@ -149,5 +203,45 @@ func TestPiInvocationStillRequiresTheActorPath(t *testing.T) {
 	}
 	if _, err := BuildInvocation(route, binding); err == nil {
 		t.Fatal("BuildInvocation() accepted a Pi binding with no actor path")
+	}
+}
+
+// R1-001 (#465): the invocation boundary refuses a provider or model that is
+// unsafe as an argv token, for role-default and profile routes alike, on every
+// admitted backend.
+func TestBuildInvocationRefusesUnsafeRouteTokens(t *testing.T) {
+	backends := map[string]Backend{"pi": piBackend{}, "claude": NewClaudeBackend(nil), "opencode": NewOpenCodeBackend(nil)}
+	for id, backend := range backends {
+		binding, err := BindInvocationPaths(qarole.TestRunner, "/synthetic/bin/"+id, "/synthetic/actor.md", "/synthetic/skill/SKILL.md", "/synthetic/worktree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		roleDefault, failure := qaroute.Resolve(qaroute.Request{Role: qarole.TestRunner, Backend: id, Override: qaroute.Override{Provider: "--evil", Model: "gpt-5.6", Effort: "low"}}, qaroute.Snapshot{})
+		if failure.Code != "" {
+			t.Fatalf("%s: Resolve() failure = %q", id, failure.Code)
+		}
+		if _, err := backend.BuildInvocation(roleDefault, binding); err == nil {
+			t.Fatalf("%s: BuildInvocation accepted provider --evil on a role-default route", id)
+		}
+		profile, failure := fixtureResolve(qarole.TestRunner, id)
+		if failure.Code != "" {
+			t.Fatalf("%s: Resolve() failure = %q", id, failure.Code)
+		}
+		for _, unsafe := range []string{"", "-x", "a b", "a\tb", "a\nb", "a\x00b", "a\x7fb"} {
+			for _, field := range []string{"provider", "model", "effort"} {
+				mutated := profile
+				switch field {
+				case "provider":
+					mutated.Provider = unsafe
+				case "model":
+					mutated.Model = unsafe
+				default:
+					mutated.Effort = unsafe
+				}
+				if _, err := backend.BuildInvocation(mutated, binding); err == nil {
+					t.Fatalf("%s: BuildInvocation accepted %s %q on a profile route", id, field, unsafe)
+				}
+			}
+		}
 	}
 }

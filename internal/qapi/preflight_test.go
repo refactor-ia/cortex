@@ -29,11 +29,11 @@ import (
 
 func TestPreflightBindingHandsOffBoundAssetsRouteAndGit(t *testing.T) {
 	fixture := newPreflightFixture(t)
-	got, err := preflightBinding(context.Background(), fixture.request, filepath.Join(t.TempDir(), "missing"), fixture.installRoot, fixture.snapshot, fixture.runner)
+	got, err := preflightBinding(context.Background(), fixture.request, fixture.profileRoot, fixture.installRoot, fixture.snapshot, fixture.runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.route.Model != "glm5.3" || got.route.ProfileID != "role-default" || got.assets.RoleID() != fixture.request.Role || got.assets.ActorSHA256() != fixture.expected.ActorSHA256 || got.assets.ActorSourceSHA256() != fixture.expected.ActorSourceSHA256 || got.assets.ActorBindingSHA256() != fixture.expected.ActorBindingSHA256 || got.assets.SkillSHA256() != fixture.expected.SkillSHA256 || got.git.Revision != fixture.request.Revision || got.git.Fingerprint != fixture.request.Fingerprint {
+	if got.route.Model != "glm5.3" || got.route.ProfileID != "fixture" || got.assets.RoleID() != fixture.request.Role || got.assets.ActorSHA256() != fixture.expected.ActorSHA256 || got.assets.ActorSourceSHA256() != fixture.expected.ActorSourceSHA256 || got.assets.ActorBindingSHA256() != fixture.expected.ActorBindingSHA256 || got.assets.SkillSHA256() != fixture.expected.SkillSHA256 || got.git.Revision != fixture.request.Revision || got.git.Fingerprint != fixture.request.Fingerprint {
 		t.Fatalf("preflightBinding() = %#v", got)
 	}
 	if len(fixture.runner.calls) != 6 {
@@ -292,7 +292,9 @@ func newPreflightFixture(t *testing.T) preflightFixture {
 	writePreflightFile(t, actorPath, actor.Content())
 	writePreflightFile(t, filepath.Join(root, "skills", "cortex-"+string(role), "SKILL.md"), skill.Content())
 	request := AdmissionRequest{Role: role, Backend: "pi", CurrentDirectory: cwd, Revision: head, Fingerprint: preflightFingerprint("sha1", head, tree), Task: "inspect the candidate", TimeoutSeconds: 900}
-	return preflightFixture{request: request, snapshot: snapshot, expected: expected, installRoot: root, profileRoot: testProfileRoot(t), actorPath: actorPath, runner: &preflightGitRunner{results: preflightGitResults(cwd, head, tree, "")}}
+	profileRoot := testProfileRoot(t)
+	writeFixtureProfile(t, profileRoot, role, "pi")
+	return preflightFixture{request: request, snapshot: snapshot, expected: expected, installRoot: root, profileRoot: profileRoot, actorPath: actorPath, runner: &preflightGitRunner{results: preflightGitResults(cwd, head, tree, "")}}
 }
 
 type composedV3PreflightFixture struct {

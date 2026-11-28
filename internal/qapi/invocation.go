@@ -104,13 +104,17 @@ func validRouteFor(route qaroute.ResolvedRoute, backendID string) bool {
 		return false
 	}
 	if route.ProfileID == "" || route.ProfileID == "role-default" {
-		// Placeholder route: re-resolve the policy and require an exact match,
-		// so a mutated route cannot reach the backend's argv.
-		allowed, failure := qaroute.Resolve(qaroute.Request{Role: route.Role, Backend: backendID}, qaroute.Snapshot{})
-		return failure.Code == "" && route.Provider == allowed.Provider && route.Model == allowed.Model && route.Effort == allowed.Effort
+		// No profile: roles carry no default route (D1, #458), so the only
+		// role-default route Resolve admits is a complete caller override.
+		// Re-check that shape so a mutated route cannot reach the argv.
+		if !qaroute.KnownRole(route.Role) || len(route.OverrideFields) != 3 || route.OverrideFields[0] != "provider" || route.OverrideFields[1] != "model" || route.OverrideFields[2] != "effort" {
+			return false
+		}
 	}
 	// Profile-defined route (issue #298): the user's own routing surface. The
 	// resolved identity is attested by ProfileID + ProfileSHA256 in the frame
 	// and receipt; the pinned model's availability was verified at preflight.
-	return route.Provider != "" && route.Model != "" && route.Effort != ""
+	// Provider, model and effort can reach argv, so all must be safe argv
+	// tokens (#465).
+	return qaroute.SafeArgvToken(route.Provider) && qaroute.SafeArgvToken(route.Model) && qaroute.SafeArgvToken(route.Effort)
 }

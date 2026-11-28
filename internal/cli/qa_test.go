@@ -59,9 +59,9 @@ func fakeClaudeQA() int {
 }
 
 func TestQARunClaudeDisablesToolsBeforeLaunch(t *testing.T) {
-	catalogRoot := must(filepath.Abs("../../catalog"))
 	home := canonicalHome(t)
 	cwd := must(filepath.EvalSymlinks(t.TempDir()))
+	catalogRoot := qaRoutedCatalog(t, must(filepath.EvalSymlinks(t.TempDir())), qarole.RequirementsAnalyst, "claude")
 	t.Setenv("HOME", home)
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -275,6 +275,30 @@ func reportFixture(t *testing.T) []string {
 	return roleReportFixture(t, qarole.RequirementsAnalyst)
 }
 
+// qaFixtureRoutes are the per-role routes the CLI fixtures were written
+// against. Roles carry no default route (D1, #458), so a fixture run reaches
+// them only through an owner profile.
+var qaFixtureRoutes = map[qarole.RoleID][3]string{
+	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
+	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
+	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
+	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
+	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
+	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
+}
+
+// qaRoutedCatalog copies the repository catalog under dir and stores one
+// role's fixture route for one backend as its default profile.
+func qaRoutedCatalog(t *testing.T, dir string, role qarole.RoleID, backend string) string {
+	t.Helper()
+	catalogRoot := filepath.Join(dir, "catalog-fixture")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(repositoryCatalog)))
+	route := qaFixtureRoutes[role]
+	mustOK(os.MkdirAll(filepath.Join(catalogRoot, "cortex"), 0o700))
+	mustOK(os.WriteFile(filepath.Join(catalogRoot, "cortex", "qa-profiles.json"), []byte(fmt.Sprintf(`{"schemaVersion":1,"defaultProfile":"fixture","profiles":{"fixture":{"routes":{%q:{%q:{"provider":%q,"model":%q,"effort":%q}}}}}}`, role, backend, route[0], route[1], route[2])), 0o600))
+	return catalogRoot
+}
+
 // roleReportFixture materializes one installed QA role from the production
 // catalog — its actor file, its skill file, and the full six-role install
 // state — and points the command at it with the fake Pi binary.
@@ -323,7 +347,7 @@ func roleReportFixture(t *testing.T, role qarole.RoleID) []string {
 	mustOK(os.WriteFile(filepath.Join(installRoot, "skills", "cortex-"+roleName, "SKILL.md"), skill.Content(), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "requirements.txt"), []byte(fixtureTask), 0o600))
 	mustOK(os.WriteFile(filepath.Join(cwd, "qa-report-scenario"), []byte("report"), 0o600))
-	catalogRoot := must(filepath.Abs("../../catalog"))
+	catalogRoot := qaRoutedCatalog(t, cwd, role, "pi")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("HOME", root)
 	qaPiResolver = fixturePi{must(os.Executable())}
@@ -788,20 +812,29 @@ func TestQARunProfileFlagSelectsTheRequestedProfile(t *testing.T) {
 	})
 }
 
-// TestQARunWithoutAProfileUsesTheDocumentedPlaceholder keeps the legitimate
-// default: with no profile source at all, the policy placeholder still routes
-// the run (issue #298).
-func TestQARunWithoutAProfileUsesTheDocumentedPlaceholder(t *testing.T) {
+// TestQARunWithoutAProfileRouteIsIncomplete pins D1 (#458): with no profile
+// source at all there is no default route, so the run refuses route_incomplete
+// with the cortex qa setup remedy before anything is probed or launched.
+func TestQARunWithoutAProfileRouteIsIncomplete(t *testing.T) {
 	args := reportFixture(t)
-	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if code := Run(context.Background(), args, stdout, stderr, nil); code != exitOK || stdout.String() != fixtureReport+"\n" || stderr.Len() != 0 {
-		t.Fatalf("placeholder run = %d stdout %q stderr %q", code, stdout.String(), stderr.String())
-	}
-	frame := must(os.ReadFile("qa-report-frame"))
-	for _, want := range []string{"route_profile role-default", "route_model qwen3.6"} {
-		if !bytes.Contains(frame, []byte(want)) {
-			t.Fatalf("frame does not carry the placeholder %q: %q", want, frame)
+	catalogRoot := filepath.Join(must(os.Getwd()), "catalog-bare")
+	mustOK(os.CopyFS(catalogRoot, os.DirFS(repositoryCatalog)))
+	for index, arg := range args {
+		if arg == "--catalog" && index+1 < len(args) {
+			args[index+1] = catalogRoot
 		}
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	code := Run(context.Background(), args, stdout, stderr, nil)
+	want := "error=route_incomplete\n" + qaReportNote + "stage=route_resolution\nroute_missing_backend=pi remedy=cortex qa setup --catalog " + catalogRoot + " --backend pi --provider <p> --model <m>\n"
+	if code != exitFailure || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("route-less run = %d stdout %q stderr %q, want %q", code, stdout.String(), stderr.String(), want)
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("a route-less run must not launch the backend")
+	}
+	if _, err := os.Stat(filepath.Join(catalogRoot, "cortex")); !os.IsNotExist(err) {
+		t.Fatal("a route-less run must not write a profile")
 	}
 }
 
@@ -833,6 +866,8 @@ func TestQARunRefusesAnUnusableDefaultProfileInsteadOfFallingBack(t *testing.T) 
 			}
 			profileDirectory := filepath.Join(catalogRoot, "cortex")
 			mustOK(os.MkdirAll(profileDirectory, 0o700))
+			// Replace the fixture's own route with the unusable source.
+			mustOK(os.Remove(filepath.Join(profileDirectory, "qa-profiles.json")))
 			testCase.install(t, filepath.Join(profileDirectory, "qa-profiles.json"))
 
 			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -950,7 +985,7 @@ func TestQARunNamesThePreflightRefusalStage(t *testing.T) {
 
 // TestQARunModelProbeEscapesTheRoutedPair pins the safety half of S4/S5: the
 // routed provider/model come from a caller-owned profile file, so they are
-// bounded and escaped before they reach the operator's terminal. The profile is
+// refused before launch and never reach the operator's terminal unescaped. The profile is
 // staged in the disposable catalog copy, never in the repository catalog.
 func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 	args := reportFixture(t)
@@ -964,11 +999,16 @@ func TestQARunModelProbeEscapesTheRoutedPair(t *testing.T) {
 	qaProfileBodyFixture(t, catalogRoot, `{"schemaVersion":1,"defaultProfile":"fleet-default","profiles":{"fleet-default":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"evil\u001b[2Jmodel","effort":"low"}}}}}}`)
 	mustOK(os.WriteFile("qa-report-scenario", []byte("model-unavailable"), 0o600))
 	stderr, code := runQARefusal(t, args)
-	if code != exitFailure || strings.Contains(stderr, "\x1b") {
-		t.Fatalf("hostile routed pair = %d stderr %q, want escaped output", code, stderr)
+	// #465 R1-001: a model that is unsafe as argv is refused at the invocation
+	// boundary, before any launch; the run reports that as actor_unavailable.
+	if code != exitFailure || !strings.HasPrefix(stderr, "error=actor_unavailable\n") || strings.Contains(stderr, "\x1b") {
+		t.Fatalf("hostile routed pair = %d stderr %q, want escaped actor_unavailable refusal", code, stderr)
 	}
-	if !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
-		t.Fatalf("stderr %q does not escape the routed model", stderr)
+	if strings.Contains(stderr, "evil") && !strings.Contains(stderr, `route_model=evil\x1b[2Jmodel`) {
+		t.Fatalf("stderr %q names the routed model without the probe-stage escaping", stderr)
+	}
+	if _, err := os.Stat("qa-report-frame"); !os.IsNotExist(err) {
+		t.Fatal("a hostile routed model must not launch the backend")
 	}
 }
 

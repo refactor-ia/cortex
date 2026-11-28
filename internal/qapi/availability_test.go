@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
@@ -208,6 +209,28 @@ func TestPiAvailabilityProbeIsUnchanged(t *testing.T) {
 				t.Fatalf("probe %d = %v, want %v", index, recorder.issued[index], want[index])
 			}
 		}
+	}
+}
+
+// TestPiAuthProbeUsesRouteProvider pins that the Pi auth probe asks about the
+// resolved route provider rather than a fixed one (issue #452).
+func TestPiAuthProbeUsesRouteProvider(t *testing.T) {
+	cwd := availabilityCWD(t)
+	recorder := &probeRecorder{captures: []probeCapture{
+		completeCapture([]byte(modelTableHeader+"\nopenai-codex  gpt-5.6-terra        1        1        yes       no\n"), 0),
+		completeCapture([]byte(`{"status":"ready","provider":"openai-codex","authType":"oauth"}`+"\n"), 0),
+	}}
+	recorder.install(t)
+	bound := boundPi{path: filepath.Join(cwd, "pi"), cwd: cwd, version: PiSDKVersion, versionCapture: successfulVersion()}
+	route := availabilityRoute(piBackendID)
+	route.Provider, route.Model = "openai-codex", "gpt-5.6-terra"
+	verdict := NewPiBackend(nil).ProbeAvailability(context.Background(), bound, route)
+	if !verdict.Available || verdict.Code != "" {
+		t.Fatalf("verdict = %#v", verdict)
+	}
+	want := []string{"auth", "check", "--provider", "openai-codex", "--json", "--no-refresh"}
+	if len(recorder.issued) != 2 || strings.Join(recorder.issued[1], " ") != strings.Join(want, " ") {
+		t.Fatalf("issued = %q, want auth probe %q", recorder.issued, want)
 	}
 }
 

@@ -250,7 +250,7 @@ func TestParseReportStreamDiagnostic(t *testing.T) {
 // report encoder, mirroring the route resolution used by admission bindings.
 func reportRouteFixture(t *testing.T, role qarole.RoleID) qaroute.ResolvedRoute {
 	t.Helper()
-	route, failure := qaroute.Resolve(qaroute.Request{Role: role, Backend: "pi"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(role, "pi")
 	if failure.Code != "" {
 		t.Fatalf("qaroute.Resolve(%s) failed: %s", role, failure.Code)
 	}
@@ -527,7 +527,7 @@ func TestInlinedSkillFrameCarriesTheSkillText(t *testing.T) {
 	skill := []byte("---\nname: cortex-requirements-analyst\n---\n\nAssess requirements.\n")
 	for _, backend := range []string{"claude", "opencode"} {
 		t.Run(backend, func(t *testing.T) {
-			route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: backend}, qaroute.Snapshot{})
+			route, failure := fixtureResolve(qarole.RequirementsAnalyst, backend)
 			if failure.Code != "" {
 				t.Fatalf("qaroute.Resolve(%s) failed: %s", backend, failure.Code)
 			}
@@ -553,7 +553,7 @@ func TestInlinedSkillFrameCarriesTheSkillText(t *testing.T) {
 // oversized skill fails loudly instead of being truncated into a silently
 // mutilated role definition.
 func TestInlinedSkillFrameRefusesAnUnusableSkill(t *testing.T) {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: qarole.RequirementsAnalyst, Backend: "claude"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(qarole.RequirementsAnalyst, "claude")
 	if failure.Code != "" {
 		t.Fatalf("qaroute.Resolve failed: %s", failure.Code)
 	}

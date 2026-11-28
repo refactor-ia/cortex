@@ -41,11 +41,21 @@ type route struct {
 	effort   string
 }
 
+// defaults is the closed set of QA roles the policy admits. No role carries a
+// provider, model, or effort (D1, #458): a role resolves only through an
+// owner's profile route, otherwise it fails route_incomplete.
 var defaults = map[qarole.RoleID]route{
-	qarole.RequirementsAnalyst: {"nan", "qwen3.6", "high"},
-	qarole.TestDesigner:        {"nan", "qwen3.6", "high"},
-	qarole.ExploratoryTester:   {"nan", "glm5.3", "high"},
-	qarole.AdversarialTester:   {"nan", "deepseek-v4-flash", "high"},
-	qarole.TestRunner:          {"nan", "qwen3.6", "low"},
-	qarole.EvidenceAuditor:     {"nan", "glm5.3", "high"},
+	qarole.RequirementsAnalyst: {},
+	qarole.TestDesigner:        {},
+	qarole.ExploratoryTester:   {},
+	qarole.AdversarialTester:   {},
+	qarole.TestRunner:          {},
+	qarole.EvidenceAuditor:     {},
+}
+
+// KnownRole reports whether one role belongs to the closed set the policy
+// admits.
+func KnownRole(role qarole.RoleID) bool {
+	_, known := defaults[role]
+	return known
 }

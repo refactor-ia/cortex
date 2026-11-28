@@ -9,7 +9,6 @@ import (
 
 	"github.com/refactor-ia/cortex/internal/qaadmission"
 	"github.com/refactor-ia/cortex/internal/qarole"
-	"github.com/refactor-ia/cortex/internal/qaroute"
 )
 
 func TestInput(t *testing.T) {
@@ -83,7 +82,7 @@ func TestInputRejectsUnsafeTaskAndBinding(t *testing.T) {
 		{"unknown role", func(b *InputBinding) { b.Route.Role = "unknown" }},
 		{"actor hash", func(b *InputBinding) { b.ActorSHA256 = "invalid" }},
 		{"skill contract", func(b *InputBinding) { b.SkillContract = "other" }},
-		{"route mismatch", func(b *InputBinding) { b.Route.Model = "glm5.3" }},
+		{"route incomplete", func(b *InputBinding) { b.Route.Model = "" }},
 		{"revision", func(b *InputBinding) { b.Revision = "HEAD" }},
 		{"fingerprint", func(b *InputBinding) { b.Fingerprint = "candidate.invalid" }},
 	} {
@@ -98,7 +97,7 @@ func TestInputRejectsUnsafeTaskAndBinding(t *testing.T) {
 }
 
 func inputBinding(role qarole.RoleID) InputBinding {
-	route, failure := qaroute.Resolve(qaroute.Request{Role: role, Backend: "pi"}, qaroute.Snapshot{})
+	route, failure := fixtureResolve(role, "pi")
 	if failure.Code != "" {
 		panic(failure.Code)
 	}

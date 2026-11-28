@@ -243,6 +243,22 @@ includes the system temporary directory: `/tmp` is a symlink to `/private/tmp`, 
 a catalog under `/tmp/...` is refused until it is addressed through its canonical
 `/private/tmp/...` path (`cd` into it and use `pwd -P`).
 
+## See the effective QA routes
+
+`cortex qa routes --catalog <dir> [--profile <id>]` prints one line per role and
+backend (`pi`, `claude`, `opencode`), in role-registry order, and exits 0:
+
+```text
+role=test-runner backend=claude provider=acme model=m1 effort=low source=profile:mine
+```
+
+`source` is `profile:<id>` when the profile defines the route, `role-default` when
+no profile file exists and the policy default applies, or `unset` (with `-` for
+provider, model and effort) when the profile has no route for that role and
+backend. It reads through the same resolution `qa run` uses and writes nothing; a
+missing or invalid profile ends in the same `profile_invalid` diagnostic and exit
+code as `qa run`.
+
 ## Read a qa run refusal
 
 A `qa run` refusal names the preflight question that refused it (#374), using one

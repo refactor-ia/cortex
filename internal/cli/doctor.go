@@ -249,7 +249,7 @@ func doctorPriorStateBlocker(resolveRoots func() ([]skillroot.UninstallRoot, err
 
 const (
 	qaUsage = "usage: cortex qa run --role <role> --request <file> --catalog <dir> [--backend pi|claude|opencode] [--evidence <file.json>] [--profile <id>]\n" +
-		qaSetupUsageLine
+		qaSetupUsageLine + qaRoutesUsageLine
 	qaHelp = qaUsage + "\nQA evaluates evidence and does not run tests.\n" +
 		"Write a short, bounded plain-text request (request.txt):\n" +
 		"printf 'R1: Responses must finish within 100 ms.\\nR2: Responses must wait at least 500 ms.\\nIdentify the contradiction; do not edit files.\\n' > request.txt\n" +
@@ -262,8 +262,7 @@ const (
 		`[{"id":"selected-test","command":"go test ./...","exit_code":0,"output_tail":"ok example","provenance":"caller fixture","truncated":false}]` + "\n" +
 		"Schema reference: docs/operating.md\n" +
 		"Optional --profile <id> selects a route profile; without it the file's defaultProfile applies.\n" +
-		"A refused preflight names its stage: route_resolution, actor_admission, model_probe or\n" +
-		"evidence_admission; a refused profile also lists profile_valid_ids from the profile file.\n" +
+		"A refused preflight names its stage; a refused profile lists profile_valid_ids.\n" +
 		"To audit a code diff, prefix every diff line with '>' (blockquote): quoted lines are content,\n" +
 		"so frame directives stay rejected while the quoted diff passes validation.\n"
 	rootHelp = "usage: cortex <command> [arguments]\ncommands: doctor, install, update, uninstall, qa\noptions: --version, --help\n" +
@@ -306,6 +305,9 @@ var qaPiResolver qapi.PathResolver
 func runQA(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "setup" {
 		return runQASetup(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "routes" {
+		return runQARoutes(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || len(args) == 1 && args[0] == "--help" || len(args) == 2 && args[0] == "run" && args[1] == "--help" {
 		return writeHelp(stdout, stderr, qaHelp)

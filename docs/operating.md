@@ -318,7 +318,7 @@ run looks like, and where it currently stops:
    when the probe's verdict carried one, and is not a per-run profile check.
 2. **Configure the route.** The fleet ships no models, so pick a provider/model pair
    from the runtime's extension-free surface and run
-   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>]`.
+   `cortex qa setup --catalog <catalog-root> --provider <p> --model <m> [--backend pi|claude|opencode] [--effort <e>] [--role <role-id>]`.
    On a machine whose pi backend is unavailable, pass `--backend claude` or
    `--backend opencode`; without `--backend` the route is written for `pi`. Relative and
    absolute roots are both accepted: the command resolves the path before it writes,
@@ -331,7 +331,12 @@ run looks like, and where it currently stops:
    running it once per backend routes the whole fleet on each (#328). Only the `pi`
    pair is checked against the runtime's model table at setup; a `claude` or
    `opencode` pair is written as given and an unavailable model is refused at the
-   run's `model_probe` preflight. `--effort` defaults to `high`.
+   run's `model_probe` preflight. `--effort` defaults to `high`. Pass `--role <role-id>`
+   to write only that role's route for the selected backend: every other role, every
+   other backend route, and the rest of the profile are preserved, so roles can be
+   routed to different models (#453). An unknown role is refused with
+   `error=unknown_role`, the valid role ids are listed, and the profile is left
+   unchanged. Without `--role` all roles are written as above.
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh

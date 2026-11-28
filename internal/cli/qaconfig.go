@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/refactor-ia/cortex/internal/qapi"
 	"github.com/refactor-ia/cortex/internal/qaroute"
@@ -61,11 +61,11 @@ type qaConfigModel struct {
 func (m *qaConfigModel) Init() tea.Cmd { return nil }
 
 func (m *qaConfigModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return m, nil
 	}
-	if key.Type == tea.KeyCtrlC {
+	if key.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 	if m.stage == qaConfigTable {
@@ -84,20 +84,18 @@ func (m *qaConfigModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if key.Type == tea.KeyEsc {
+	if key.Code == tea.KeyEscape {
 		m.stage, m.message = qaConfigTable, ""
 		return m, nil
 	}
 	switch m.stage {
 	case qaConfigModelInput:
-		switch key.Type {
-		case tea.KeyRunes:
-			m.input += string(key.Runes)
-		case tea.KeyBackspace:
-			if m.input != "" {
-				m.input = m.input[:len(m.input)-1]
+		switch {
+		case key.Code == tea.KeyBackspace:
+			if runes := []rune(m.input); len(runes) > 0 {
+				m.input = string(runes[:len(runes)-1])
 			}
-		case tea.KeyEnter:
+		case key.Code == tea.KeyEnter:
 			provider, model, found := strings.Cut(m.input, "/")
 			if !found || provider == "" || model == "" {
 				m.message = "enter <provider>/<model>"
@@ -105,6 +103,8 @@ func (m *qaConfigModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.pair = m.input
 			m.chooseEffort()
+		case key.Text != "":
+			m.input += key.Text
 		}
 	case qaConfigConfirm:
 		switch key.String() {
@@ -144,8 +144,12 @@ func (m *qaConfigModel) choose(option string) {
 			return
 		}
 		models, err := m.models(option)
-		if err != nil || len(models) == 0 {
+		switch {
+		case err != nil:
 			m.stage, m.message = qaConfigTable, fmt.Sprintf("model detection failed: %v", err)
+			return
+		case len(models) == 0:
+			m.stage, m.message = qaConfigTable, "no models available on "+option
 			return
 		}
 		m.startChoice(qaConfigModelList, models, "")
@@ -201,7 +205,9 @@ func qaConfigRouteText(route qaroute.EffectiveRoute) string {
 	return fmt.Sprintf("%s/%s effort=%s", route.Provider, route.Model, route.Effort)
 }
 
-func (m *qaConfigModel) View() string {
+func (m *qaConfigModel) View() tea.View { return tea.NewView(m.render()) }
+
+func (m *qaConfigModel) render() string {
 	var view strings.Builder
 	switch m.stage {
 	case qaConfigTable:

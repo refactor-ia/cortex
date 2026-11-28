@@ -45,6 +45,15 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if effort == "" {
 		effort = "high"
 	}
+	// `--catalog <dir>` alone on a terminal opens the interactive configurator
+	// (#454); any other shape keeps the scripting contract below.
+	if catalog != "" && len(values) == 1 && len(args) == 2 && qaIsTerminal() {
+		catalogRoot, code := qaSetupCatalogRoot(catalog, stderr)
+		if code != exitOK {
+			return code
+		}
+		return runQAConfigurator(ctx, catalogRoot, stdout, stderr)
+	}
 	if catalog == "" || provider == "" || model == "" {
 		return qaSetupUsage(stderr)
 	}
@@ -62,24 +71,9 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		return exitUsage
 	}
-	catalogRoot, err := filepath.Abs(catalog)
-	if err != nil {
-		writeError(stderr, "setup_failed")
-		_, _ = fmt.Fprintf(stderr, "%v\n", err)
-		return exitFailure
-	}
-	// The profile is only useful in a catalog `qa run` can load, so setup
-	// validates the existing root before it probes models or writes anything
-	// (#324). A typo is refused instead of materializing a tree no run reads.
-	if err := qapi.ValidateProfileCatalogRoot(catalogRoot); err != nil {
-		writeError(stderr, "setup_failed")
-		rootError, ok := err.(*qapi.ProfileCatalogRootError)
-		if !ok {
-			_, _ = fmt.Fprintf(stderr, "%v\n", err)
-			return exitFailure
-		}
-		_, _ = fmt.Fprintf(stderr, "stage=catalog expected=catalog root containing catalog.json catalog_reason=%s next_check=cortex qa --help\n", rootError.Reason)
-		return exitFailure
+	catalogRoot, code := qaSetupCatalogRoot(catalog, stderr)
+	if code != exitOK {
+		return code
 	}
 	// The pi model table is the only surface setup can probe (issue #325):
 	// extension-free pi models. For other backends the operator's pair is
@@ -119,6 +113,30 @@ func runQASetup(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	_, _ = fmt.Fprintf(stdout, "qa route profile written to %s (%d roles -> %s: %s/%s effort=%s)\n",
 		filepath.Join(catalogRoot, "cortex", "qa-profiles.json"), len(qarole.Catalog()), backend, provider, model, effort)
 	return exitOK
+}
+
+// qaSetupCatalogRoot resolves and validates the catalog root. The profile is
+// only useful in a catalog `qa run` can load, so setup validates the existing
+// root before it probes models or writes anything (#324). A typo is refused
+// instead of materializing a tree no run reads.
+func qaSetupCatalogRoot(catalog string, stderr io.Writer) (string, int) {
+	catalogRoot, err := filepath.Abs(catalog)
+	if err != nil {
+		writeError(stderr, "setup_failed")
+		_, _ = fmt.Fprintf(stderr, "%v\n", err)
+		return "", exitFailure
+	}
+	if err := qapi.ValidateProfileCatalogRoot(catalogRoot); err != nil {
+		writeError(stderr, "setup_failed")
+		rootError, ok := err.(*qapi.ProfileCatalogRootError)
+		if !ok {
+			_, _ = fmt.Fprintf(stderr, "%v\n", err)
+			return "", exitFailure
+		}
+		_, _ = fmt.Fprintf(stderr, "stage=catalog expected=catalog root containing catalog.json catalog_reason=%s next_check=cortex qa --help\n", rootError.Reason)
+		return "", exitFailure
+	}
+	return catalogRoot, exitOK
 }
 
 // qaSetupUsageLine is the single setup usage line shared by the setup refusal

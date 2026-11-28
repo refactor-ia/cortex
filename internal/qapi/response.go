@@ -90,17 +90,19 @@ func classifyResponse(terminal responseOutcomeTerminal, expected responseResult)
 	if terminal.tool {
 		categories[qaadmission.CodePolicyViolation] = true
 	} else if terminal.result != expected {
-		if terminal.result.route.provider != "nan" {
+		if terminal.result.route.provider != expected.route.provider {
 			categories[qaadmission.CodeNonNaNRoute] = true
 		}
 		if responseIdentityMismatch(terminal.result, expected) {
 			categories[qaadmission.CodeObservedIdentityMismatch] = true
 		}
 	}
-	if terminal.provider != "nan" {
+	// CodeNonNaNRoute keeps its wire name; it means the observed provider
+	// differs from the resolved route provider (#466).
+	if terminal.provider != expected.route.provider {
 		categories[qaadmission.CodeNonNaNRoute] = true
 	}
-	if terminal.model != expected.route.model || terminal.provider == "nan" && terminal.provider != expected.route.provider {
+	if terminal.model != expected.route.model {
 		categories[qaadmission.CodeObservedIdentityMismatch] = true
 	}
 	if len(categories) != 1 {

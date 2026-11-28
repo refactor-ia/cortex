@@ -326,7 +326,7 @@ type availabilityProbes struct {
 // probeAvailability runs the fixed model and no-refresh auth probes once in order.
 func probeAvailability(ctx context.Context, bound boundPi, provider, model string) availabilityProbes {
 	modelCapture, modelResult := probeModelAvailability(ctx, bound, provider, model)
-	authCapture, authResult := probeAuthAvailability(ctx, bound)
+	authCapture, authResult := probeAuthAvailability(ctx, bound, provider)
 	return availabilityProbes{
 		modelCapture: modelCapture,
 		model:        modelResult,
@@ -336,7 +336,7 @@ func probeAvailability(ctx context.Context, bound boundPi, provider, model strin
 }
 
 func probeModelAvailability(ctx context.Context, bound boundPi, provider, model string) (probeCapture, ModelProbeResult) {
-	capture := runAvailabilityCommand(ctx, bound, availabilityModel)
+	capture := runAvailabilityCommand(ctx, bound, availabilityModel, provider)
 	return capture, ProbeModel(ModelProbeInput{
 		Stdout:   capture.stdout,
 		ExitCode: capture.exitCode,
@@ -344,9 +344,10 @@ func probeModelAvailability(ctx context.Context, bound boundPi, provider, model 
 	}, provider, model)
 }
 
-func probeAuthAvailability(ctx context.Context, bound boundPi) (probeCapture, AuthProbeResult) {
-	capture := runAvailabilityCommand(ctx, bound, availabilityAuth)
+func probeAuthAvailability(ctx context.Context, bound boundPi, provider string) (probeCapture, AuthProbeResult) {
+	capture := runAvailabilityCommand(ctx, bound, availabilityAuth, provider)
 	return capture, ProbeAuth(AuthProbeInput{
+		Provider:  provider,
 		Stdout:    capture.stdout,
 		ExitCode:  capture.exitCode,
 		Complete:  capture.complete(),
@@ -354,8 +355,8 @@ func probeAuthAvailability(ctx context.Context, bound boundPi) (probeCapture, Au
 	})
 }
 
-func runAvailabilityCommand(ctx context.Context, bound boundPi, kind availabilityCommand) probeCapture {
-	arguments, stdoutLimit, stderrLimit, validKind := fixedAvailabilityCommand(kind)
+func runAvailabilityCommand(ctx context.Context, bound boundPi, kind availabilityCommand, provider string) probeCapture {
+	arguments, stdoutLimit, stderrLimit, validKind := fixedAvailabilityCommand(kind, provider)
 	if ctx == nil || !validKind || !validProbeBinding(bound) {
 		return probeCapture{startFailed: true}
 	}
@@ -403,7 +404,7 @@ func runProbeCommand(ctx context.Context, binary, cwd string, arguments []string
 	return capture
 }
 
-func fixedAvailabilityCommand(kind availabilityCommand) ([]string, int, int, bool) {
+func fixedAvailabilityCommand(kind availabilityCommand, provider string) ([]string, int, int, bool) {
 	switch kind {
 	case availabilityModel:
 		// The probe runs on the same extension surface as the report run, which
@@ -412,7 +413,10 @@ func fixedAvailabilityCommand(kind availabilityCommand) ([]string, int, int, boo
 		// guaranteed to fail (issue #298).
 		return []string{"--list-models", "--no-extensions"}, maxModelOutputBytes, maxAuthOutputBytes, true
 	case availabilityAuth:
-		return []string{"auth", "check", "--provider", "nan", "--json", "--no-refresh"}, maxAuthOutputBytes, maxAuthOutputBytes, true
+		if provider == "" {
+			return nil, 0, 0, false
+		}
+		return []string{"auth", "check", "--provider", provider, "--json", "--no-refresh"}, maxAuthOutputBytes, maxAuthOutputBytes, true
 	default:
 		return nil, 0, 0, false
 	}

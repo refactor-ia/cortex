@@ -29,7 +29,7 @@ func TestValidateKeepsRequestedResolvedAndObservedFactsSeparate(t *testing.T) {
 	receipt := testReceipt()
 	// A partial override is only resolvable over a profile route (#458).
 	receipt.Route.Resolved.ProfileID, receipt.Route.Resolved.ProfileSHA256 = "balanced", strings.Repeat("a", 64)
-	receipt.Route.Requested = RequestedIdentity{Provider: "nan"}
+	receipt.Route.Requested = RequestedIdentity{Provider: "example-provider"}
 	receipt.Route.Resolved.OverrideFields = []string{"provider"}
 	receipt.ReceiptID = ReceiptID(receipt)
 	if err := Validate(receipt); err != nil {

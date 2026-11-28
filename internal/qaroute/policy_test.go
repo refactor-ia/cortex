@@ -10,27 +10,27 @@ import (
 )
 
 func TestResolveProfileOverrideShapesAndOriginalDigest(t *testing.T) {
-	snapshot := []byte("{\n  \"schemaVersion\": 1, \"defaultProfile\": \"balanced\", \"profiles\": {\"balanced\": {\"routes\": {\"test-runner\": {\"pi\": {\"provider\": \"nan\", \"model\": \"qwen3.6\", \"effort\": \"low\"}}}}}}\n")
+	snapshot := []byte("{\n  \"schemaVersion\": 1, \"defaultProfile\": \"balanced\", \"profiles\": {\"balanced\": {\"routes\": {\"test-runner\": {\"pi\": {\"provider\": \"example-provider\", \"model\": \"example-model\", \"effort\": \"low\"}}}}}}\n")
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshot))
 	for _, tc := range []struct {
 		name     string
 		override Override
 		fields   []string
 	}{
-		{"provider", Override{Provider: "nan"}, []string{"provider"}},
-		{"model", Override{Model: "qwen3.6"}, []string{"model"}},
+		{"provider", Override{Provider: "example-provider"}, []string{"provider"}},
+		{"model", Override{Model: "example-model"}, []string{"model"}},
 		{"effort", Override{Effort: "low"}, []string{"effort"}},
-		{"provider-model", Override{Provider: "nan", Model: "qwen3.6"}, []string{"provider", "model"}},
-		{"provider-effort", Override{Provider: "nan", Effort: "low"}, []string{"provider", "effort"}},
-		{"model-effort", Override{Model: "qwen3.6", Effort: "low"}, []string{"model", "effort"}},
-		{"complete", Override{Provider: "nan", Model: "qwen3.6", Effort: "low"}, []string{"provider", "model", "effort"}},
+		{"provider-model", Override{Provider: "example-provider", Model: "example-model"}, []string{"provider", "model"}},
+		{"provider-effort", Override{Provider: "example-provider", Effort: "low"}, []string{"provider", "effort"}},
+		{"model-effort", Override{Model: "example-model", Effort: "low"}, []string{"model", "effort"}},
+		{"complete", Override{Provider: "example-provider", Model: "example-model", Effort: "low"}, []string{"provider", "model", "effort"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, failure := Resolve(Request{Role: qarole.TestRunner, Backend: "pi", ProfileID: "balanced", Override: tc.override}, Snapshot{Present: true, Bytes: snapshot})
 			if failure.Code != "" {
 				t.Fatalf("Resolve() failure = %q", failure.Code)
 			}
-			if got.ProfileSHA256 != digest || !reflect.DeepEqual(got.OverrideFields, tc.fields) || got.Provider != "nan" || got.Model != "qwen3.6" || got.Effort != "low" {
+			if got.ProfileSHA256 != digest || !reflect.DeepEqual(got.OverrideFields, tc.fields) || got.Provider != "example-provider" || got.Model != "example-model" || got.Effort != "low" {
 				t.Fatalf("Resolve() = %+v", got)
 			}
 		})
@@ -41,9 +41,9 @@ func TestResolveCompleteOverrideCanReplaceAnIncompleteSelectedRoute(t *testing.T
 	snapshot := []byte(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"test-runner":{"pi":{}}}}}}`)
 	got, failure := Resolve(Request{
 		Role: qarole.TestRunner, Backend: "pi", ProfileID: "selected",
-		Override: Override{Provider: "nan", Model: "qwen3.6", Effort: "low"},
+		Override: Override{Provider: "example-provider", Model: "example-model", Effort: "low"},
 	}, Snapshot{Present: true, Bytes: snapshot})
-	if failure.Code != "" || got.Model != "qwen3.6" || got.Effort != "low" {
+	if failure.Code != "" || got.Model != "example-model" || got.Effort != "low" {
 		t.Fatalf("Resolve() = (%+v, %q)", got, failure.Code)
 	}
 }
@@ -56,7 +56,7 @@ func TestResolveRejectsTerminalRoutes(t *testing.T) {
 		code     string
 	}{
 		{"missing-profile", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{}, "profile_invalid"},
-		{"incomplete-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: []byte(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":"nan","model":"qwen3.6"}}}}}}`)}, "route_incomplete"},
+		{"incomplete-route", Request{Role: qarole.RequirementsAnalyst, Backend: "pi", ProfileID: "selected"}, Snapshot{Present: true, Bytes: []byte(`{"schemaVersion":1,"defaultProfile":"selected","profiles":{"selected":{"routes":{"requirements-analyst":{"pi":{"provider":"example-provider","model":"example-model"}}}}}}`)}, "route_incomplete"},
 		{"disallowed-backend", Request{Role: qarole.RequirementsAnalyst, Backend: "other"}, Snapshot{}, "route_disallowed"},
 		{"disallowed-role", Request{Role: "unknown", Backend: "pi"}, Snapshot{}, "route_disallowed"},
 	} {

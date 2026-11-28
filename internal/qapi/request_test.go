@@ -21,7 +21,7 @@ func TestAdmissionRequest(t *testing.T) {
 			Role: qarole.RequirementsAnalyst, Backend: "pi", CurrentDirectory: "/worktree",
 			Revision: strings.Repeat("a", 40), Fingerprint: "candidate." + strings.Repeat("b", 64),
 			Task: "Please write a review.", Profile: "balanced",
-			Override: qaroute.Override{Provider: "nan", Model: "qwen3.6", Effort: "high"}, TimeoutSeconds: 30,
+			Override: qaroute.Override{Provider: "example-provider", Model: "example-model", Effort: "high"}, TimeoutSeconds: 30,
 		}, true},
 		{"defaults", `{"schemaVersion":1,"contract":"cortex.qa.pi-admission-request.v1","role":"test-runner","backend":"pi","currentDirectory":"/worktree","revision":"` + strings.Repeat("a", 40) + `","fingerprint":"candidate.` + strings.Repeat("b", 64) + `","task":"Please write a review."}`, AdmissionRequest{
 			Role: qarole.TestRunner, Backend: "pi", CurrentDirectory: "/worktree",
@@ -32,7 +32,7 @@ func TestAdmissionRequest(t *testing.T) {
 			Role: qarole.RequirementsAnalyst, Backend: "pi", CurrentDirectory: "/worktree",
 			Revision: strings.Repeat("a", 40), Fingerprint: "candidate." + strings.Repeat("b", 64),
 			Task: "Please write a review.", Profile: "balanced",
-			Override: qaroute.Override{Provider: "nan", Model: "qwen3.6", Effort: "high"}, TimeoutSeconds: 3600,
+			Override: qaroute.Override{Provider: "example-provider", Model: "example-model", Effort: "high"}, TimeoutSeconds: 3600,
 		}, true},
 		{"neither branch", `{"schemaVersion":1,"role":"requirements-analyst"}`, AdmissionRequest{}, false},
 		{"both branches", strings.Replace(valid, `"contract":`, `"optIn":"cortex.qa.external.v1","contract":`, 1), AdmissionRequest{}, false},
@@ -45,8 +45,8 @@ func TestAdmissionRequest(t *testing.T) {
 		{"trailing JSON", valid + ` {}`, AdmissionRequest{}, false},
 		{"unknown field", strings.Replace(valid, `}`, `,"tools":["read"]}`, 1), AdmissionRequest{}, false},
 		{"unknown override field", strings.Replace(valid, `"effort":"high"`, `"effort":"high","tools":"read"`, 1), AdmissionRequest{}, false},
-		{"duplicate override field", strings.Replace(valid, `"provider":"nan",`, `"provider":"nan","provider":"nan",`, 1), AdmissionRequest{}, false},
-		{"override array", strings.Replace(valid, `"provider":"nan"`, `"provider":["nan"]`, 1), AdmissionRequest{}, false},
+		{"duplicate override field", strings.Replace(valid, `"provider":"example-provider",`, `"provider":"example-provider","provider":"example-provider",`, 1), AdmissionRequest{}, false},
+		{"override array", strings.Replace(valid, `"provider":"example-provider"`, `"provider":["example-provider"]`, 1), AdmissionRequest{}, false},
 		{"task array", strings.Replace(valid, `"task":"Please write a review."`, `"task":[]`, 1), AdmissionRequest{}, false},
 		{"invalid profile", strings.Replace(valid, `"profile":"balanced"`, `"profile":"Balanced"`, 1), AdmissionRequest{}, false},
 		{"escaped task nul", strings.Replace(valid, "Please write a review.", `safe\u0000unsafe`, 1), AdmissionRequest{}, false},
@@ -84,5 +84,5 @@ func TestAdmissionRequest(t *testing.T) {
 }
 
 func admissionRequestJSON() string {
-	return `{"schemaVersion":1,"contract":"cortex.qa.pi-admission-request.v1","role":"requirements-analyst","backend":"pi","currentDirectory":"/worktree","revision":"` + strings.Repeat("a", 40) + `","fingerprint":"candidate.` + strings.Repeat("b", 64) + `","task":"Please write a review.","profile":"balanced","override":{"provider":"nan","model":"qwen3.6","effort":"high"},"timeoutSeconds":30}`
+	return `{"schemaVersion":1,"contract":"cortex.qa.pi-admission-request.v1","role":"requirements-analyst","backend":"pi","currentDirectory":"/worktree","revision":"` + strings.Repeat("a", 40) + `","fingerprint":"candidate.` + strings.Repeat("b", 64) + `","task":"Please write a review.","profile":"balanced","override":{"provider":"example-provider","model":"example-model","effort":"high"},"timeoutSeconds":30}`
 }

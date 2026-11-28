@@ -209,7 +209,7 @@ model fallback. Each owner configures their own route through a
 user-owned profile file in the catalog root:
 
 ```json
-{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}
+{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}
 ```
 
 Routes are keyed by role and then by backend token (`pi`, `claude`, `opencode`); a

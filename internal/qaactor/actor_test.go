@@ -275,7 +275,7 @@ func TestValidateRejectsCanonicalContentDrift(t *testing.T) {
 		}},
 		{"tool change", func(content string) string { return strings.Replace(content, "  - ls", "  - write", 1) }},
 		{"provider branding", func(content string) string {
-			return strings.Replace(content, "description:", "provider: nan\ndescription:", 1)
+			return strings.Replace(content, "description:", "provider: example-provider\ndescription:", 1)
 		}},
 		{"model branding", func(content string) string {
 			return strings.Replace(content, "description:", "model: qwen\ndescription:", 1)

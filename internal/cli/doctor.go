@@ -574,7 +574,7 @@ func qaAuthNotReadyNote() string {
 // unavailable pinned model leads to configuration instead of guessing. The
 // fleet ships no models: each owner routes with their own (issue #298).
 func qaRouteSetupNote(catalogRoot string) string {
-	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`
+	example := `{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`
 	return fmt.Sprintf("route_setup=%s/cortex/qa-profiles.json example=%s\n", catalogRoot, example)
 }
 

@@ -250,10 +250,10 @@ func TestDoctorNamesTheProbedRouteAndItsScope(t *testing.T) {
 	t.Cleanup(func() { qaBackendProbe = originalProbe; qaAssetCheck = originalCheck })
 	qaAssetCheck = func(_ string) error { return nil }
 	qaBackendProbe = func(_ context.Context, _, _ string) qapi.AvailabilityVerdict {
-		return qapi.AvailabilityVerdict{Code: qaadmission.CodeModelUnavailable, Provider: "nan", Model: "glm5.3"}
+		return qapi.AvailabilityVerdict{Code: qaadmission.CodeModelUnavailable, Provider: "example-provider", Model: "example-model-b"}
 	}
 	line := qaBackendLine(context.Background(), runtimematrix.RuntimePi, true, "")
-	for _, want := range []string{"qa_availability=model_unavailable", "qa_route_provider=nan qa_route_model=glm5.3"} {
+	for _, want := range []string{"qa_availability=model_unavailable", "qa_route_provider=example-provider qa_route_model=example-model-b"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line = %q, want it to name %q", line, want)
 		}
@@ -277,7 +277,7 @@ func TestQARouteSetupNoteNamesProfilePathAndShape(t *testing.T) {
 	note := qaRouteSetupNote("/home/user/fleet-catalog")
 	for _, want := range []string{
 		"route_setup=/home/user/fleet-catalog/cortex/qa-profiles.json",
-		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"nan","model":"glm5.3","effort":"high"}}}}}}`,
+		`{"schemaVersion":1,"defaultProfile":"my-route","profiles":{"my-route":{"routes":{"evidence-auditor":{"pi":{"provider":"example-provider","model":"example-model-b","effort":"high"}}}}}}`,
 	} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note = %q, want it to contain %q", note, want)

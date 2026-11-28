@@ -353,6 +353,17 @@ run looks like, and where it currently stops:
    routed to different models (#453). An unknown role is refused with
    `error=unknown_role`, the valid role ids are listed, and the profile is left
    unchanged. Without `--role` all roles are written as above.
+   To configure visually, run `cortex qa setup --catalog <catalog-root>` with no other
+   flags from a terminal (stdin and stdout both a TTY). It opens a table of every
+   role and backend with its effective provider/model/effort and source (the same
+   view as `cortex qa routes`). Select a row with the arrow keys or `j`/`k` and press
+   Enter to edit: choose the backend, then the model (for `pi` from the models the
+   runtime offers; for `claude` and `opencode` type `<provider>/<model>`), then the
+   effort (`low`, `medium`, `high`). The confirm screen shows the old and new route;
+   only `y` writes, through the same per-role writer as `--role`, and the table then
+   refreshes. `n` or Esc cancels an edit, and `q` or Esc on the table quits without
+   writing. Without a terminal, or with any route flag, the command behaves exactly
+   as described above (#454).
 3. **Run one role with evidence.** Write a short bounded `request.txt`, then:
 
    ```sh
